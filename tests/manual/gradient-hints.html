@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html><head><style>
+  body { margin:0; padding:16px; background:#fff; font-family:sans-serif; }
+  h1 { font-size:16px; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; }
+  figure { margin:0; text-align:center; }
+  figcaption { font:11px monospace; color:#555; max-width:150px; }
+  .b { width:150px; height:90px; border:1px solid #ccc; }
+  /* controle: sem hint (mistura linear, meio em 50%) */
+  .lin  { background: linear-gradient(to right, #e81a5f, #1a73e8); }
+  /* hint em 20% → transição empurrada p/ a esquerda */
+  .h20  { background: linear-gradient(to right, #e81a5f, 20%, #1a73e8); }
+  /* hint em 80% → transição empurrada p/ a direita */
+  .h80  { background: linear-gradient(to right, #e81a5f, 80%, #1a73e8); }
+  /* hint entre stops posicionados (fade suave deslocado) */
+  .hpx  { background: linear-gradient(to right, #111, #111 20px, 40px, #eee 130px); }
+  /* multi: hint em cada segmento de 3 cores */
+  .h3   { background: linear-gradient(to right, #0a0, 15%, #fd0, 85%, #d00); }
+  /* diagonal com hint */
+  .hd   { background: linear-gradient(45deg, #06f, 25%, #0c0); }
+  /* radial com hint (anel de transição deslocado p/ dentro) */
+  .hr   { background: radial-gradient(circle, #fff, 30%, #114); }
+  /* conic com hint angular */
+  .hc   { background: conic-gradient(#7b2ff7, 25%, #f5f5f5, #7b2ff7); }
+</style></head>
+<body>
+  <h1>color interpolation hints — a posição solitária desloca o meio da mistura</h1>
+  <div class="row">
+    <figure><div class="b lin"></div><figcaption>SEM hint (meio em 50%)</figcaption></figure>
+    <figure><div class="b h20"></div><figcaption>hint 20% (meio → 20%)</figcaption></figure>
+    <figure><div class="b h80"></div><figcaption>hint 80% (meio → 80%)</figcaption></figure>
+    <figure><div class="b hpx"></div><figcaption>hint em px entre stops</figcaption></figure>
+    <figure><div class="b h3"></div><figcaption>2 hints (15% e 85%)</figcaption></figure>
+    <figure><div class="b hd"></div><figcaption>diagonal 45deg + hint 25%</figcaption></figure>
+    <figure><div class="b hr"></div><figcaption>radial + hint 30%</figcaption></figure>
+    <figure><div class="b hc"></div><figcaption>conic + hint 25%</figcaption></figure>
+  </div>
+  <p style="font:12px monospace; color:#777">
+    Esperado: a 1ª (sem hint) tem o roxo/meio bem no centro; h20 desloca o meio p/ perto do início; h80 p/ perto do fim.
+  </p>
+</body></html>

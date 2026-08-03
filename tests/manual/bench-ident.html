@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><script>
+// Isola o custo de LER UM IDENTIFICADOR: os dois lacos sao identicos menos por
+// `s = 1` (literal, praticamente de graca) vs `s = a` (uma resolucao de escopo).
+var N = 3000000;
+var a = 7, s = 0;
+
+var t0 = Date.now();
+for (var i = 0; i < N; i++) { s = 1; }
+var t1 = Date.now();
+for (var j = 0; j < N; j++) { s = a; }
+var t2 = Date.now();
+
+var lit = t1 - t0, ident = t2 - t1;
+console.log("literal : " + lit + " ms");
+console.log("ident   : " + ident + " ms");
+console.log("delta por leitura de identificador: " + (((ident - lit) * 1e6) / N).toFixed(1) + " ns");
+
+// mesma leitura, mas de um escopo MAIS FUNDO (dentro de 3 blocos aninhados)
+var t3 = Date.now();
+{ { { for (var k = 0; k < N; k++) { s = a; } } } }
+var t4 = Date.now();
+console.log("ident a 3 blocos de profundidade: " + (t4 - t3) + " ms");
+console.log("FIM");
+</script>

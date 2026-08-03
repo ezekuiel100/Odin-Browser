@@ -1,0 +1,9 @@
+﻿<anon# .> block x=0 y=0 w=800 h=128
+  <html# .> block x=0 y=0 w=800 h=128
+    <body# .> block x=0 y=0 w=800 h=128
+      <div# .g> grid x=0 y=0 w=1216 h=128 cols=12 rows=0 gap=16
+        <div# .full> inline x=0 y=0 w=1216 h=20
+        <div# .inset> inline x=103 y=36 w=1011 h=20
+        <div# .tail> inline x=1027 y=72 w=189 h=20
+        <div# .anch> inline x=1027 y=108 w=189 h=20
+        <div# .ctl> inline x=103 y=72 w=189 h=20

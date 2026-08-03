@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head><style>
+  body { font-family: sans-serif; margin: 0; padding: 16px; background: #f4f4f5; }
+  .nav { display: flex; align-items: center; background: #1e293b; color: white; padding: 10px 16px; gap: 12px; border-radius: 8px; }
+  .logo { font-weight: bold; font-size: 18px; }
+  .nav a { color: #cbd5e1; text-decoration: none; }
+  .spacer { margin-left: auto; }           /* auto-margin empurra p/ direita */
+  .btn { background: #3b82f6; color: white; padding: 8px 14px; border-radius: 6px; min-width: 90px; text-align: center; }
+
+  .row { display: flex; gap: 12px; margin-top: 16px; }
+  .card { flex: 1; background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+  .card.wide { min-width: 300px; }          /* min-width trava o encolhimento */
+  .card.cap  { max-width: 140px; }          /* max-width trava o crescimento */
+
+  .ordered { display: flex; gap: 8px; margin-top: 16px; }
+  .ordered div { flex: 1; padding: 12px; text-align: center; border-radius: 6px; color: white; }
+  .o1 { order: 3; background: #ef4444; }
+  .o2 { order: 1; background: #22c55e; }
+  .o3 { order: 2; background: #a855f7; }
+</style></head>
+<body>
+  <div class="nav">
+    <span class="logo">Acme</span>
+    <a href="#">Início</a>
+    <a href="#">Produtos</a>
+    <a href="#" class="spacer">Entrar</a>
+    <div class="btn">Cadastrar</div>
+  </div>
+
+  <div class="row">
+    <div class="card wide">min-width:300 — não encolhe abaixo disso mesmo com flex:1</div>
+    <div class="card">flex:1 normal</div>
+    <div class="card cap">max-width:140</div>
+  </div>
+
+  <div class="ordered">
+    <div class="o1">DOM 1 / order 3 (vermelho)</div>
+    <div class="o2">DOM 2 / order 1 (verde)</div>
+    <div class="o3">DOM 3 / order 2 (roxo)</div>
+  </div>
+</body>
+</html>

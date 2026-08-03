@@ -1,0 +1,89 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>canvas 2D (M232) — passeio pela API</title>
+<style>
+  body { margin: 0; font: 13px sans-serif; background: #fff; }
+  canvas { border: 1px solid #ccc; margin: 8px; }
+</style>
+</head>
+<body>
+<canvas id="a" width="760" height="360"></canvas>
+<script>
+  var x = document.getElementById('a').getContext('2d');
+
+  // ── 1. barras (fillRect + texto rotulado) ────────────────────────────────
+  var dados = [40, 95, 60, 130, 85, 150, 70];
+  x.font = '12px sans-serif';
+  for (var i = 0; i < dados.length; i++) {
+    x.fillStyle = i % 2 ? '#4b7bec' : '#2d3436';
+    x.fillRect(20 + i * 34, 180 - dados[i], 24, dados[i]);
+    x.fillStyle = '#555';
+    x.textAlign = 'center';
+    x.fillText(String(dados[i]), 32 + i * 34, 196);
+  }
+
+  // ── 2. linha com curvas (moveTo/bezierCurveTo/stroke) ────────────────────
+  x.strokeStyle = '#e17055';
+  x.lineWidth = 3;
+  x.beginPath();
+  x.moveTo(280, 150);
+  x.bezierCurveTo(330, 20, 400, 260, 460, 90);
+  x.stroke();
+
+  // ── 3. círculos com globalAlpha (arc + fill) ─────────────────────────────
+  var cores = ['#d63031', '#00b894', '#0984e3'];
+  for (var j = 0; j < 3; j++) {
+    x.globalAlpha = 0.55;
+    x.fillStyle = cores[j];
+    x.beginPath();
+    x.arc(540 + j * 40, 90, 40, 0, Math.PI * 2);
+    x.fill();
+  }
+  x.globalAlpha = 1;
+
+  // ── 4. save/restore + rotate + roundRect ─────────────────────────────────
+  x.save();
+  x.translate(660, 250);
+  x.rotate(-0.4);
+  x.fillStyle = '#6c5ce7';
+  x.beginPath();
+  x.roundRect(-60, -25, 120, 50, 12);
+  x.fill();
+  x.fillStyle = '#fff';
+  x.textAlign = 'center';
+  x.fillText('rotacionado', 0, 5);
+  x.restore();
+
+  // ── 5. gradiente (degradação: vira a 1a cor parada) ──────────────────────
+  var g = x.createLinearGradient(20, 240, 260, 240);
+  g.addColorStop(0, '#00cec9');
+  g.addColorStop(1, '#fdcb6e');
+  x.fillStyle = g;
+  x.fillRect(20, 230, 240, 40);
+  x.fillStyle = '#111';
+  x.textAlign = 'left';
+  x.fillText('gradiente = 1a cor parada (degradacao nomeada)', 20, 292);
+
+  // ── 6. traco fino + arcTo (canto arredondado a mao) ──────────────────────
+  x.strokeStyle = '#2d3436';
+  x.lineWidth = 2;
+  x.beginPath();
+  x.moveTo(300, 230);
+  x.lineTo(420, 230);
+  x.arcTo(460, 230, 460, 270, 30);
+  x.lineTo(460, 300);
+  x.stroke();
+
+  // ── 7. measureText: a caixa acompanha o texto medido ─────────────────────
+  var msg = 'measureText mede na fonte real';
+  var w = x.measureText(msg).width;
+  x.strokeStyle = '#b2bec3';
+  x.lineWidth = 1;
+  x.strokeRect(500, 300, w + 10, 22);
+  x.fillStyle = '#111';
+  x.fillText(msg, 505, 316);
+</script>
+</body>
+</html>

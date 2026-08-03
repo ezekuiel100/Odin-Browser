@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>stroke-dasharray — o traço é FATIADO (e o none volta a emendá-lo)</title>
+<!--
+  Geometria fixa e sem texto: 4 linhas idênticas de 300x6 em x 20..320, cada uma
+  40px abaixo da anterior. O portão amostra a FAIXA da linha e compara MÉDIAS.
+    y=10   sólido (controle)                        -> faixa ESCURA
+    y=30   stroke-dasharray por ATRIBUTO            -> faixa ~metade clara
+    y=50   stroke-dasharray por REGRA CSS           -> igual à de atributo
+    y=70   herdado do <g> e CANCELADO por `none`    -> volta a ESCURA
+  Os <svg> são blocos de 20px em FLUXO NORMAL (sem position/margin), então cada
+  linha cai em y = 10 + 20*i sem depender de posicionamento absoluto.
+  O par sólido × tracejado é o que pega a ligação do fatiador ao painter: os
+  testes de unidade afirmam a GEOMETRIA das peças, mas passariam intactos se
+  alguém desligasse a chamada dentro de svg_emit/svg_emit_multi.
+-->
+<style>
+  body { margin: 0; background: #fff }
+  svg { display: block; margin: 0 }
+  .css-dash { stroke-dasharray: 12 12 }
+  .css-none { stroke-dasharray: none }
+</style>
+
+<svg width="320" height="20">
+  <line x1="20" y1="10" x2="300" y2="10" stroke="#000" stroke-width="6"/></svg>
+
+<svg width="320" height="20">
+  <line x1="20" y1="10" x2="300" y2="10" stroke="#000" stroke-width="6" stroke-dasharray="12 12"/></svg>
+
+<svg width="320" height="20">
+  <line class="css-dash" x1="20" y1="10" x2="300" y2="10" stroke="#000" stroke-width="6"/></svg>
+
+<svg width="320" height="20">
+  <g stroke="#000" stroke-width="6" stroke-dasharray="12 12">
+    <line class="css-none" x1="20" y1="10" x2="300" y2="10"/></g></svg>

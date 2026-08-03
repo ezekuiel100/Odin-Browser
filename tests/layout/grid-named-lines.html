@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- REGRESSÃO: nomes de linha [foo] em grid-template-columns NÃO são trilhas.
+     Padrão MDN. Antes do fix, 3 trilhas reais viravam 7 Auto fantasma e o
+     conteúdo colapsava. O golden trava as larguras das 3 colunas reais. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .grid {
+    display: grid;
+    grid-template-columns:
+      [full-start] 200px
+      [content-start] 1fr
+      [content-end] 200px [full-end];
+    width: 1000px;
+  }
+  .cell { padding: 8px; }
+</style></head><body>
+  <div class="grid">
+    <div class="cell a">esquerda 200px</div>
+    <div class="cell b">centro flexível</div>
+    <div class="cell c">direita 200px</div>
+  </div>
+</body></html>

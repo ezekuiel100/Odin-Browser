@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 10px; }
+  #btn {
+    background: #0066cc; color: #ffffff;
+    padding: 16px 24px; font-size: 20px;
+    display: inline-block;
+  }
+  #out { color: #060; font-size: 24px; margin-top: 24px; }
+</style>
+</head>
+<body>
+  <div id="btn">Clique aqui</div>
+  <p id="out">nao clicado</p>
+
+  <script>
+    var n = 0;
+    document.getElementById('btn').onclick = function() {
+      n = n + 1;
+      document.getElementById('out').textContent = 'clicado ' + n + ' vez(es)';
+    };
+  </script>
+</body>
+</html>

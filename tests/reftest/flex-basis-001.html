@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- TESTE: flex-basis define o tamanho-base do item no eixo principal.
+     Item com flex-basis:200px (sem grow/shrink) => 200x100 verde. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .row { display: flex; width: 200px; height: 100px; }
+  .item { flex-basis: 200px; background: green; }
+</style>
+<link rel="match" href="flex-basis-001-ref.html">
+</head>
+<body>
+  <div class="row"><div class="item"></div></div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>:not(:is(...)) vaza do escopo?</title>
+<style>
+  body { font-family: sans-serif; background: #fff; margin: 16px; }
+  .fora, .dentro { padding: 8px; margin-bottom: 6px; background: #e2e8f0; }
+  /* A regra do expressive-code: SO pode atingir descendentes de .ec */
+  .ec *:not(:is(svg, svg *)) { background: #ff0000; color: #fff; }
+</style>
+
+<p class="fora" id="a">A — FORA do .ec: tem de ficar CINZA</p>
+<div class="ec"><p class="dentro" id="b">B — DENTRO do .ec: tem de ficar VERMELHO</p></div>
+
+<style>
+  /* variantes p/ isolar QUAL parte do seletor vaza */
+  .v1 *:not(svg)            { background: #16a34a; }  /* :not simples */
+  .v2 *:not(:is(svg))       { background: #2563eb; }  /* :not(:is()) com 1 arg */
+  .v3 *:not(:is(svg, span)) { background: #9333ea; }  /* :not(:is()) com lista */
+</style>
+<p class="fora" id="c">C — FORA de .v1 (:not simples): tem de ficar CINZA</p>
+<div class="v1"><p class="dentro">C2 — dentro de .v1: VERDE</p></div>
+
+<p class="fora" id="d">D — FORA de .v2 (:not(:is(1 arg))): tem de ficar CINZA</p>
+<div class="v2"><p class="dentro">D2 — dentro de .v2: AZUL</p></div>
+
+<p class="fora" id="e">E — FORA de .v3 (:not(:is(lista))): tem de ficar CINZA</p>
+<div class="v3"><p class="dentro">E2 — dentro de .v3: ROXO</p></div>

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .bg { position: relative; height: 600px; background: #fff; overflow: hidden; }
+  /* detalhe NÍTIDO no fundo: caixas de borda dura + texto grande — blur óbvio */
+  .tile { position: absolute; width: 90px; height: 90px; border: 4px solid #111; }
+  .big  { position: absolute; font-size: 90px; font-weight: bold; color: #d32f2f; }
+
+  .navbar {
+    position: absolute; top: 30px; left: 0; right: 0; height: 70px;
+    background: rgba(255,255,255,0.30);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    display: flex; align-items: center; padding: 0 32px;
+    color: #111; font-weight: bold; font-size: 22px;
+  }
+  .card {
+    position: absolute; top: 260px; left: 90px; width: 320px; height: 200px;
+    background: rgba(255,255,255,0.25);
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+    border-radius: 20px; color: #111; padding: 24px; box-sizing: border-box;
+  }
+  .plain {
+    position: absolute; top: 260px; left: 470px; width: 320px; height: 200px;
+    background: rgba(255,255,255,0.25);
+    border-radius: 20px; color: #111; padding: 24px; box-sizing: border-box;
+  }
+  .card h3, .plain h3 { margin: 0 0 8px; font-size: 22px; }
+</style>
+</head>
+<body>
+  <div class="bg">
+    <!-- padrão nítido de fundo -->
+    <div class="tile" style="left:40px;  top:60px;  background:#4285f4"></div>
+    <div class="tile" style="left:200px; top:120px; background:#34a853"></div>
+    <div class="tile" style="left:360px; top:70px;  background:#fbbc05"></div>
+    <div class="tile" style="left:560px; top:130px; background:#4285f4"></div>
+    <div class="tile" style="left:720px; top:60px;  background:#34a853"></div>
+    <div class="tile" style="left:150px; top:330px; background:#fbbc05"></div>
+    <div class="tile" style="left:640px; top:340px; background:#4285f4"></div>
+    <div class="big" style="left:60px;  top:420px">SHARP</div>
+    <div class="big" style="left:500px; top:180px">1234</div>
+
+    <div class="navbar">Frosted navbar — blur(10px)</div>
+    <div class="card"><h3>COM blur</h3><p>o padrão atrás fica borrado</p></div>
+    <div class="plain"><h3>SEM blur</h3><p>o padrão atrás fica nítido</p></div>
+  </div>
+</body>
+</html>

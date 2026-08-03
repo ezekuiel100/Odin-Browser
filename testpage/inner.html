@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  .cartao { background: #eef4ff; padding: 10px 14px; margin: 6px 0; border-radius: 6px; }
+  .cartao b { color: #06c; }
+  .ok { background: #e8f7ea; }
+  #resumo { color: #888; font-size: 14px; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+  <p id="resumo">?</p>
+
+  <script>
+    // monta a interface inteira com innerHTML (parser HTML real do navegador)
+    var pessoas = [
+      { nome: 'Ana',   pontos: 93 },
+      { nome: 'Bruno', pontos: 71 },
+      { nome: 'Carla', pontos: 88 }
+    ];
+
+    // ordena por pontos (desc) e gera o HTML
+    pessoas.sort(function(a, b) { return b.pontos - a.pontos; });
+    var html = '';
+    for (var i = 0; i < pessoas.length; i++) {
+      html += '<div class="cartao"><b>' + (i + 1) + '.</b> ' +
+              pessoas[i].nome + ' — ' + pessoas[i].pontos + ' pts</div>';
+    }
+    document.getElementById('app').innerHTML = html;
+
+    // navegação de nós: marca o primeiro cartao com a classe ok
+    var app = document.getElementById('app');
+    app.children[0].classList.add('ok');
+
+    // resumo usando reduce + JSON
+    var total = pessoas.reduce(function(s, p) { return s + p.pontos; }, 0);
+    document.getElementById('resumo').textContent =
+      'total: ' + total + ' | ' + app.children.length + ' cartoes | 1o: ' +
+      JSON.parse(JSON.stringify(pessoas))[0].nome;
+  </script>
+</body>
+</html>

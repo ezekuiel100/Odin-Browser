@@ -1,0 +1,20 @@
+# Corpus do oracle-diff: sites reais p/ comparar nosso motor vs Chrome.
+# Um por linha; '#' = comentario. Comeca com um mix que renderiza razoavelmente.
+https://example.com
+https://news.ycombinator.com
+https://en.wikipedia.org/wiki/CSS
+https://tailwindcss.com
+https://getbootstrap.com
+https://developer.mozilla.org/en-US/docs/Web/CSS
+https://motherfuckingwebsite.com
+https://danluu.com
+https://www.gnu.org
+https://sqlite.org
+https://go.dev
+https://react.dev
+https://www.w3.org
+https://www.php.net
+https://www.gutenberg.org
+https://curl.se
+https://www.kernel.org
+https://man7.org/linux/man-pages/man2/open.2.html

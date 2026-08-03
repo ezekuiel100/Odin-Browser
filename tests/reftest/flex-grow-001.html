@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- TESTE: flex-grow:1 faz o item esticar p/ preencher o espaco livre.
+     Item sem width num container de 200 => estica p/ 200x100 verde. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .row { display: flex; width: 200px; height: 100px; }
+  .item { flex-grow: 1; background: green; }
+</style>
+<link rel="match" href="flex-grow-001-ref.html">
+</head>
+<body>
+  <div class="row"><div class="item"></div></div>
+</body>
+</html>

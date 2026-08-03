@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<!-- TESTE: calc() deve computar 100x100. O verde (dimensionado por calc) deve
+     cobrir EXATAMENTE o vermelho. Se o calc falhar, sobra vermelho => FAIL.
+     calc(60px + 2 * 20px) = 100 ; calc(200px / 2) = 100 -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .under {
+    width: 100px;
+    height: 100px;
+    background: red;
+    position: relative;
+  }
+  .over {
+    width: calc(60px + 2 * 20px);
+    height: calc(200px / 2);
+    background: green;
+  }
+</style>
+<link rel="match" href="calc-width-001-ref.html">
+</head>
+<body>
+  <div class="under">
+    <div class="over"></div>
+  </div>
+</body>
+</html>

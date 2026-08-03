@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>paint gate: canvas.getContext('2d') (M232)</title>
+<style>
+  /* Gate 400x300. O canvas fica em (20,20) com bitmap 300x200 = 1:1 com a caixa,
+     entao as coordenadas do desenho sao as da tela + 20. Cores chapadas. */
+  html, body { margin: 0; padding: 0; background: #fff; }
+  #cv  { position: absolute; left: 20px; top: 20px; }
+  /* Controle: a MESMA cor do retangulo do canvas, vinda so do CSS. Se este cair,
+     o problema e de pintura/layout e o resto do caso nao diz nada. */
+  #ctl { position: absolute; left: 20px; top: 250px; width: 80px; height: 30px; background: #c00000; }
+</style>
+</head>
+<body>
+  <canvas id="cv" width="300" height="200"></canvas>
+  <div id="ctl"></div>
+  <script>
+    var x = document.getElementById('cv').getContext('2d');
+
+    // 1. retangulo preenchido: tela x 30..110, y 30..90
+    x.fillStyle = '#c00000';
+    x.fillRect(10, 10, 80, 60);
+
+    // 2. circulo preenchido: centro de tela (220,80), raio 40
+    x.fillStyle = '#00a000';
+    x.beginPath();
+    x.arc(200, 60, 40, 0, Math.PI * 2);
+    x.fill();
+
+    // 3. traco grosso: faixa horizontal em tela y~170, de x 40 a 300
+    x.strokeStyle = '#0000c0';
+    x.lineWidth = 10;
+    x.beginPath();
+    x.moveTo(20, 150);
+    x.lineTo(280, 150);
+    x.stroke();
+  </script>
+</body>
+</html>

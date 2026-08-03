@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head><style>
+  body { font-family: sans-serif; margin: 0; padding: 16px; background: #f4f4f5; }
+  h3 { margin: 4px 0 10px; color: #334155; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+  .grid > div { background: #6366f1; color: white; padding: 16px; border-radius: 6px; text-align: center; }
+
+  /* posicionamento explícito + row/col span + template-rows */
+  .dash {
+    display: grid;
+    grid-template-columns: 120px 1fr 1fr;
+    grid-template-rows: 50px 60px 60px;
+    gap: 10px;
+  }
+  .dash > div { color: white; padding: 10px; border-radius: 6px; }
+  .head { grid-column: 1 / 4; background: #1e293b; }        /* ocupa as 3 colunas, linha 1 */
+  .side { grid-column: 1; grid-row: 2 / 4; background: #16a34a; } /* col 1, linhas 2-3 */
+  .cell { background: #f59e0b; }
+</style></head>
+<body>
+  <h3>Grid 3 colunas (1fr cada) + gap</h3>
+  <div class="grid">
+    <div>1</div><div>2</div><div>3</div>
+    <div>4</div><div>5</div><div>6</div>
+  </div>
+
+  <h3>Dashboard: header 3-col, sidebar 2-row, células</h3>
+  <div class="dash">
+    <div class="head">Header (grid-column: 1 / 4)</div>
+    <div class="side">Sidebar<br>(col 1, linhas 2-3)</div>
+    <div class="cell">A</div>
+    <div class="cell">B</div>
+    <div class="cell">C</div>
+    <div class="cell">D</div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>repro: largura do hero do github (grid dentro de fit-content)</title>
+<style>
+  /* Reducao da cadeia real do github.com/ (medida no Chrome):
+       .lp-IntroHero   flex column, align-items:center, padding 0 24
+         section.Hero  flex column, place-items:center, padding 0 24
+           .Grid       display:grid, 12 colunas, gap 48, width:100%
+             .column   grid-column: auto / span 12
+               h1      font-size 64
+     No Chrome o section sai com 972 e o grid com 924 (12x33 + 11x48).  */
+  body { margin: 0; font-family: sans-serif; }
+  .outer   { display: flex; flex-direction: column; align-items: center; padding: 0 24px; }
+  .hero    { display: flex; flex-direction: column; place-items: center; padding: 0 24px; }
+  .grid    { display: grid; grid-template-columns: repeat(12, 1fr); gap: 48px; width: 100%; }
+  .column  { grid-column: auto / span 12; }
+  h1       { font-size: 64px; line-height: 1.08; margin: 0; }
+  /* marcadores de largura para leitura visual */
+  .hero   { outline: 2px solid #c00; }
+  .grid   { outline: 2px solid #0a0; }
+  .column { outline: 2px solid #00c; }
+</style>
+</head>
+<body>
+  <div class="outer">
+    <section class="hero">
+      <div class="grid">
+        <div class="column">
+          <h1 id="alvo">The future of building happens together</h1>
+        </div>
+      </div>
+    </section>
+  </div>
+  <pre id="medidas">(sem JS)</pre>
+  <script>
+    // Escreve as medidas NO DOM para o `chrome --headless --dump-dom` poder le-las:
+    // o painel de preview mede num container de largura ZERO e mente.
+    var q = function (s) {
+      var e = document.querySelector(s), r = e.getBoundingClientRect();
+      return s + ' w=' + Math.round(r.width) + ' x=' + Math.round(r.left) + ' h=' + Math.round(r.height);
+    };
+    var linhas = ['viewport=' + window.innerWidth, q('.outer'), q('.hero'), q('.grid'), q('.column'), q('#alvo'),
+                  'cols=' + getComputedStyle(document.querySelector('.grid')).gridTemplateColumns,
+                  'linhas_h1=' + document.querySelector('#alvo').getClientRects().length];
+    document.getElementById('medidas').textContent = linhas.join(' | ');
+  </script>
+</body>
+</html>

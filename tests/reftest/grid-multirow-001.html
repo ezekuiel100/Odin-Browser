@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<!-- TESTE: o grid cria linhas automaticamente. 4 celulas em 2 colunas =>
+     2 linhas. Cada celula 100x50 => preenche 200x100 verde solido. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .g { display: grid; grid-template-columns: 100px 100px; width: 200px; }
+  .c { height: 50px; background: green; }
+</style>
+<link rel="match" href="grid-multirow-001-ref.html">
+</head>
+<body>
+  <div class="g">
+    <div class="c"></div><div class="c"></div>
+    <div class="c"></div><div class="c"></div>
+  </div>
+</body>
+</html>

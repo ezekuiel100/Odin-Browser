@@ -1,0 +1,6 @@
+<!doctype html><meta charset="utf-8"><title>timer alocando objeto</title>
+<p>timer que aloca um objeto por disparo</p>
+<script>
+var n = 0;
+setInterval(function(){ var o = { a: 1, b: 2, c: [1,2,3] }; n = n + o.a; }, 1);
+</script>

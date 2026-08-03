@@ -1,0 +1,28 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>filter: blur — grafias</title>
+<style>
+  :root { --raio: 24px; }
+  body { margin: 0; background: #fff; }
+  .caixa { width: 120px; height: 60px; background: #cc0000; margin: 30px 0 0 60px; }
+
+  /* A — CONTROLE: sem filtro nenhum. Borda dura. */
+  /* B — grafia SIMPLES: o valor literal. */
+  .b { filter: blur(24px); }
+  /* C — var() de 1 nivel. */
+  .c { --tw-blur: blur(24px); filter: var(--tw-blur); }
+  /* D — var() ANINHADA: variavel cujo valor contem outra var(). */
+  .d { --tw-blur: blur(var(--raio)); filter: var(--tw-blur); }
+  /* E — a grafia do TAILWIND v4 em cheio: lista com fallback VAZIO, em que
+         todos os canais menos um resolvem para NADA. */
+  .e { --tw-blur: blur(24px);
+       filter: var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,)
+               var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,)
+               var(--tw-drop-shadow,); }
+</style></head>
+<body>
+  <div class="caixa a"></div>
+  <div class="caixa b"></div>
+  <div class="caixa c"></div>
+  <div class="caixa d"></div>
+  <div class="caixa e"></div>
+</body></html>

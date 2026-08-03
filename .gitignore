@@ -1,0 +1,73 @@
+# ─────────────────────────── Binários e artefatos de build ───────────────────
+# O build sai como browser.exe na raiz, e cada marco deixa ao lado um binário de
+# A/B (browser_m245.exe, browser_pre_m242.exe, browser_ctl244.exe…). São ~500 MB
+# de coisa regenerável, e o hash do Odin nem é reproduzível entre builds.
+*.exe
+*.dll
+*.lib
+*.a
+*.obj
+*.pdb
+*.ilk
+*.exp
+
+# ─────────────────────────── Dependências de terceiros ───────────────────────
+# vendor/ é um clone do zeozeozeo/odin-imgui (com .git PRÓPRIO), mais a lib do
+# ImGui recompilada à mão contra o SDL2, mais a libwebp. ~750 MB, específico de
+# plataforma e não é código nosso. A receita de montar está em docs/BUILD.md.
+#
+# A barra inicial ANCORA na raiz, de propósito: `vendor/` solto casaria um
+# diretório com esse nome em qualquer nível, e levaria junto o tools/vendor/,
+# que é nosso e tem o remendo do backend SDL2.
+/vendor/
+
+# ───────────────────────────── Saídas de rodada ──────────────────────────────
+# Tudo abaixo é gerado por uma suíte ou por uma sessão de investigação: listas de
+# FAIL do WPT, pernas de A/B, dumps de mineração, capturas de tela. Volumoso,
+# regenerável e envelhece em horas.
+/*.png
+/800
+/wpt_*.txt
+/ab_m*.txt
+/mine_*.txt
+/probe_*.txt
+/paint_m*.txt
+/golden_m*.txt
+/m2*_test_all*.txt
+/t262_now.txt
+/css_test.txt
+/css_unknown.txt
+/diagnose_layout.txt
+/gap-report.md
+/oracle-report.md
+ab-paint/
+oracle-shots/
+gap-mine/
+probe_site/
+tools/probe/out/
+_local/
+
+# Diretórios que as suítes criam e removem sozinhas (ou deixam para trás com -Keep)
+tests/wpt/_out/
+tests/paint/_out/
+tests/reftest/_out/
+
+# ⚠️ wpt-baseline-fails.txt NÃO entra aqui, de propósito: é a lista NOMEADA que
+# serve de autoridade para o diff do WPT. Sem ela versionada, "353/128" vira um
+# placar agregado, que não prova ausência de regressão. Ver docs/TESTING.md.
+
+# ───────────────────────────── Estado local da máquina ───────────────────────
+# (⚠️ nada de comentário no FIM da linha aqui: o git só trata `#` como comentário
+#  no começo dela, e o resto vira parte do padrão — que aí não casa com nada.)
+
+# geometria das janelas dos DevTools
+imgui.ini
+# favoritos do usuário
+bookmarks.txt
+# permissões locais do Claude Code
+.claude/settings.local.json
+
+# ───────────────────────────── Lixo de sistema operacional ───────────────────
+Thumbs.db
+desktop.ini
+.DS_Store

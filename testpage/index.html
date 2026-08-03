@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>Teste do navegador — CSS</title>
+<style>
+  :root { --brand: #7b2ff7; --pad: 16px; --w: 90px; }
+
+  body {
+    background: #eef0f4;
+    color: #202124;
+    font-family: sans-serif;
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 30px; margin: 0 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 6px; border-bottom: 2px solid #d0d4dc; padding-bottom: 4px; }
+  .note { color: #5a6270; font-size: 14px; margin: 0 0 14px; }
+  .page-head {
+    background: linear-gradient(to right, #1e3c72, #6a3093);
+    color: #ffffff;
+    padding: 28px 24px;
+    border-radius: 14px;
+  }
+  .page-head h1 { color: #ffffff; }
+  .page-head p { margin: 6px 0 0; color: #e3e0f0; }
+
+  /* ── Gradientes ── */
+  .grad-bar { height: 44px; border-radius: 10px; margin-bottom: 10px; color:#fff; padding: 10px 14px; font-size: 14px; }
+  .g-right  { background: linear-gradient(to right, #11998e, #38ef7d); }
+  .g-diag   { background: linear-gradient(135deg, #fc466b, #3f5efb); }
+  .g-rain   { background: linear-gradient(to right, red, orange, yellow, green, blue, indigo, violet); }
+
+  /* ── Cores & alpha ── */
+  .swatches { display: flex; gap: 12px; flex-wrap: wrap; }
+  .sw { width: 150px; height: 80px; border-radius: 10px; color: #fff; padding: 10px; font-size: 13px; }
+  .checker { background: linear-gradient(to right, #000, #fff); padding: 14px; border-radius: 10px; }
+  .over { background: rgba(255, 80, 80, 0.55); height: 60px; border-radius: 8px; padding: 8px; color:#fff; }
+
+  /* ── Grid auto-fill ── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; }
+  .card { background: #fff; border: 1px solid #e1e4ea; border-radius: 12px; overflow: hidden; }
+  .card .cap { height: 64px; background: linear-gradient(to right, #667eea, #764ba2); }
+  .card .body { padding: 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; font-size: 13px; color: #5a6270; }
+
+  /* ── Grid com span ── */
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .cell { background: #dfe7ff; border-radius: 8px; padding: 18px 12px; text-align: center; font-weight: bold; color: #2a3f8f; }
+  .span2 { grid-column: span 2; background: #ffd9e0; color: #8f2a45; }
+
+  /* ── Flexbox ── */
+  .nav { display: flex; justify-content: space-between; align-items: center;
+         background: linear-gradient(to right, #232526, #414345);
+         padding: 14px 20px; border-radius: 10px; color: #fff; }
+  .nav .brand { font-size: 18px; font-weight: bold; }
+  .nav a { color: #cfd3da; margin-left: 18px; }
+
+  /* ── Position ── */
+  .pos-box { position: relative; height: 120px; background: #fff; border: 1px solid #e1e4ea;
+             border-radius: 12px; padding: 16px; }
+  .badge { position: absolute; top: 12px; right: 12px; background: #e53935; color: #fff;
+           padding: 4px 12px; border-radius: 999px; font-size: 13px; }
+  .corner { position: absolute; bottom: 12px; left: 16px; color: #5a6270; font-size: 13px; }
+
+  /* ── background-image ── */
+  .imgrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .ibox { height: 150px; border-radius: 10px; border: 1px solid #d0d4dc; }
+  .i-cover   { background-image: url(photo.png); background-size: cover; background-position: center; }
+  .i-contain { background-image: url(photo.png); background-size: contain; background-repeat: no-repeat;
+               background-position: center; background-color: #20242c; }
+  .i-repeat  { background-image: url(tile.png); background-repeat: repeat; }
+  .cap-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .cap-row span { font-size: 13px; color: #5a6270; text-align: center; }
+
+  /* ── Hero: bg cover + overlay alpha + texto posicionado ── */
+  .hero { position: relative; height: 260px; border-radius: 14px;
+          background-image: url(photo.png); background-size: cover; background-position: center; }
+  .hero-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; border-radius: 14px;
+                  background: linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0)); }
+  .hero-text { position: absolute; left: 24px; bottom: 22px; color: #fff; }
+  .hero-text h2 { color: #fff; border: 0; margin: 0; }
+  .hero-text p  { margin: 4px 0 0; color: #e8e8ee; }
+
+  /* ── Tabela ── */
+  table { border-collapse: collapse; width: 100%; background: #fff; border-radius: 8px; }
+  th, td { border: 1px solid #d8dce4; padding: 8px 12px; text-align: left; }
+  thead th { background: #2a5298; color: #fff; }
+  tfoot td, .total td { background: #f3f5fa; font-weight: bold; }
+
+  /* ── Features novas (2026-06-28) ── */
+  /* calc() + var() + vw */
+  .calc-bar { width: calc(var(--w) * 4); height: 40px; background: var(--brand);
+              color: #fff; padding: 10px var(--pad); border-radius: 8px; font-size: 14px; }
+  .vw-bar   { width: 50vw; height: 36px; margin-top: 10px; border-radius: 8px;
+              background: linear-gradient(to right, #11998e, #38ef7d);
+              color: #fff; padding: 8px 14px; font-size: 14px; }
+
+  /* align-self */
+  .selfrow { display: flex; align-items: flex-start; gap: 12px; height: 120px;
+             background: #fff; border: 1px solid #e1e4ea; border-radius: 12px; padding: 12px; }
+  .selfrow div { width: 90px; border-radius: 8px; color: #fff; padding: 8px;
+                 font-size: 13px; background: #2a5298; }
+  .as-start  { align-self: flex-start; }
+  .as-center { align-self: center; }
+  .as-end    { align-self: flex-end; }
+  .as-stretch{ align-self: stretch; background: #6a3093; }
+
+  /* min/max sizing */
+  .clampbox { background: #ffd9e0; color: #8f2a45; border-radius: 8px; padding: 10px;
+              font-size: 13px; margin-bottom: 8px; font-weight: bold; }
+  .c-min  { width: 40px;  min-width: 220px; }   /* min vence a width menor */
+  .c-max  { width: 600px; max-width: 260px; }   /* max limita a width maior */
+  .c-minh { height: 10px; min-height: 60px; }   /* min-height faz crescer */
+
+  /* object-fit (img real) */
+  .fitrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .fitrow img { width: 100%; height: 140px; border-radius: 10px;
+                border: 1px solid #d0d4dc; background: #20242c; }
+  .f-cover   { object-fit: cover; }
+  .f-contain { object-fit: contain; }
+  .f-none    { object-fit: none; }
+
+  /* ── Controles de formulário (2026-07-05) ── */
+  .form-demo { display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+               background: #fff; border: 1px solid #e1e4ea; border-radius: 12px;
+               padding: 16px; margin-bottom: 10px; }
+  .form-demo.dark { background: #14162b; border-color: #2a2f4a; }
+  .btn-primary { background: #7b2ff7; color: #fff; border: none; padding: 10px 18px;
+                 border-radius: 8px; font-size: 14px; cursor: pointer; }
+  .check-col { display: flex; flex-direction: column; gap: 8px; }
+  .check-col label { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  /* campo "busca escura" no estilo do famososbr: exercita box-sizing:border-box
+     e a cor de ::placeholder (que NÃO deve vazar para o texto digitado). */
+  .search-dark { box-sizing: border-box; padding: .7rem 1.2rem; border-radius: 25px;
+                 border: 2px solid #ff6b35; background: #ffffff1a; color: #f8f9fa; width: 260px; }
+  .search-dark::placeholder { color: #f8f9fa80; }
+
+@layer demo {
+  .layered { background: #1e3c72; color: #fff; padding: 14px; border-radius: 10px; font-size: 14px; }
+}
+
+  /* ── Índice de páginas de teste ── */
+  .testnav { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .testnav a { display: block; background: #fff; border: 1px solid #e1e4ea; border-left: 4px solid var(--brand);
+               border-radius: 10px; padding: 12px 14px; color: #202124; }
+  .testnav a:hover { background: #f3eefe; border-left-color: #5a17c0; }
+  .testnav .t { font-weight: bold; font-size: 15px; color: var(--brand); }
+  .testnav .d { font-size: 13px; color: #5a6270; margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <h1>Teste de renderização — CSS</h1>
+  <p>Grid, Flexbox, gradientes, alpha, background-image, position e tabela em uma página só.</p>
+</header>
+
+<h2>0 · Outras páginas de teste</h2>
+<p class="note">Cada página isola um recurso específico. Clique para navegar.</p>
+<div class="testnav">
+  <a href="italic_test.html"><div class="t">Itálico</div><div class="d">font-style, &lt;em&gt;/&lt;i&gt;, itálico em sans/serif/mono</div></a>
+  <a href="wrap_test.html"><div class="t">Quebra de texto</div><div class="d">overflow-wrap, word-break e text-overflow: ellipsis</div></a>
+  <a href="fixed_test.html"><div class="t">Position: fixed</div><div class="d">barra fixada no topo durante o scroll</div></a>
+  <a href="sticky_test.html"><div class="t">Position: sticky</div><div class="d">cabeçalhos de seção que grudam ao rolar</div></a>
+  <a href="textarea_test.html"><div class="t">Textarea &amp; display:block</div><div class="d">campo multi-linha editável e labels em bloco</div></a>
+  <a href="fontfam.html"><div class="t">Famílias de fonte</div><div class="d">sans, serif, monospace e &lt;code&gt; inline</div></a>
+  <a href="hover.html"><div class="t">:hover</div><div class="d">botões que mudam de cor ao passar o mouse</div></a>
+  <a href="trans.html"><div class="t">Transição</div><div class="d">transition de background no :hover</div></a>
+  <a href="iblock.html"><div class="t">Inline-block</div><div class="d">badges e botões no meio do texto</div></a>
+  <a href="valign.html"><div class="t">Vertical-align</div><div class="d">sub, super, top, middle, bottom na linha</div></a>
+  <a href="grid_flex.html"><div class="t">Grid &amp; Flexbox</div><div class="d">todas as funcionalidades: areas, grid-area, grid-template shorthand, self/content</div></a>
+</div>
+
+<h2>1 · Gradientes lineares</h2>
+<p class="note">Esperado: 1ª e 3ª perfeitas (horizontais). A 2ª é 135° → nossa engine aproxima ao eixo vertical (não fica diagonal de verdade).</p>
+<div class="grad-bar g-right">linear-gradient(to right, …) — horizontal</div>
+<div class="grad-bar g-diag">linear-gradient(135deg, …) — diagonal aproximada</div>
+<div class="grad-bar g-rain">multi-stop: vermelho → laranja → … → violeta (7 paradas)</div>
+
+<h2>2 · Cores &amp; transparência (alpha)</h2>
+<p class="note">Esperado: faixas semitransparentes deixam ver o que está atrás (degradê preto→branco).</p>
+<div class="swatches">
+  <div class="sw" style="background: hsl(200, 80%, 45%)">hsl(200,80%,45%)</div>
+  <div class="sw" style="background: rebeccapurple">rebeccapurple (named)</div>
+  <div class="sw" style="background: #ff8800">#ff8800 (hex)</div>
+</div>
+<div class="checker" style="margin-top:12px">
+  <div class="over">rgba(255,80,80,0.55) sobre degradê — deve transparecer</div>
+</div>
+
+<h2>3 · Grid responsivo (auto-fill + minmax)</h2>
+<p class="note">Esperado: cards de no mín. 210px que reflua em colunas conforme a largura. Cada um tem topo em gradiente e cantos arredondados (overflow:hidden recorta o topo ao raio).</p>
+<div class="cards">
+  <div class="card"><div class="cap"></div><div class="body"><h3>Card um</h3><p>Texto de exemplo dentro do card.</p></div></div>
+  <div class="card"><div class="cap"></div><div class="body"><h3>Card dois</h3><p>Texto de exemplo dentro do card.</p></div></div>
+  <div class="card"><div class="cap"></div><div class="body"><h3>Card três</h3><p>Texto de exemplo dentro do card.</p></div></div>
+  <div class="card"><div class="cap"></div><div class="body"><h3>Card quatro</h3><p>Texto de exemplo dentro do card.</p></div></div>
+  <div class="card"><div class="cap"></div><div class="body"><h3>Card cinco</h3><p>Texto de exemplo dentro do card.</p></div></div>
+  <div class="card"><div class="cap"></div><div class="body"><h3>Card seis</h3><p>Texto de exemplo dentro do card.</p></div></div>
+</div>
+
+<h2>4 · Grid explícito + span</h2>
+<p class="note">Esperado: 4 colunas iguais; o item rosa ocupa 2 colunas (grid-column: span 2), empurrando os demais para a próxima linha.</p>
+<div class="grid4">
+  <div class="cell">1</div>
+  <div class="cell span2">2 — span 2</div>
+  <div class="cell">3</div>
+  <div class="cell">4</div>
+  <div class="cell">5</div>
+  <div class="cell">6</div>
+</div>
+
+<h2>5 · Flexbox (space-between)</h2>
+<p class="note">Esperado: marca à esquerda, links à direita, alinhados na vertical.</p>
+<nav class="nav">
+  <span class="brand">◆ MeuSite</span>
+  <span><a href="#">Início</a><a href="#">Sobre</a><a href="#">Contato</a></span>
+</nav>
+
+<h2>6 · Position (relative + absolute)</h2>
+<p class="note">Esperado: a etiqueta vermelha gruda no canto superior direito; o texto cinza no canto inferior esquerdo.</p>
+<div class="pos-box">
+  Conteúdo normal da caixa (fluxo).
+  <span class="badge">NOVO</span>
+  <span class="corner">canto inferior esquerdo</span>
+</div>
+
+<h2>7 · background-image (cover / contain / repeat)</h2>
+<p class="note">Esperado: 1ª preenche cortando; 2ª cabe inteira sobre fundo escuro; 3ª repete o ladrilho. Tudo recortado ao retângulo (PushClipRect).</p>
+<div class="imgrow">
+  <div class="ibox i-cover"></div>
+  <div class="ibox i-contain"></div>
+  <div class="ibox i-repeat"></div>
+</div>
+<div class="cap-row" style="margin-top:8px">
+  <span>cover</span><span>contain</span><span>repeat</span>
+</div>
+
+<h2>8 · Hero: imagem + overlay alpha + texto</h2>
+<p class="note">Esperado: foto em cover, escurecida de baixo p/ cima por um gradiente rgba, com texto branco legível no canto.</p>
+<div class="hero">
+  <div class="hero-overlay"></div>
+  <div class="hero-text">
+    <h2>Título sobre a foto</h2>
+    <p>O degradê rgba garante o contraste do texto.</p>
+  </div>
+</div>
+
+<h2>9 · Tabela (com colspan)</h2>
+<p class="note">Esperado: cabeçalho azul, bordas nas células, última linha com "Total" ocupando 2 colunas.</p>
+<table>
+  <thead>
+    <tr><th>Produto</th><th>Qtd</th><th>Preço</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Maçã</td><td>3</td><td>R$ 4,50</td></tr>
+    <tr><td>Pão integral</td><td>2</td><td>R$ 9,80</td></tr>
+    <tr><td>Café torrado</td><td>1</td><td>R$ 18,00</td></tr>
+    <tr class="total"><td colspan="2">Total</td><td>R$ 32,30</td></tr>
+  </tbody>
+</table>
+
+<h2>10 · calc() + var() + unidade vw</h2>
+<p class="note">Esperado: 1ª barra roxa = calc(var(--w) * 4) com --w:90px → 360px de largura; 2ª barra = 50vw (metade da largura da janela).</p>
+<div class="calc-bar">width: calc(var(--w) * 4) → 360px · padding usa var(--pad)</div>
+<div class="vw-bar">width: 50vw → metade do viewport</div>
+
+<h2>11 · align-self (override do align-items)</h2>
+<p class="note">Esperado: o container alinha no topo (align-items:flex-start), mas cada caixa escolhe sua posição: topo, centro, base e esticada (a roxa).</p>
+<div class="selfrow">
+  <div class="as-start">start</div>
+  <div class="as-center">center</div>
+  <div class="as-end">end</div>
+  <div class="as-stretch">stretch</div>
+</div>
+
+<h2>12 · min/max-width e min-height</h2>
+<p class="note">Esperado: 1ª tem width:40 mas min-width:220 (min vence); 2ª tem width:600 mas max-width:260 (max limita); 3ª tem height:10 mas min-height:60 (cresce).</p>
+<div class="clampbox c-min">width:40 + min-width:220 → 220px de largura</div>
+<div class="clampbox c-max">width:600 + max-width:260 → 260px de largura</div>
+<div class="clampbox c-minh">height:10 + min-height:60 → 60px de altura</div>
+
+<h2>13 · object-fit (img real)</h2>
+<p class="note">Esperado: cover preenche cortando; contain cabe inteira sobre o fundo escuro; none mostra no tamanho natural (recortado à caixa).</p>
+<div class="fitrow">
+  <img class="f-cover" src="photo.png" alt="">
+  <img class="f-contain" src="photo.png" alt="">
+  <img class="f-none" src="photo.png" alt="">
+</div>
+<div class="cap-row" style="margin-top:8px">
+  <span>cover</span><span>contain</span><span>none</span>
+</div>
+
+<h2>14 · @layer (padrão do Tailwind v4)</h2>
+<p class="note">Esperado: a caixa abaixo é estilizada por uma regra DENTRO de @layer — deve aparecer azul. Se @layer fosse ignorado (como era antes), ficaria sem estilo nenhum.</p>
+<div class="layered">Estilizada via @layer demo { .layered { … } }</div>
+
+<h2>15 · Formulários (botões, campos, checkbox, radio)</h2>
+<p class="note">Esperado: botões com fundo/borda e realce ao passar o mouse (o desabilitado fica acinzentado); campos de texto editáveis — clique e digite, o cursor pisca; checkbox e radio marcáveis pelo clique (radio é exclusivo dentro do mesmo grupo <code>name</code>). O campo escuro arredondado replica o <em>famososbr</em>: <code>box-sizing:border-box</code> não deve achatá-lo e a cor de <code>::placeholder</code> não deve vazar para o texto digitado.</p>
+
+<div class="form-demo">
+  <button>Botão padrão</button>
+  <button class="btn-primary">Botão estilizado</button>
+  <button disabled>Desabilitado</button>
+  <input type="submit" value="Enviar">
+  <input type="reset" value="Limpar">
+  <input type="button" value="input button">
+</div>
+
+<div class="form-demo">
+  <input type="text" placeholder="Texto (digite aqui)">
+  <input type="text" value="valor inicial">
+  <input type="password" value="senha123">
+  <input type="search" placeholder="Buscar...">
+  <input type="text" value="somente leitura" readonly>
+</div>
+
+<div class="form-demo dark">
+  <input class="search-dark" type="text" placeholder="Buscar famoso...">
+</div>
+
+<div class="form-demo">
+  <div class="check-col">
+    <label><input type="checkbox" checked> Aceito os termos</label>
+    <label><input type="checkbox"> Receber novidades</label>
+    <label><input type="checkbox" disabled> Opção desabilitada</label>
+  </div>
+  <div class="check-col">
+    <label><input type="radio" name="plano" checked> Plano mensal</label>
+    <label><input type="radio" name="plano"> Plano anual</label>
+    <label><input type="radio" name="plano"> Plano vitalício</label>
+  </div>
+</div>
+
+<p class="note" style="margin-top:32px">Fim do teste. Se tudo acima apareceu como descrito, grid, flex, alpha, gradientes, background-image, position, tabela, calc/var/vw, align-self, min/max sizing, object-fit, @layer e os controles de formulário estão funcionando.</p>
+
+</body>
+</html>

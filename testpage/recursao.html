@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><style>body{font-family:sans-serif;padding:20px;font-size:18px}#s{font-weight:bold}</style></head>
+<body>
+  <div id="s">?</div>
+  <script>
+    // Recursão profunda como a do reconciler do React (~1500). Se a stack
+    // estourasse, o processo FECHARIA aqui. Com /STACK 256MB + guarda de
+    // call_depth, ou completa, ou vira RangeError capturável.
+    function rec(n) { if (n <= 0) return 0; return 1 + rec(n - 1); }
+
+    var msg = '';
+    try {
+      var r = rec(2000);            // 2000 níveis (antes fechava em ~85)
+      msg = 'rec(2000) = ' + r + ' — OK, nao fechou';
+    } catch (e) {
+      msg = 'capturado: ' + e.name; // RangeError se passar do teto (10000)
+    }
+
+    // E a recursão infinita tem que virar RangeError capturável, nao crash:
+    var inf = '';
+    try {
+      (function loop() { return loop(); })();
+    } catch (e) { inf = e.name; }
+
+    document.getElementById('s').textContent = msg + ' | infinita: ' + inf;
+  </script>
+</body>
+</html>

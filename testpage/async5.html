@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 20px; font-size: 18px; }
+  #all { color: #0a66c2; font-weight: bold; }
+  #raf { color: #6a1b9a; font-weight: bold; }
+  #status { color: #0a0; font-weight: bold; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <h2>Promise.all + requestAnimationFrame</h2>
+  <div>all: <span id="all">?</span></div>
+  <div>raf frames: <span id="raf">0</span></div>
+  <div id="status">?</div>
+
+  <script>
+    // "fetch" paralelo simulado: 3 promises que resolvem em tempos diferentes.
+    function buscar(nome, ms) {
+      return new Promise(function(res) {
+        setTimeout(function() { res(nome); }, ms);
+      });
+    }
+
+    Promise.all([buscar('A', 30), buscar('B', 10), buscar('C', 20)]).then(function(r) {
+      document.getElementById('all').textContent = r.join(' + ') + ' (ordem preservada)';
+      checar();
+    });
+
+    // requestAnimationFrame em cadeia: conta alguns quadros usando o timestamp.
+    var frames = 0, primeiroTs = -1, ultimoTs = -1;
+    function tick(ts) {
+      if (primeiroTs < 0) primeiroTs = ts;
+      ultimoTs = ts;
+      frames++;
+      document.getElementById('raf').textContent = String(frames);
+      if (frames < 5) requestAnimationFrame(tick);
+      else checar();
+    }
+    requestAnimationFrame(tick);
+
+    function checar() {
+      var allOK = document.getElementById('all').textContent.indexOf('A + B + C') === 0;
+      var rafOK = frames >= 5 && ultimoTs > primeiroTs; // timestamp avançou
+      if (allOK && rafOK) {
+        document.getElementById('status').textContent =
+          'OK all+raf — frames=' + frames + ' dt=' + (ultimoTs - primeiroTs) + 'ms';
+      }
+    }
+  </script>
+</body>
+</html>

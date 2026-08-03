@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lote 28 — container queries</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #f4f4f6; }
+  h2 { font-size: 12px; margin: 12px 8px 4px; color: #555; }
+  .grid { display: grid; grid-template-columns: 260px 1fr; gap: 10px; padding: 0 10px; }
+
+  /* cada card é um CONTÊINER de consulta */
+  .card { container-type: inline-size; background: #fff; border: 1px solid #ccd; }
+  .in { padding: 10px; }
+  .t { font-weight: 700; color: #1b2a6b; }
+  .sub { color: #667; }
+
+  /* estreito (o card da esquerda, 260px): empilha e esconde o subtítulo */
+  @container (max-width: 300px) {
+    .in { background: #ffe9e6; }
+    .t::after { content: " [ESTREITO]"; color: #d6432f; }
+    .sub { display: none; }
+  }
+  /* largo: lado a lado, com faixa verde */
+  @container (min-width: 301px) {
+    .in { background: #e8f7ee; display: flex; gap: 10px; align-items: baseline; }
+    .t::after { content: " [LARGO]"; color: #12a150; }
+  }
+</style>
+
+<h2>Os dois cards têm o MESMO HTML e o MESMO CSS — só a LARGURA do contêiner difere</h2>
+<div class="grid">
+  <div class="card"><div class="in"><span class="t">Card A</span> <span class="sub">subtítulo do card</span></div></div>
+  <div class="card"><div class="in"><span class="t">Card B</span> <span class="sub">subtítulo do card</span></div></div>
+</div>
+
+<h2>Prova de que NÃO é @media disfarçado: o viewport é o mesmo para os dois</h2>

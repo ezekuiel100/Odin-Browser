@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  #status { color: #888; }
+  #titulo { color: #06c; font-size: 20px; }
+  .item { background: #e8f7ea; color: #0a7a0a; padding: 6px 12px; margin: 4px 0; border-radius: 4px; }
+  #erro { color: #c00; }
+</style>
+</head>
+<body>
+  <p id="status">buscando data.json...</p>
+  <p id="titulo"></p>
+  <div id="lista"></div>
+  <p id="erro"></p>
+
+  <script>
+    // o padrão clássico da web: fetch -> json -> usar os dados
+    fetch('data.json')
+      .then(r => r.json())
+      .then(function(data) {
+        document.getElementById('status').textContent = 'carregado!';
+        document.getElementById('titulo').textContent = data.titulo + ' (' + data.total + ' itens)';
+        data.itens.forEach(function(nome, i) {
+          var d = document.createElement('div');
+          d.classList.add('item');
+          d.textContent = (i + 1) + '. ' + nome;
+          document.getElementById('lista').appendChild(d);
+        });
+      })
+      .catch(e => document.getElementById('erro').textContent = 'erro: ' + e.message);
+  </script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8">
+<title>Modal sobre overlay: canto do border-radius e hit-test do botao de fechar</title>
+<style>
+/* Reproduz o modal do ultra-photo.com (Tailwind v4) que expos DOIS bugs (M190):
+   1) CANTO BRANCO: com overflow:hidden + border-radius nos nao recortamos de
+      verdade -- pintamos o "entalhe" do canto com a cor estimada de tras
+      (PC_MaskCorners). Essa estimativa so era atualizada por fundos OPACOS, e o
+      overlay `background:#000000bf` e TRANSLUCIDO -> sobrava o default BRANCO.
+      A pagina NAO define fundo opaco de proposito: e isso que expoe o bug.
+   2) BOTAO DE FECHAR MORTO: o `x` e `position:absolute` com z-index maior, SOBRE
+      o card. O hit-test creditava o clique ao card (irmao de baixo), entao nem o
+      handler do botao nem o do overlay (que exige target===currentTarget)
+      disparavam -- o modal nao fechava por caminho nenhum. */
+body{margin:0;color:#fff;font-family:Segoe UI,sans-serif} /* SEM background: proposital */
+#bd{position:fixed;inset:0;background:#000000bf;z-index:50}
+#card{position:absolute;left:100px;top:100px;width:400px;height:300px;
+      background:#16213e;border-radius:24px;overflow:hidden}
+#x{position:absolute;left:458px;top:110px;width:32px;height:32px;border-radius:9999px;
+   background:#ffffff14;color:#cbd5e1;z-index:10}
+#flag{position:fixed;left:0;top:0;width:40px;height:40px;background:#ff0000;z-index:99}
+#nota{position:fixed;left:60px;top:0;font-size:13px;z-index:99}
+</style></head><body>
+<div id="flag"></div>
+<div id="nota">
+  ESPERADO:<br>
+  1. os 4 cantos do card NAO podem ser BRANCOS (devem ser ~#404040 = preto 75% sobre branco)<br>
+  2. clicar no [x] fecha (quadrado vermelho vira VERDE)<br>
+  3. clicar fora do card tambem fecha; clicar DENTRO do card nao fecha
+</div>
+<div id="bd">
+  <div id="card"><p style="padding:60px 20px">conteudo do modal</p></div>
+  <button id="x">X</button>
+</div>
+<script>
+function fechar(){ document.getElementById('flag').style.background = '#00ff00'; }
+document.getElementById('x').onclick = function(){ fechar(); };
+document.getElementById('bd').onclick = function(e){
+  if (e.target === e.currentTarget) fechar();  // so o clique no PROPRIO overlay
+};
+</script>
+</body></html>

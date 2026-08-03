@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  /* M214 -- `white-space` na caixa ANONIMA de um container flex.
+     Texto solto dentro de um flex vira caixa anonima; ela tinha `white-space`
+     fixo em Normal, entao o min-content quebrava no espaco e o item encolhia
+     ate caber so a maior palavra. Era a nav do GitHub espremida, com o texto
+     de um item por cima do proximo.
+
+     Este golden roda por --dumplayout, que monta o atlas de fontes: aqui a
+     largura de texto e medida DE VERDADE (o `odin test` mede 0 e por isso os
+     testes unitarios do M214 conferem a FLAG, nao a largura).
+
+     A leitura do golden: em `.aperto`, o item .solto e o item .span tem de ter
+     a MESMA largura -- a unica diferenca entre eles e quem carrega o Computed.
+     A linha .semnw e o controle: sem nowrap o item PODE encolher mais. */
+  body{margin:0;font:16px sans-serif}
+  .row{display:flex;background:#eee}
+  .folga{width:1000px}  /* cabe: controle */
+  .aperto{width:260px}  /* nao cabe: e aqui que o piso de min-content vale */
+  .comer{width:180px;background:#ffd}  /* come o espaco e forca o encolhimento */
+  .btn{display:flex;white-space:nowrap;padding:0 8px;border:0;background:#cfc}
+  .btn-sem{display:flex;padding:0 8px;border:0;background:#fcc}
+</style></head><body>
+
+<!-- cabe: os tres medem o mesmo, sem encolher -->
+<div class="row folga">
+  <div class="solto"><div class="btn">Open Source</div></div>
+  <div class="span"><div class="btn"><span>Open Source</span></div></div>
+  <div class="comer">X</div>
+</div>
+
+<!-- aperta: .solto e .span TEM de continuar iguais -->
+<div class="row aperto">
+  <div class="solto"><div class="btn">Open Source</div></div>
+  <div class="comer">X</div>
+</div>
+<div class="row aperto">
+  <div class="span"><div class="btn"><span>Open Source</span></div></div>
+  <div class="comer">X</div>
+</div>
+
+<!-- controle: sem nowrap o item encolhe mais que os de cima -->
+<div class="row aperto">
+  <div class="semnw"><div class="btn-sem">Open Source</div></div>
+  <div class="comer">X</div>
+</div>
+
+<!-- grid usa o MESMO build_item_children -->
+<div style="display:grid;width:60px;white-space:nowrap" class="gnw">Open Source</div>
+<div style="display:grid;width:60px" class="gwr">Open Source</div>
+
+</body></html>

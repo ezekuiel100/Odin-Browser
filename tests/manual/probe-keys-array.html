@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><script>
+function ok(n,c){ console.log((c?"OK  ":"FALHA ")+n); }
+ok("Object.keys([10,20]) = ['0','1']", Object.keys([10,20]).join(",") === "0,1");
+ok("Object.values([10,20])", Object.values([10,20]).join(",") === "10,20");
+ok("Object.entries([7])", JSON.stringify(Object.entries([7])) === '[["0",7]]');
+var a = [1]; a.extra = "x";
+ok("prop propria de array em keys", Object.keys(a).indexOf("extra") >= 0);
+ok("for-in sobre array", (function(){var s="";for(var k in [5,6])s+=k;return s==="01";})());
+ok("Object.keys('ab')", Object.keys("ab").join(",") === "0,1");
+console.log("FIM");
+</script>

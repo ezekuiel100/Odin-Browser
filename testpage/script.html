@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 24px; }
+  #titulo { color: #d00; font-size: 28px; }
+  #saida  { color: #060; font-size: 20px; }
+  .cx     { border: 2px solid #333; padding: 12px; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <h1 id="titulo">texto original</h1>
+  <div class="cx">
+    <p id="saida">(vazio)</p>
+  </div>
+
+  <script>
+    // muda o título via textContent
+    document.getElementById('titulo').textContent = 'mudado pelo JS';
+
+    // calcula algo e escreve no parágrafo
+    function soma(n) {
+      var total = 0;
+      var i = 1;
+      while (i <= n) {
+        total = total + i;
+        i = i + 1;
+      }
+      return total;
+    }
+    document.getElementById('saida').textContent = 'soma 1..10 = ' + soma(10);
+
+    // também mexe num atributo
+    document.getElementById('saida').setAttribute('data-ok', 'sim');
+  </script>
+</body>
+</html>

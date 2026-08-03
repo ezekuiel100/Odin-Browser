@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>stroke-miterlimit — o bico é CORTADO no limite</title>
+<!--
+  Geometria fixa e sem texto: dois "Λ" IDÊNTICOS de 140x100 em fluxo normal
+  (svg display:block, body sem margem), empilhados em y 0..100 e y 100..200.
+  Ápice em (70,45), base em y=92, meia-largura 8 -> razão do bico = 5.96.
+    y=0    stroke-miterlimit default (4)  -> 5.96 > 4  ⇒ CORTA: nada acima do ápice
+    y=100  stroke-miterlimit 20           -> 5.96 < 20 ⇒ BICO: tinta la em cima
+  O par pega a LIGAÇÃO do corte ao painter: a geometria da junta é função pura e
+  os testes de unidade dela passariam intactos se ninguém a chamasse — e a linha
+  voltaria a cuspir espinho, que é exatamente o bug que esta feature corrigiu.
+-->
+<style>
+  body { margin: 0; background: #fff }
+  svg { display: block; margin: 0 }
+</style>
+
+<svg width="140" height="100">
+  <path d="M62 92 L70 45 L78 92" fill="none" stroke="#000" stroke-width="12"/></svg>
+
+<svg width="140" height="100">
+  <path d="M62 92 L70 45 L78 92" fill="none" stroke="#000" stroke-width="12"
+        stroke-miterlimit="20"/></svg>

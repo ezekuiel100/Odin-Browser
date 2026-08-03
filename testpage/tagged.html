@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  .ok { color: #080; }
+</style>
+</head>
+<body>
+  <div id="saida"></div>
+
+  <script>
+    // tag estilo "html escapado": escapa só os valores interpolados
+    function html(strings) {
+      var out = strings[0];
+      for (var i = 1; i < arguments.length; i++) {
+        out += String(arguments[i]).replace('<', '&lt;') + strings[i];
+      }
+      return out;
+    }
+
+    // padrão styled('div')`...`: tag vinda de uma chamada
+    function styled(el) {
+      return function(strings, v) {
+        return el + ' { ' + strings[0] + v + strings[1] + ' }';
+      };
+    }
+
+    var user = '<b>Ana</b>';
+    var linha1 = html`entrada: ${user}!`;                 // tagged básico
+    var cor = 'red';
+    var linha2 = styled('div')`color: ${cor};`;           // tag de chamada
+    var linha3 = String.raw`raw: ${1 + 1} ok`;            // String.raw
+    var linha4 = `normal: ${2 * 3}`;                      // template comum segue vivo
+
+    var div = document.getElementById('saida');
+    div.innerHTML = '<p class="ok">' + linha1 + '</p>' +
+                    '<p>' + linha2 + '</p>' +
+                    '<p>' + linha3 + '</p>' +
+                    '<p>' + linha4 + '</p>';
+    console.log('[tagged] ' + linha1 + ' | ' + linha2 + ' | ' + linha3 + ' | ' + linha4);
+  </script>
+</body>
+</html>

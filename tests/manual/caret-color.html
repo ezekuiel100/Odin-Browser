@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>caret-color</title>
+<!--
+  Fonte GRANDE de proposito: o caret tem 1px de largura, entao a altura e o que
+  permite acha-lo por varredura de coluna na captura (F9).
+  Cada campo tem uma cor bem separada em matiz p/ nao haver duvida de qual e:
+    1  vermelho puro   2  verde puro (por REGRA)   3  auto (= cor do texto)
+-->
+<style>
+  body { margin: 24px; background: #fff; font: 16px system-ui, sans-serif }
+  input { display: block; font-size: 40px; width: 420px; padding: 4px 8px;
+          margin-bottom: 18px; border: 2px solid #888; color: #111; background: #fff }
+  .verde { caret-color: #00c000 }
+  label { display: block; color: #666; font-size: 13px; margin-bottom: 2px }
+</style>
+
+<label>1. caret-color:#ff0000 (inline)</label>
+<input id="a" style="caret-color:#ff0000" value="Abc">
+
+<label>2. caret-color:#00c000 (regra CSS)</label>
+<input id="b" class="verde" value="Abc">
+
+<label>3. sem caret-color (controle: usa a cor do texto)</label>
+<input id="c" value="Abc">

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- TESTE: filho position:absolute (top/left 0) dentro de pai position:relative
+     cobre o pai. O verde deve tapar o vermelho => 100x100 verde. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .parent { position: relative; width: 100px; height: 100px; background: red; }
+  .child  { position: absolute; top: 0; left: 0; width: 100px; height: 100px; background: green; }
+</style>
+<link rel="match" href="position-absolute-001-ref.html">
+</head>
+<body>
+  <div class="parent"><div class="child"></div></div>
+</body>
+</html>

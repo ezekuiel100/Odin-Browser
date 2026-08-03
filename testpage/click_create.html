@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 14px; background: #ffffff; }
+  #btn {
+    background: #0066cc; color: #ffffff;
+    padding: 12px 22px; font-size: 18px; display: inline-block;
+  }
+  .added {
+    background: #e8f7ea; color: #0a7a0a;
+    padding: 10px 14px; margin-top: 8px; font-size: 16px;
+    border-radius: 5px;
+  }
+</style>
+</head>
+<body>
+  <div id="btn">Adicionar item</div>
+  <div id="list"></div>
+
+  <script>
+    var n = 0;
+    document.getElementById('btn').onclick = function() {
+      n++;
+      var d = document.createElement('div');
+      d.classList.add('added');          // só fica verde se houver re-compute_styles
+      d.textContent = 'item criado no clique #' + n;
+      document.getElementById('list').appendChild(d);
+    };
+  </script>
+</body>
+</html>

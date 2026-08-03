@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 20px; }
+  .caixa { padding: 12px 16px; margin: 8px 0; border-radius: 6px; font-size: 18px; }
+</style>
+</head>
+<body>
+  <div id="a" class="caixa" style="color: red">Caixa A (estilizada por JS)</div>
+  <div id="b" class="caixa">Caixa B</div>
+  <div id="status"></div>
+
+  <script>
+    // Aplica estilos dinâmicos como o React faz: node.style[prop] = valor.
+    var a = document.getElementById('a');
+    var estilos = {
+      color: 'white',
+      backgroundColor: '#0a66c2',   // camelCase -> background-color
+      fontSize: '22px',
+      fontWeight: 'bold'
+    };
+    for (var k in estilos) { a.style[k] = estilos[k]; }
+
+    // setProperty com custom property e propriedade normal.
+    var b = document.getElementById('b');
+    b.style.setProperty('background-color', '#e8f5e9');
+    b.style.padding = '20px';
+
+    // dataset: grava e relê.
+    a.dataset.role = 'destaque';
+    a.dataset.orderIndex = '1';
+
+    // Confere a serialização/leitura de volta.
+    var ok =
+      a.style.backgroundColor === '#0a66c2' &&
+      a.style.color === 'white' &&
+      b.style.getPropertyValue('background-color') === '#e8f5e9' &&
+      a.dataset.role === 'destaque' &&
+      a.dataset.orderIndex === '1';
+
+    document.getElementById('status').textContent =
+      ok ? 'OK style/dataset — style attr de A: ' + a.getAttribute('style')
+         : 'FALHOU';
+  </script>
+</body>
+</html>

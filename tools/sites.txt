@@ -1,0 +1,120 @@
+# Corpus do gap-miner.ps1 — um site por linha; # comenta.
+# Mistura deliberada: portais pesados, SPAs, docs, e-commerce, landing pages,
+# sites BR. Edite à vontade — o minerador agrega o que estiver aqui.
+
+# — Portais / notícias —
+https://www.bbc.com
+https://www.theguardian.com
+https://edition.cnn.com
+https://www.nytimes.com
+https://www.reuters.com
+https://apnews.com
+https://www.theverge.com
+https://arstechnica.com
+https://techcrunch.com
+https://www.wired.com
+https://g1.globo.com
+https://www.uol.com.br
+https://www.folha.uol.com.br
+https://www.terra.com.br
+https://www.estadao.com.br
+https://www.cnnbrasil.com.br
+
+# — Referência / docs / wiki —
+https://en.wikipedia.org/wiki/Web_browser
+https://developer.mozilla.org/en-US/docs/Web/JavaScript
+https://stackoverflow.com/questions
+https://www.w3.org
+https://web.dev
+https://caniuse.com
+https://news.ycombinator.com
+https://lobste.rs
+
+# — Frameworks / dev (SPAs e docs modernas) —
+https://react.dev
+https://vuejs.org
+https://svelte.dev
+https://angular.dev
+https://nextjs.org
+https://astro.build
+https://vitejs.dev
+https://tailwindcss.com
+https://getbootstrap.com
+https://htmx.org
+https://nodejs.org
+https://www.python.org
+https://www.rust-lang.org
+https://go.dev
+https://www.typescriptlang.org
+
+# — Plataformas dev —
+https://github.com
+https://gitlab.com
+https://bitbucket.org
+https://www.npmjs.com
+https://pypi.org
+https://crates.io
+https://hub.docker.com
+https://codepen.io
+https://dev.to
+https://medium.com
+
+# — Empresas / landing pages —
+https://www.apple.com
+https://www.microsoft.com
+https://www.cloudflare.com
+https://stripe.com
+https://vercel.com
+https://www.netlify.com
+https://www.digitalocean.com
+https://www.heroku.com
+https://slack.com
+https://discord.com
+https://zoom.us
+https://www.notion.so
+https://linear.app
+https://www.figma.com
+https://www.canva.com
+https://www.mozilla.org
+https://brave.com
+
+# — E-commerce —
+https://www.amazon.com
+https://www.ebay.com
+https://www.etsy.com
+https://www.aliexpress.com
+https://www.shopify.com
+https://www.mercadolivre.com.br
+https://www.magazineluiza.com.br
+https://www.americanas.com.br
+https://www.casasbahia.com.br
+
+# — Serviços / utilidades —
+https://duckduckgo.com
+https://www.bing.com
+https://search.brave.com
+https://weather.com
+https://www.speedtest.net
+https://archive.org
+https://www.openstreetmap.org
+https://www.booking.com
+https://www.airbnb.com
+https://www.imdb.com
+https://www.rottentomatoes.com
+https://open.spotify.com
+https://soundcloud.com
+https://bandcamp.com
+https://www.twitch.tv
+https://www.reddit.com
+https://coinmarketcap.com
+https://www.coingecko.com
+https://www.espn.com
+https://ge.globo.com
+
+# — Institucional / gov —
+https://www.gov.br
+https://www.usa.gov
+https://www.mit.edu
+https://www.stanford.edu
+https://wordpress.org
+https://www.craigslist.org

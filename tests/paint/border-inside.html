@@ -1,0 +1,25 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>a borda e desenhada POR DENTRO da border-box</title>
+<style>
+  body { margin: 0; background: #fff; }
+  /* Borda GROSSA de propósito: o defeito era o traço do AddRect ser CENTRADO na
+     border-box, então metade da largura caía FORA do elemento. Com 16px o vazamento
+     é de 8px — largo o bastante para uma região inteira acusar, em vez de depender
+     de um pixel de antialiasing. */
+  .cx {
+    position: absolute; top: 170px;
+    width: 60px; height: 60px;
+    border: 16px solid #c00000;
+  }
+</style></head>
+<body>
+  <!-- C: SEM raio. Border-box em x 20..112, y 170..262. A tinta vermelha tem de
+       ficar em x 20..36 (os 16px de dentro) e NADA pode aparecer antes de x=20.
+       Com o defeito o traço cobria x 12..28. -->
+  <div class="cx" style="left: 20px"></div>
+
+  <!-- D: COM raio. Border-box em x 140..232; centro da curva do canto sup-esq =
+       (164,194), raio externo 24. Recuar o caminho exige baixar o raio na MESMA
+       medida, senão a curva EXTERNA vai parar no raio 32 e o canto incha. -->
+  <div class="cx" style="left: 140px; border-radius: 24px"></div>
+</body></html>

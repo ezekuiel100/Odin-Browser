@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; background: #f4f4f8; padding: 24px; color: #222; }
+  h1 { font-size: 18px; }
+  .row { display: flex; gap: 20px; flex-wrap: wrap; }
+  figure { margin: 0; text-align: center; }
+  figcaption { font-size: 11px; color: #555; margin-top: 6px; font-family: monospace; max-width: 180px; }
+  .box { width: 180px; height: 120px; border: 1px solid #ccc; border-radius: 4px; }
+  .round { border-radius: 24px; }
+
+  /* faixas axiais nítidas (hard-stop, px) — o caso clássico "listras" */
+  .stripes-h { background: repeating-linear-gradient(to right, #1a73e8 0 12px, #fff 12px 24px); }
+  .stripes-v { background: repeating-linear-gradient(to bottom, #34a853 0 10px, #fff 10px 20px); }
+
+  /* diagonal (ângulo não axial) — tesselado */
+  .stripes-d { background: repeating-linear-gradient(45deg, #e81a5f 0 14px, #ffd6e2 14px 28px); }
+
+  /* rampa suave repetida em % */
+  .ramp { background: repeating-linear-gradient(90deg, #222, #bbb 40px, #222 80px); }
+
+  /* radial repetido (anéis concêntricos) */
+  .rings { background: repeating-radial-gradient(circle, #333 0 8px, #ffd166 8px 16px); }
+
+  /* conic repetido (setores tipo pizza) */
+  .pie { background: repeating-conic-gradient(#7b2ff7 0deg 20deg, #f5f5f5 20deg 40deg); }
+
+  /* faixas com cantos arredondados (caminho rounded) */
+  .stripes-r { background: repeating-linear-gradient(to right, #0aa 0 10px, #cff 10px 20px); }
+  .stripes-rd { background: repeating-linear-gradient(60deg, #f90 0 10px, #ffe6bf 10px 20px); }
+</style>
+</head>
+<body>
+  <h1>repeating-*-gradient — faixas/anéis/setores repetidos</h1>
+  <div class="row">
+    <figure><div class="box stripes-h"></div><figcaption>linear to right, faixas 12px</figcaption></figure>
+    <figure><div class="box stripes-v"></div><figcaption>linear to bottom, faixas 10px</figcaption></figure>
+    <figure><div class="box stripes-d"></div><figcaption>linear 45deg diagonal 14px</figcaption></figure>
+    <figure><div class="box ramp"></div><figcaption>rampa suave repetida 80px</figcaption></figure>
+    <figure><div class="box rings"></div><figcaption>radial circle, anéis 8px</figcaption></figure>
+    <figure><div class="box pie"></div><figcaption>conic setores 20deg</figcaption></figure>
+    <figure><div class="box round stripes-r"></div><figcaption>faixas + border-radius (rounded)</figcaption></figure>
+    <figure><div class="box round stripes-rd"></div><figcaption>faixas diagonais + radius</figcaption></figure>
+  </div>
+  <p style="font-size:12px;color:#777;font-family:monospace">
+    Esperado (Chrome): listras/anéis/setores REPETIDOS e nítidos, não uma cor lisa.
+    Antes deste marco, todas apareciam como um único gradiente suave (liso).
+  </p>
+</body>
+</html>

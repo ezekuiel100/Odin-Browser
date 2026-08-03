@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  body { background: #0b0f19; color: #cbd5e1; font: 40px/1.35 sans-serif; margin: 24px; }
+  p { font-size: 15px; color: #64748b; margin: 2px 0 18px; }
+  .g { font-weight: 700; -webkit-background-clip: text; background-clip: text; color: transparent; }
+  /* 1) diagonal, 3 stops — a grafia do ultra-photo */
+  .diag { background-image: linear-gradient(135deg, #a78bfa, #67e8f9, #f9a8d4); }
+  /* 2) horizontal: a rampa tem de correr da ESQUERDA p/ a DIREITA do elemento */
+  .horiz { background-image: linear-gradient(to right, #ff0000, #0000ff); }
+  /* 3) vertical: muda de cor de CIMA p/ BAIXO, inclusive entre as duas linhas */
+  .vert { background-image: linear-gradient(to bottom, #22c55e, #eab308); }
+  /* 4) CONTROLE: a MESMA rampa horizontal como fundo de caixa. As cores nas
+        pontas tem de casar com as do texto (2) — mesma geometria de linha. */
+  .caixa { background-image: linear-gradient(to right, #ff0000, #0000ff); height: 28px; }
+  /* 5) o gradiente NAO pode pintar a caixa quando esta clipado ao texto:
+        esta linha tem fundo proprio VISIVEL por tras do texto clipado */
+  .sobre { background-color: #1e293b; }
+</style></head>
+<body>
+  <div class="g diag">Restaure suas fotos antigas</div>
+  <p>1. diagonal 135deg, 3 stops (roxo → ciano → rosa)</p>
+
+  <div><span class="g horiz" style="display:inline-block">VERMELHO no comeco, AZUL no fim</span></div>
+  <p>2. horizontal num inline-block (a caixa ABRACA o texto): vermelho puro na
+     primeira letra, azul puro na ultima — a rampa inteira cabe no texto</p>
+
+  <div class="g horiz">mesmo texto, mas em BLOCO de largura cheia</div>
+  <p>2b. a rampa e resolvida na caixa do ELEMENTO, nao no texto: como o bloco
+     ocupa a largura toda e o texto acaba no primeiro terco, so o primeiro terco
+     da rampa aparece (o Chrome faz igual). Compare com a barra (4) abaixo.</p>
+
+  <div class="g vert">duas linhas de texto<br>com rampa vertical</div>
+  <p>3. vertical: a 1a linha sai verde, a 2a amarela</p>
+
+  <div class="caixa"></div>
+  <p>4. controle: MESMA rampa como fundo de caixa — as pontas casam com (2)</p>
+
+  <div class="sobre"><span class="g horiz">clipado sobre fundo escuro</span></div>
+  <p>5. o gradiente clipado NAO pinta caixa: o fundo #1e293b continua visivel</p>
+</body></html>

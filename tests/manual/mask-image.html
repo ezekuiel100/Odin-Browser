@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; background: #eef; padding: 24px; }
+  h1 { font-size: 18px; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; }
+  figure { margin: 0; text-align: center; }
+  figcaption { font-size: 12px; color: #555; margin-top: 6px; font-family: monospace; }
+  .box {
+    width: 180px; height: 120px;
+    background: linear-gradient(135deg, #1a73e8, #e81a5f);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-weight: bold; font-size: 20px;
+  }
+  /* mask-mode default (match-source) p/ gradiente = ALPHA → black opaco, transparent some */
+  .fade-down  { mask-image: linear-gradient(to bottom, black, transparent); }
+  .fade-right { -webkit-mask-image: linear-gradient(to right, black, transparent); }
+  .band       { mask-image: linear-gradient(to right, transparent, black 25%, black 75%, transparent); }
+  .diag       { mask-image: linear-gradient(135deg, black, transparent); }
+  .radial     { mask-image: radial-gradient(circle, black 40%, transparent 70%); }
+  .short      { mask: linear-gradient(to bottom, transparent, black) center / cover no-repeat; }
+  /* imagem de fundo real recortada por fade (caso comum de galeria) */
+  .photo {
+    width: 180px; height: 120px;
+    background: repeating-linear-gradient(45deg, #333 0 12px, #777 12px 24px);
+    mask-image: linear-gradient(to bottom, black 60%, transparent);
+  }
+</style>
+</head>
+<body>
+  <h1>mask-image — fades por gradiente (alpha)</h1>
+  <div class="row">
+    <figure><div class="box fade-down">A</div><figcaption>to bottom black→transparent</figcaption></figure>
+    <figure><div class="box fade-right">B</div><figcaption>to right (webkit)</figcaption></figure>
+    <figure><div class="box band">C</div><figcaption>faixa transp→black→transp</figcaption></figure>
+    <figure><div class="box diag">D</div><figcaption>135deg diagonal</figcaption></figure>
+    <figure><div class="box radial">E</div><figcaption>radial(circle 40%→70%)</figcaption></figure>
+    <figure><div class="box short">F</div><figcaption>shorthand `mask`</figcaption></figure>
+    <figure><div class="photo"></div><figcaption>fade em bg listrado</figcaption></figure>
+  </div>
+  <p style="font-size:12px;color:#777;font-family:monospace">
+    Esperado: cada caixa desaparece suavemente na direção do gradiente; o texto é recortado junto.
+  </p>
+</body>
+</html>

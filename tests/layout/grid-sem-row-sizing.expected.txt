@@ -1,0 +1,12 @@
+﻿<anon# .> block x=0 y=0 w=800 h=46
+  <html# .> block x=0 y=0 w=800 h=46
+    <body# .> block x=0 y=0 w=800 h=46
+      <div# .g> grid x=0 y=0 w=800 h=46 cols=2 rows=0 gap=0
+        <div# .c> block x=0 y=0 w=150 h=23
+          <div# .> inline x=1 y=1 w=148 h=21
+        <div# .c> block x=150 y=0 w=150 h=23
+          <div# .> inline x=151 y=1 w=148 h=21
+        <div# .c> block x=0 y=23 w=150 h=23
+          <div# .> inline x=1 y=24 w=148 h=21
+        <div# .c> block x=150 y=23 w=150 h=23
+          <div# .> inline x=151 y=24 w=148 h=21

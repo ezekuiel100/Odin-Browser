@@ -1,0 +1,12 @@
+<!doctype html>
+<!-- Bug do lote 27: <svg> INLINE em fluxo normal não renderizava NADA — nem por
+     CSS, nem por atributo width/height. build_inline_items tinha caso p/ <img> e
+     p/ bloco-sob-link, mas NENHUM p/ <svg>: o walk descia nos <path> (que não têm
+     texto) e o ícone era DESCARTADO. Só aparecia dentro de flex/grid.
+     Esperado: os dois <svg> ocupam 60x60 na linha, e o parágrafo tem a altura deles. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .icone { width: 60px; height: 60px; }
+</style></head><body>
+  <p><svg class="icone" viewBox="0 0 24 24"><path d="M2 2h20v20H2z"/></svg><svg width="60" height="60" viewBox="0 0 24 24"><path d="M2 2h20v20H2z"/></svg>texto ao lado</p>
+</body></html>

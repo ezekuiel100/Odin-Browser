@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- TESTE: grid-template-columns:1fr 1fr divide o espaco em 2 colunas iguais.
+     Container 200 => 2 colunas de 100 => 200x100 verde solido. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .g { display: grid; grid-template-columns: 1fr 1fr; width: 200px; }
+  .c { height: 100px; background: green; }
+</style>
+<link rel="match" href="grid-fr-001-ref.html">
+</head>
+<body>
+  <div class="g"><div class="c"></div><div class="c"></div></div>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 22px; background: #f7f7f9; color: #1c1c1e; }
+  h1 { color: #0066cc; font-size: 26px; margin-bottom: 4px; }
+  .sub { color: #888; font-size: 14px; margin-top: 0; }
+  h2 { color: #333; font-size: 17px; margin-top: 22px; border-bottom: 2px solid #dcdce0; padding-bottom: 4px; }
+  .row { padding: 6px 12px; margin: 5px 0; border-radius: 5px; font-size: 15px; background: #eef4ff; }
+  .ok  { background: #e8f7ea; }
+  .counter {
+    background: #0066cc; color: #ffffff;
+    padding: 12px 22px; font-size: 18px;
+    display: inline-block; margin-top: 8px; border-radius: 6px;
+  }
+</style>
+</head>
+<body>
+  <h1>Engine JS — demonstração completa</h1>
+  <p class="sub">Tudo abaixo é gerado por JavaScript no carregamento da página.</p>
+
+  <h2>Linguagem</h2>
+  <div id="lang"></div>
+
+  <h2>Built-ins — Array, String, Math</h2>
+  <div id="builtins"></div>
+
+  <h2>DOM dinâmico (createElement / appendChild / classList)</h2>
+  <div id="domout"></div>
+
+  <h2>Interativo (clique para incrementar)</h2>
+  <div id="counter" class="counter">Cliques: 0</div>
+
+  <script>
+    // Cria uma linha "rótulo: valor" e a anexa num container (createElement +
+    // classList + textContent + appendChild).
+    function addRow(containerId, label, value) {
+      var row = document.createElement('div');
+      row.classList.add('row');
+      row.classList.add('ok');
+      row.textContent = label + ': ' + value;
+      document.getElementById(containerId).appendChild(row);
+    }
+
+    // ── Linguagem ──────────────────────────────────────────────────
+    // aritmética com precedência e módulo
+    addRow('lang', 'aritmética  2 + 3*4 - 10%3', 2 + 3 * 4 - 10 % 3);      // 13
+
+    // for + ++ + +=
+    var soma = 0;
+    for (var i = 1; i <= 100; i++) { soma += i; }
+    addRow('lang', 'for: soma 1..100', soma);                             // 5050
+
+    // while + *= + --
+    var fat = 1, n = 5;
+    while (n > 1) { fat *= n; n--; }
+    addRow('lang', 'while: fatorial de 5', fat);                          // 120
+
+    // função recursiva + ternário
+    function fib(k) { return k < 2 ? k : fib(k - 1) + fib(k - 2); }
+    addRow('lang', 'recursão: fib(10)', fib(10));                         // 55
+
+    // closure com estado preservado
+    function contador() { var c = 0; return function() { c++; return c; }; }
+    var cont = contador();
+    cont(); cont();
+    addRow('lang', 'closure: 3 chamadas', cont());                       // 3
+
+    // lógicos + comparação
+    var x = 7;
+    addRow('lang', 'lógico + ternário', (x > 5 && x < 10) ? 'entre 5 e 10' : 'fora');
+
+    // igualdade frouxa vs estrita
+    addRow('lang', "'5' == 5  /  '5' === 5", ('5' == 5) + '  /  ' + ('5' === 5)); // true / false
+
+    // objeto com método usando `this`
+    var conta = {
+      saldo: 100,
+      deposita: function(v) { this.saldo += v; return this.saldo; }
+    };
+    conta.deposita(50);
+    addRow('lang', 'objeto + this (deposita)', conta.deposita(25));      // 175
+
+    // ── Built-ins ──────────────────────────────────────────────────
+    var nums = [5, 2, 8, 1, 9, 3];
+
+    var dobro = nums.map(function(v) { return v * 2; });
+    addRow('builtins', 'map(*2).join', dobro.join(', '));
+
+    var pares = nums.filter(function(v) { return v % 2 == 0; });
+    addRow('builtins', 'filter(pares)', pares.join(', '));
+
+    var total = 0;
+    nums.forEach(function(v) { total += v; });
+    addRow('builtins', 'forEach: soma', total);                          // 28
+
+    addRow('builtins', 'indexOf(8) / includes(9)', nums.indexOf(8) + ' / ' + nums.includes(9));
+
+    addRow('builtins', "'  JavaScript  '.trim().toUpperCase()", '  JavaScript  '.trim().toUpperCase());
+    addRow('builtins', "'javascript'.slice(0,4)", 'javascript'.slice(0, 4));
+    addRow('builtins', "'a,b,c,d'.split(',').length", 'a,b,c,d'.split(',').length);
+    addRow('builtins', "'='.repeat(20)", '='.repeat(20));
+
+    addRow('builtins', 'Math.max / min (3,9,2)', Math.max(3, 9, 2) + ' / ' + Math.min(3, 9, 2));
+    addRow('builtins', 'Math.sqrt(144) / pow(2,10)', Math.sqrt(144) + ' / ' + Math.pow(2, 10));
+    addRow('builtins', "parseInt('42px') / parseFloat('3.14r')", parseInt('42px') + ' / ' + parseFloat('3.14r'));
+
+    // ── DOM dinâmico ───────────────────────────────────────────────
+    var frutas = ['maca', 'banana', 'uva', 'manga'];
+    for (var f = 0; f < frutas.length; f++) {
+      var item = document.createElement('div');
+      item.classList.add('row');
+      if (f % 2 == 0) { item.classList.add('ok'); }   // classes alternadas
+      item.textContent = (f + 1) + '. ' + frutas[f];
+      document.getElementById('domout').appendChild(item);
+    }
+    // um nó extra com setAttribute
+    var extra = document.createElement('div');
+    extra.classList.add('row');
+    extra.setAttribute('data-gerado', 'sim');
+    extra.textContent = 'nó com setAttribute(data-gerado) = ' + 'sim';
+    document.getElementById('domout').appendChild(extra);
+
+    // ── Interativo ─────────────────────────────────────────────────
+    // o onclick muda o textContent (dispara o re-layout no navegador vivo)
+    var cliques = 0;
+    document.getElementById('counter').addEventListener('click', function() {
+      cliques++;
+      document.getElementById('counter').textContent = 'Cliques: ' + cliques;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>border-image — cada FATIA no seu lugar</title>
+<!--
+  Moldura 90x90 com regioes de cor DISTINTA, o que permite afirmar POR COR qual
+  fatia foi parar onde (nao ha metrica de texto nem antialias no meio):
+     cantos = VERDE (0,150,0)   bordas = listras AZUL/VERMELHO   miolo = AMARELO
+  Duas caixas de 210x150 (border-box) em fluxo normal, sem margem:
+     y=0    slice:30            -> canto verde, borda listrada, miolo do FUNDO
+     y=150  slice:30 fill       -> igual, mas o miolo vira AMARELO
+     y=300  url inexistente     -> cai na BORDA normal (vermelha), spec
+  A 3a caixa e o par que pega o fallback: sem ela, um border-image que nunca
+  pintasse passaria como "borda normal, esta tudo bem".
+-->
+<style>
+  body { margin: 0; background: #fff }
+  .b { width: 150px; height: 90px; border: 30px solid #c33; background: #fff }
+  .f { border-image-source: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAFoAAABaCAYAAAA4qEECAAABOklEQVR4nO3csU3EQBBA0V1EHSbgKqAEAmJojjbIL6AEKjABNGJacHD6G/BevNLIX5NYXnmO93GMFa77qWP71/Opc5enz3NzXy5jhbslU/8hoSNCR4SOCB0ROiJ0ROiI0BGhI0JHhI4IHRE6InRE6IjQEaEjQkeEjggdEToidEToiNARoSNCR4SOCB2Z43Vfcpv0+Fhzq3O+nbvFems2OiJ0ROiI0BGhI0JHhI4IHRE6MvdtW/Jm+Pjzu2Ls+H7Ylsy10RGhI0JHhI4IHRE6InRE6IjQkfvTf265sWOs+Wa46nltdEToiNARoSNCR4SOCB0ROiJ0ZPo3acNGR4SOCB0ROiJ0ROiI0BGhI0JHhI4IHRE6InRE6IjQEaEjQkeEjggdEToidEToiNARoSNCR4SOCB0ROiL0aPwB7M8bamW5H7gAAAAASUVORK5CYII=); border-image-slice: 30 }
+</style>
+<div class="b f"></div>
+<div class="b f" style="border-image-slice: 30 fill"></div>
+<div class="b" style="border-image: url(nao-existe.png) 30"></div>

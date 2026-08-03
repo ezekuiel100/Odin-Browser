@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- TESTE: justify-content:space-between empurra os itens p/ as pontas.
+     Container 200, 2 itens 50 => item0 em x=0..50, item1 em x=150..200. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .row { display: flex; justify-content: space-between; width: 200px; height: 50px; }
+  .item { width: 50px; height: 50px; background: green; }
+</style>
+<link rel="match" href="flex-space-between-001-ref.html">
+</head>
+<body>
+  <div class="row"><div class="item"></div><div class="item"></div></div>
+</body>
+</html>

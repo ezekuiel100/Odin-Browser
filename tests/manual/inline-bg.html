@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 32px; font-size: 18px; line-height: 2.2; }
+  /* pilula/badge inline: fundo + borda + raio (padrao .button do sqlite.org) */
+  .button {
+    background-color: #ddd; border: 2px solid #aaa; border-radius: 4px;
+    padding: 0 1ex; text-decoration: none; color: black; font-size: 90%;
+  }
+  .pill {
+    background-color: #1a73e8; color: white; border-radius: 999px;
+    padding: 2px 10px; font-size: 85%; text-decoration: none;
+  }
+  .tag { background-color: #fde68a; padding: 1px 6px; border-radius: 3px; }
+  .bordered { border: 1px solid #dc2626; padding: 0 4px; } /* so borda, sem fundo */
+  .unit { background: #eef; padding: 0 1ex 0 1ex; } /* exercita a unidade ex */
+</style>
+</head>
+<body>
+  <p>Baixe agora: <a class="button" href="#">Download</a> ou veja as <a class="button" href="#">Prior Releases</a>.</p>
+  <p>Status: <a class="pill" href="#">ativo</a> <a class="pill" href="#">novo</a></p>
+  <p>Marcadores: <span class="tag">css</span> <span class="tag">layout</span> <span class="tag">inline</span></p>
+  <p>Só borda (sem fundo): <span class="bordered">contorno</span> no meio do texto.</p>
+  <p>Padding em <span class="unit">ex</span> deve dar folga lateral real.</p>
+  <p>Uma <a class="pill" href="#">pílula bem longa que provavelmente quebra em duas linhas quando a janela é estreita para exercitar o box-decoration-break slice</a> no meio do parágrafo.</p>
+</body>
+</html>

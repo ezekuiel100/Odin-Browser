@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lote 26 — text-wrap: balance</title>
+<style>
+  body { margin: 0; font: 16px system-ui, sans-serif; background: #fff; }
+  h2 { font-size: 12px; margin: 14px 8px 4px; color: #666; font-weight: 600; }
+  .cx { width: 340px; margin: 0 10px; background: #eef1f8; outline: 1px solid #c3ccdf; }
+  .t { font-size: 22px; font-weight: 700; line-height: 1.25; color: #1b2a6b; }
+  .bal { text-wrap: balance; }
+  .cent { text-align: center; }
+</style>
+
+<h2>1. SEM balance (a última linha fica órfã e curta)</h2>
+<div class="cx"><div class="t">Um titulo longo o bastante para quebrar em varias linhas neste bloco</div></div>
+
+<h2>2. COM balance (mesmas linhas, mas parelhas)</h2>
+<div class="cx"><div class="t bal">Um titulo longo o bastante para quebrar em varias linhas neste bloco</div></div>
+
+<h2>3. centralizado SEM balance</h2>
+<div class="cx"><div class="t cent">Um titulo longo o bastante para quebrar em varias linhas neste bloco</div></div>
+
+<h2>4. centralizado COM balance (tem de continuar CENTRADO na caixa cheia)</h2>
+<div class="cx"><div class="t cent bal">Um titulo longo o bastante para quebrar em varias linhas neste bloco</div></div>
+
+<h2>5. duas linhas: a órfã de 1 palavra some</h2>
+<div class="cx"><div class="t">Titulo com uma palavra orfa sozinha</div></div>
+<div class="cx" style="margin-top:6px"><div class="t bal">Titulo com uma palavra orfa sozinha</div></div>

@@ -1,0 +1,32 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>metricas de fonte por FACE</title>
+<style>
+  html,body{margin:0;background:#fff}
+  /* Cada faixa desenha 20 'M' a 16px numa familia diferente. A largura da tinta
+     e' previsivel pela aritmetica da fonte, e foi conferida contra o Chrome:
+       Consolas  20 x 0.5498em x 16 = 175.9px   (Chrome mediu 175)
+       Georgia   20 x 0.9272em x 16 = 296.7px   (Chrome mediu 296)
+     Antes do M244 o motor usava UMA constante de em-square (1.36, calibrada na
+     Segoe UI) para todas as faces: o Georgia saia ~19% e o Consolas ~22% MAIOR.
+
+     ⚠️ o teste e' de POSICAO da ponta direita, nao de aparencia: a faixa tem de
+     ACABAR perto do alvo e NAO chegar bem alem dele. Um so lado nao pega o erro
+     (texto grande demais passa do alvo, pequeno demais nao chega). */
+  div{font-size:16px;color:#000;white-space:nowrap;margin:0;padding:0 0 0 20px;
+      height:24px;line-height:24px}
+  .mono{font-family:Consolas,monospace}
+  .serif{font-family:Georgia,serif}
+  /* espacos: numa monoespaçada o espaco vale o MESMO que qualquer glifo
+     (0.5498em = 8.8px), nao uma fracao fixa herdada do sans. 10 'M' + 9 espacos
+     = 19 avancos = 167px de tinta ate o ultimo M. */
+  .esp{font-family:Consolas,monospace}
+</style></head>
+<body>
+<div class="mono">MMMMMMMMMMMMMMMMMMMM</div>
+<div class="serif">MMMMMMMMMMMMMMMMMMMM</div>
+<div class="esp">M M M M M M M M M M</div>
+<!-- CONTROLE: sem os 9 espacos a mesma faixa acaba MUITO antes. Se o avanco do
+     espaco voltar a ser a fracao fixa, a faixa de cima encolhe e esta nao muda,
+     entao o par distingue os dois defeitos. -->
+<div class="esp">MMMMMMMMMM</div>
+</body></html>

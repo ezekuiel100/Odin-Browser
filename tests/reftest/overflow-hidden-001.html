@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<!-- TESTE: overflow:hidden deve cortar o filho que transborda.
+     Se funcionar, vê-se só um quadrado 100x100 verde (o vermelho fica coberto
+     e o excesso de verde é cortado). Se quebrar, o verde vaza para baixo. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .box {
+    width: 100px;
+    height: 100px;
+    overflow: hidden;
+    background: red;
+  }
+  .child {
+    width: 100px;
+    height: 300px;
+    background: green;
+  }
+</style>
+<link rel="match" href="overflow-hidden-001-ref.html">
+</head>
+<body>
+  <div class="box">
+    <div class="child"></div>
+  </div>
+</body>
+</html>

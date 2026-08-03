@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { font-size: 16px; padding: 12px; }
+  label { display: block; margin: 12px 0 4px; font-weight: bold; }
+  .big { width: 400px; height: 120px; }
+  textarea.styled { background: #f7f7ff; color: #223; border: 2px solid #6a5acd; }
+</style>
+</head>
+<body>
+  <label>1. Textarea padrao (cols/rows implicitos):</label>
+  <textarea></textarea>
+
+  <label>2. Com cols=40 rows=4 e valor inicial:</label>
+  <textarea cols="40" rows="4">Primeira linha ja preenchida.
+Segunda linha do valor inicial.
+Terceira.</textarea>
+
+  <label>3. Com placeholder (vazio):</label>
+  <textarea cols="30" rows="3" placeholder="Digite seu comentario aqui..."></textarea>
+
+  <label>4. Estilizada por CSS (width/height/cores):</label>
+  <textarea class="styled big">Texto numa textarea estilizada via CSS.</textarea>
+
+  <label>5. Desabilitada:</label>
+  <textarea cols="30" rows="2" disabled>Nao pode editar isto.</textarea>
+</body>
+</html>

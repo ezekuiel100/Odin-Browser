@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- GABARITO: a faixa azul de baixo feita com um bloco absoluto 80x6 em (20,54).
+     A caixa de teste é 80x40 (border-box) em (20,20)-(100,60); a borda de baixo
+     ocupa os 6px finais → (20,54)-(100,60). -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .wrap { position: relative; width: 80px; height: 40px; margin: 20px; background: white; }
+  .bar { position: absolute; top: 34px; left: 0; width: 80px; height: 6px; background: blue; }
+</style>
+</head>
+<body>
+  <div class="wrap"><div class="bar"></div></div>
+</body>
+</html>

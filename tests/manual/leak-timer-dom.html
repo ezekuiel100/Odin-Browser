@@ -1,0 +1,6 @@
+<!doctype html><meta charset="utf-8"><title>timer mexendo no DOM</title>
+<div id="alvo">x</div>
+<script>
+var n = 0;
+setInterval(function(){ n = n + 1; document.getElementById('alvo').textContent = 'n=' + n; }, 1);
+</script>

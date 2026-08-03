@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lote 24 — grade implícita (grid-auto-rows/columns/flow)</title>
+<style>
+  body { margin: 0; font: 13px system-ui, sans-serif; background: #f4f4f6; }
+  h2 { font-size: 12px; margin: 12px 8px 4px; color: #444; }
+  .g { display: grid; gap: 6px; margin: 0 10px; background: #dfe3ee; padding: 6px; }
+  .g > * { background: #4a6cf7; color: #fff; padding: 4px 6px; }
+  .b { background: #e0554f !important; }
+
+  /* 1. grid-auto-rows: as linhas implícitas têm altura FIXA (o conteúdo alto transborda) */
+  .r { grid-template-columns: repeat(4, 1fr); grid-auto-rows: 34px; }
+
+  /* 2. grid-auto-rows com DOIS valores: ciclam 50/24/50/24… */
+  .ciclo { grid-template-columns: repeat(3, 1fr); grid-auto-rows: 50px 24px; }
+
+  /* 3. grid-auto-flow: column + grid-auto-columns (colunas implícitas de 90px) */
+  .col { grid-template-rows: 30px 30px; grid-auto-flow: column; grid-auto-columns: 90px; }
+
+  /* 4. dense: o item pequeno VOLTA e tapa o buraco deixado pelos spans */
+  .esparso, .denso { grid-template-columns: repeat(3, 1fr); grid-auto-rows: 30px; }
+  .denso { grid-auto-flow: row dense; }
+  .s3 { grid-column: span 3; }
+  .s2 { grid-column: span 2; }
+</style>
+
+<h2>1. grid-auto-rows: 34px (todas as linhas são implícitas)</h2>
+<div class="g r"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span></div>
+
+<h2>2. grid-auto-rows: 50px 24px (a lista CICLA pelas linhas)</h2>
+<div class="g ciclo"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span>
+  <span>7</span><span>8</span><span>9</span></div>
+
+<h2>3. grid-auto-flow: column + grid-auto-columns: 90px (desce e cria colunas)</h2>
+<div class="g col"><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span></div>
+
+<h2>4. esparso (padrão): D fica ao lado de C, o buraco na linha de B sobra</h2>
+<div class="g esparso"><span class="s3">A</span><span class="s2">B</span><span class="s2">C</span><span class="b">D</span></div>
+
+<h2>5. dense: D VOLTA e tapa o buraco na linha de B</h2>
+<div class="g denso"><span class="s3">A</span><span class="s2">B</span><span class="s2">C</span><span class="b">D</span></div>

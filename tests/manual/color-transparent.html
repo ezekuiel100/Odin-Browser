@@ -1,0 +1,30 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  body { background: #fff; font: 28px/1.6 sans-serif; margin: 24px; color: #111; }
+  .caixa { padding: 8px 12px; margin-bottom: 10px; border: 1px solid #ddd; }
+  /* 1) o caso do marco: o texto tem de SUMIR (a caixa continua ocupando espaco) */
+  .some { color: transparent; }
+  /* 2) heranca: o filho tambem some */
+  .pai-some { color: transparent; }
+  /* 3) NAO-REGRESSAO: texto com gradiente continua VISIVEL */
+  .grad {
+    background: linear-gradient(135deg, #a78bfa, #67e8f9, #f9a8d4);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent; font-weight: 700;
+  }
+  /* 4) DEGRADACAO ANOTADA: clip:text sem fundo que saibamos clipar -> visivel */
+  .clip-img { background-image: url(nao-existe.png); background-clip: text; color: transparent; }
+  /* 5) NAO-REGRESSAO: background transparent = SEM fundo (nao preto) */
+  .bg-transp { background: transparent; }
+  /* 6) currentColor segue o transparent: a borda tambem some, mas ocupa 4px */
+  .borda { color: transparent; border: 4px solid currentColor; }
+</style></head>
+<body>
+  <div class="caixa">1. controle: este texto aparece</div>
+  <div class="caixa some">2. ESTE TEXTO TEM DE SUMIR</div>
+  <div class="caixa pai-some">3. o pai e transparente <span>e o filho herda: some tambem</span></div>
+  <div class="caixa grad">4. texto com gradiente: aparece colorido</div>
+  <div class="caixa clip-img">5. clip:text sem fundo clipavel: aparece (degradacao anotada)</div>
+  <div class="caixa bg-transp">6. background transparent: fundo BRANCO, texto visivel</div>
+  <div class="caixa borda">7. borda de 4px em currentColor transparente (some, mas ocupa)</div>
+</body></html>

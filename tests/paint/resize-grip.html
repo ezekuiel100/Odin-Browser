@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>resize — a alça é PINTADA (e só onde a prop se aplica)</title>
+<!--
+  Geometria fixa e sem texto: cada caixa mede exatamente 200x100 (border-box) e
+  o portão amostra o quadradinho INTERNO do canto inferior direito.
+    A (20,20)   <textarea> default da UA  -> TEM alça
+    B (240,20)  <textarea resize:none>    -> SEM alça  (controle pareado de A)
+    C (20,160)  div overflow:auto         -> TEM alça
+    D (240,160) div overflow:visible      -> SEM alça  (a prop NÃO se aplica)
+  A × B é o par que pega o bug do caminho de CONTROLE (o <textarea> retorna cedo
+  no paint e por isso não recebia a alça, mesmo com resize=.Both computado).
+-->
+<style>
+  body { margin: 0; background: #fff }
+  textarea, div.cx {
+    position: absolute; width: 200px; height: 100px; box-sizing: border-box;
+    padding: 0; border: 1px solid #888; background: #ffffff; overflow: auto;
+  }
+  div.cx { background: #eeeeff }
+</style>
+<textarea style="left:20px;  top:20px"></textarea>
+<textarea style="left:240px; top:20px; resize:none"></textarea>
+<div class="cx" style="left:20px;  top:160px; resize:both"></div>
+<div class="cx" style="left:240px; top:160px; resize:both; overflow:visible"></div>

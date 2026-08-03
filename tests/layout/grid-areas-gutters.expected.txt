@@ -1,0 +1,7 @@
+﻿<anon# .> block x=0 y=0 w=800 h=37
+  <html# .> block x=0 y=0 w=800 h=37
+    <body# .> block x=0 y=0 w=800 h=37
+      <div# .layout> grid x=0 y=0 w=1000 h=37 cols=5 rows=1 gap=0
+        <div# .side cell> inline x=0 y=0 w=200 h=37
+        <div# .toc cell> inline x=800 y=0 w=200 h=37
+        <div# .main cell> inline x=220 y=0 w=560 h=37

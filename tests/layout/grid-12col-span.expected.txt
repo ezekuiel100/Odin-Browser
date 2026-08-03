@@ -1,0 +1,6 @@
+﻿<anon# .> block x=0 y=0 w=800 h=41
+  <html# .> block x=0 y=0 w=800 h=41
+    <body# .> block x=0 y=0 w=800 h=41
+      <div# .grid> grid x=0 y=0 w=1200 h=41 cols=12 rows=0 gap=0
+        <div# .a cell> inline x=0 y=0 w=800 h=41
+        <div# .b cell> inline x=800 y=0 w=400 h=41

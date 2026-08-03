@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>overflow-x:clip no html</title>
+<style>
+  /* o que o astro.build tem no elemento RAIZ */
+  html { overflow-x: clip; background: #0d0f14; }
+  body { margin: 0; display: flex; min-height: 100vh; flex-direction: column; color: #fff; font-family: sans-serif; }
+  .caixa { padding: 24px; }
+  h1 { font-size: 32px; margin: 0 0 12px; }
+  .marca { width: 200px; height: 40px; background: #ff5d01; }
+</style>
+<div class="caixa">
+  <div class="marca"></div>
+  <h1>Este texto tem de aparecer</h1>
+  <p>Se a pagina sair so com o fundo, o recorte do overflow no elemento RAIZ engoliu tudo.</p>
+</div>

@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>card border oklch</title>
+<style>
+  body { background: #f8fafc; font-family: sans-serif; padding: 24px; color: #0f172a; }
+  .row { display: flex; gap: 20px; align-items: flex-start; }
+  .card { width: 260px; border-radius: 16px; background: #fff; overflow: hidden;
+          border-style: solid; border-width: 1px; }
+  /* A: como o Tailwind v4 faz de verdade (border-slate-100) */
+  .a { border-color: oklch(0.968 0.007 247.896); }
+  /* B: controle -- MESMA cor em hex */
+  .b { border-color: #f1f5f9; }
+  /* C: shorthand com funcao de cor */
+  .c { border: 1px solid oklch(0.968 0.007 247.896); }
+  /* D: controle -- rgb() com virgulas (sem espaco no meio dos args) */
+  .d { border-color: rgb(241,245,249); }
+  /* E: rgb() com espacos (sintaxe moderna) */
+  .e { border-color: rgb(241 245 249); }
+  .bar { height: 4px; background: oklch(0.712 0.194 13.428); }
+  .body { padding: 20px; }
+  .t { font-size: 13px; font-weight: bold; }
+  .p { font-size: 24px; font-weight: bold; margin-top: 12px; }
+  h2 { font-size: 12px; font-weight: normal; color: #64748b; margin: 0 0 6px; }
+</style>
+<div class="row">
+  <div><h2>A oklch</h2><div class="card a"><div class="bar"></div><div class="body"><div class="t">B3SA3</div><div class="p">R$ 15.44</div></div></div></div>
+  <div><h2>B hex (controle)</h2><div class="card b"><div class="bar"></div><div class="body"><div class="t">B3SA3</div><div class="p">R$ 15.44</div></div></div></div>
+  <div><h2>C shorthand oklch</h2><div class="card c"><div class="bar"></div><div class="body"><div class="t">B3SA3</div><div class="p">R$ 15.44</div></div></div></div>
+</div>
+<div class="row" style="margin-top:24px">
+  <div><h2>D rgb virgulas</h2><div class="card d"><div class="bar"></div><div class="body"><div class="t">B3SA3</div><div class="p">R$ 15.44</div></div></div></div>
+  <div><h2>E rgb espacos</h2><div class="card e"><div class="bar"></div><div class="body"><div class="t">B3SA3</div><div class="p">R$ 15.44</div></div></div></div>
+</div>

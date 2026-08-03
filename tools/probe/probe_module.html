@@ -1,0 +1,8 @@
+<!doctype html>
+<!-- Repro do modulo que se auto-importa. PRECISA de HTTP: de file:// o <script src>
+     externo nao carrega (so inline roda) e o teste da falso-negativo silencioso.
+     O probe.ps1 -Only module sobe um `python -m http.server` e cuida disso. -->
+<html><body>
+<script>console.log("MODPROBE inline (referencia: tem de sair 1x)");</script>
+<script type="module" src="./probe_module_a.js"></script>
+</body></html>

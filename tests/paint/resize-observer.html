@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>paint gate: ResizeObserver (M232)</title>
+<style>
+  /* Viewport do gate: 400x300. O ECO copia a largura MEDIDA pelo observador, entao
+     a borda direita dele denuncia o numero que chegou na entry -- nao basta "algum
+     callback rodou". Cores chapadas e posicao absoluta: nada depende de fonte. */
+  html, body { margin: 0; padding: 0; background: #fff; }
+  .cx  { position: absolute; height: 60px; }
+  #alvo { left: 20px; top: 20px;  width: 160px; background: #1030c0; }
+  #eco  { left: 20px; top: 120px; width: 0px;   background: #0a7d32; }
+  #ctl  { left: 20px; top: 210px; width: 160px; background: #0a7d32; }
+</style>
+</head>
+<body>
+  <div id="alvo" class="cx"></div>
+  <div id="eco"  class="cx"></div>
+  <div id="ctl"  class="cx"></div>
+  <script>
+    var ro = new ResizeObserver(function (entries) {
+      for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        if (e.target.id !== 'alvo') continue;
+        // largura MEDIDA (160) -> vira a largura do eco. Com o stub antigo o
+        // callback nunca rodava e o eco ficava com 0px.
+        document.getElementById('eco').setAttribute('style', 'width:' + e.contentRect.width + 'px');
+      }
+    });
+    ro.observe(document.getElementById('alvo'));
+  </script>
+</body>
+</html>

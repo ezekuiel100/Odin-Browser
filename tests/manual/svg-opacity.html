@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>fill-opacity / stroke-opacity</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 14px; background: #fff; color: #111 }
+  h2 { font-size: 13px; margin: 12px 0 4px; color: #555; font-weight: 600 }
+  .lbl { display: inline-block; width: 210px; color: #777; vertical-align: middle }
+  svg { vertical-align: middle }
+  .fo  { fill-opacity: .25 }
+  .so  { stroke-opacity: .25 }
+  .pct { fill-opacity: 50% }
+</style>
+
+<h2>1. fill-opacity: atributo / style= / regra CSS / % / controle opaco</h2>
+<div>
+  <svg width="480" height="60" viewBox="0 0 480 60">
+    <rect x="5"  y="5" width="80" height="50" fill="#0000cc" fill-opacity="0.25"/>
+    <rect x="95" y="5" width="80" height="50" fill="#0000cc" style="fill-opacity:.25"/>
+    <rect x="185" y="5" width="80" height="50" fill="#0000cc" class="fo"/>
+    <rect x="275" y="5" width="80" height="50" fill="#0000cc" class="pct"/>
+    <rect x="365" y="5" width="80" height="50" fill="#0000cc"/>
+  </svg>
+</div>
+
+<h2>2. stroke-opacity: os mesmos 5, so no TRACO (traco grosso, sem fill)</h2>
+<div>
+  <svg width="480" height="60" viewBox="0 0 480 60">
+    <g fill="none" stroke="#cc0000" stroke-width="14">
+      <line x1="10" y1="30" x2="80" y2="30" stroke-opacity="0.25"/>
+      <line x1="100" y1="30" x2="170" y2="30" style="stroke-opacity:.25"/>
+      <line x1="190" y1="30" x2="260" y2="30" class="so"/>
+      <line x1="280" y1="30" x2="350" y2="30" stroke-opacity="25%"/>
+      <line x1="370" y1="30" x2="440" y2="30"/>
+    </g>
+  </svg>
+</div>
+
+<h2>3. As duas SEPARADAS no MESMO elemento (e vs `opacity`, que pega tudo)</h2>
+<div>
+  <svg width="480" height="70" viewBox="0 0 480 70">
+    <!-- so o fill esmaece; o traco fica cheio -->
+    <rect x="10" y="10" width="90" height="50" fill="#00a" stroke="#000" stroke-width="8" fill-opacity=".2"/>
+    <!-- so o traco esmaece; o fill fica cheio -->
+    <rect x="120" y="10" width="90" height="50" fill="#00a" stroke="#000" stroke-width="8" stroke-opacity=".2"/>
+    <!-- opacity pega os DOIS (composicao do elemento inteiro) -->
+    <rect x="230" y="10" width="90" height="50" fill="#00a" stroke="#000" stroke-width="8" opacity=".2"/>
+    <!-- controle opaco -->
+    <rect x="340" y="10" width="90" height="50" fill="#00a" stroke="#000" stroke-width="8"/>
+  </svg>
+</div>
+
+<h2>4. HERANCA pelo &lt;g&gt; e clamp de valor fora de [0,1]</h2>
+<div>
+  <svg width="480" height="60" viewBox="0 0 480 60">
+    <g fill="#080" fill-opacity="0.3">
+      <rect x="10" y="5" width="80" height="50"/>
+      <rect x="100" y="5" width="80" height="50"/>
+      <!-- o filho SOBRESCREVE o do grupo -->
+      <rect x="190" y="5" width="80" height="50" fill-opacity="1"/>
+    </g>
+    <!-- clamp: 1.8 vira 1 (opaco), -3 vira 0 (invisivel) -->
+    <rect x="280" y="5" width="80" height="50" fill="#080" fill-opacity="1.8"/>
+    <rect x="370" y="5" width="80" height="50" fill="#080" fill-opacity="-3"/>
+  </svg>
+</div>
+
+<h2>5. ⚠️ stroke-opacity com PONTA/JUNTA redonda e com TRACEJADO</h2>
+<span class="lbl">a geometria extra nao pode DOBRAR o alfa</span>
+<div>
+  <svg width="480" height="90" viewBox="0 0 480 90">
+    <g fill="none" stroke="#000" stroke-width="16" stroke-opacity="0.35">
+      <!-- ponta redonda: o disco da ponta cai EM CIMA da linha -->
+      <line x1="20" y1="25" x2="120" y2="25" stroke-linecap="round"/>
+      <!-- junta redonda numa quina -->
+      <path d="M150 60 L190 20 L230 60" stroke-linejoin="round"/>
+      <!-- junta em BICO numa quina aguda (a geometria que o lote 35 criou) -->
+      <path d="M260 60 L285 18 L310 60"/>
+      <!-- tracejado: cada traco tem pontas proprias -->
+      <line x1="340" y1="25" x2="460" y2="25" stroke-dasharray="18 10" stroke-linecap="round"/>
+    </g>
+  </svg>
+</div>
+
+<h2>6. fill-opacity sobre GRADIENTE (o fill nao e cor solida)</h2>
+<div>
+  <svg width="360" height="60" viewBox="0 0 360 60">
+    <defs>
+      <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="#e00"/><stop offset="1" stop-color="#00e"/>
+      </linearGradient>
+    </defs>
+    <rect x="10" y="5" width="150" height="50" fill="url(#g1)" fill-opacity="0.3"/>
+    <rect x="185" y="5" width="150" height="50" fill="url(#g1)"/>
+  </svg>
+</div>

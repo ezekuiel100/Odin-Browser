@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<!-- TESTE: align-self sobrescreve o align-items do container p/ um item.
+     Container align-items:flex-start (itens no topo), mas o item tem
+     align-self:flex-end => deve ir p/ a base (y=50..100). -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .row { display: flex; align-items: flex-start; width: 100px; height: 100px; }
+  .item { width: 100px; height: 50px; background: green; align-self: flex-end; }
+</style>
+<link rel="match" href="align-self-001-ref.html">
+</head>
+<body>
+  <div class="row"><div class="item"></div></div>
+</body>
+</html>

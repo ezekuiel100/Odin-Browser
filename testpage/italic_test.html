@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { font-size: 18px; }
+  .css-italic { font-style: italic; }
+  .shorthand  { font: italic bold 18px/1.4 Consolas, monospace; }
+  .serif      { font-family: Georgia, serif; font-style: italic; }
+  .mono       { font-family: Consolas, monospace; font-style: italic; }
+  .reset em   { font-style: normal; }
+</style>
+</head>
+<body>
+  <p>Texto normal sem estilo nenhum.</p>
+  <p><em>Enfase com em</em> e <i>italico com i</i> e <cite>citacao com cite</cite>.</p>
+  <p class="css-italic">Paragrafo inteiro com font-style: italic via CSS.</p>
+  <p><strong><em>Negrito e italico juntos</em></strong> no sans.</p>
+  <p class="serif">Serif em italico (Georgia).</p>
+  <p class="mono">Mono em italico (Consolas).</p>
+  <p class="shorthand">Shorthand font: italic bold monospace.</p>
+  <p class="reset"><em>Este em foi resetado com font-style: normal.</em></p>
+</body>
+</html>

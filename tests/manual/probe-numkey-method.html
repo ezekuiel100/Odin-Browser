@@ -1,0 +1,32 @@
+<!doctype html><meta charset="utf-8"><title>metodo abreviado com chave numerica</title>
+<script>
+function ok(n, c) { console.log((c ? "OK  " : "FALHA ") + n); }
+try {
+  var o = { 123(a) { return a + 1; }, 456() { return 2; } };
+  ok("metodo abreviado com chave NUMERICA", typeof o[123] === "function" && o[123](1) === 2);
+  ok("segunda chave numerica tambem", typeof o[456] === "function");
+} catch (e) { console.log("FALHA parse/exec de chave numerica: " + e.message); }
+
+try {
+  var m = { 38718(e,t,r) { return "a"; }, 96175(e,t,r) { return "b"; }, 21397(e,t,r) { return "c"; } };
+  var ks = Object.keys(m);
+  ok("3 modulos no formato do spotify", ks.length === 3);
+  ok("chave do meio existe", typeof m[96175] === "function" && m[96175]() === "b");
+  ok("chave depois da do meio existe", typeof m[21397] === "function");
+} catch (e) { console.log("FALHA formato spotify: " + e.message); }
+
+// mistura: shorthand nomeado + numerico + string, como num bundle real
+try {
+  var x = { nome() { return 1; }, 777(a,b) { return 2; }, "str"() { return 3; }, 888: function(){ return 4; } };
+  ok("mistura de formas de chave", Object.keys(x).length === 4 && x[777]() === 2 && x[888]() === 4);
+} catch (e) { console.log("FALHA mistura: " + e.message); }
+
+// o que o webpack faz DEPOIS: chamar com .call
+try {
+  var reg = { 96175(mod, exp, req) { exp.v = 42; } };
+  var mod = { exports: {} };
+  reg[96175].call(mod.exports, mod, mod.exports, function(){});
+  ok("registro[id].call(...) funciona", mod.exports.v === 42);
+} catch (e) { console.log("FALHA .call: " + e.message); }
+console.log("FIM");
+</script>

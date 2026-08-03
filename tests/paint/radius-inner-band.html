@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>faixa de fundo no canto arredondado (overflow:hidden + borda)</title>
+<style>
+  body { margin: 0; background: #fff; }
+  /* A borda é TRANSPARENTE de propósito: o que tem de aparecer na faixa de 10px
+     é o BACKGROUND do próprio elemento (background-clip é border-box), que é
+     exatamente o que se vê no famososbr.com — lá a borda é rgba(255,255,255,.1)
+     e a moldura laranja visível é o gradiente por baixo dela. */
+  .caixa {
+    position: absolute; top: 20px;
+    width: 120px; height: 120px;
+    border-radius: 30px;
+    border: 10px solid transparent;
+    background: #00a000;
+    overflow: hidden;
+  }
+  .filho { width: 100%; height: 100%; background: #0000ff; }
+</style></head>
+<body>
+  <!-- A: O CASO DO BUG. O filho preenche a padding-box; como o clip de overflow
+       do ImGui é RETANGULAR, o canto QUADRADO dele cobria a faixa verde entre a
+       curva interna (raio 30 − borda 10 = 20) e a externa (30). Efeito: a
+       moldura afinava até sumir nos 4 cantos. Centro da curva do canto sup-esq =
+       (50,50); o meio da faixa na diagonal fica a raio 25 → (32,32). -->
+  <div class="caixa" style="left: 20px">
+    <div class="filho"></div>
+  </div>
+
+  <!-- B: CONTROLE do caminho SEM borda. Aí as duas curvas coincidem e quem
+       resolve é o entalhe EXTERNO, que já existia. Se este cair, a mudança
+       mexeu num caminho que devia ficar intacto. Canto sup-esq = (230,50). -->
+  <div class="caixa" style="left: 200px; border: none; width: 140px; height: 140px">
+    <div class="filho"></div>
+  </div>
+</body></html>

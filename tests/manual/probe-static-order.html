@@ -1,0 +1,42 @@
+<!doctype html><meta charset="utf-8"><script>
+function ok(n,c){ console.log((c?"OK  ":"FALHA ")+n); }
+
+// spec: METODOS (estaticos e de prototipo) sao instalados ANTES de qualquer
+// inicializador de campo estatico rodar -- mesmo os declarados DEPOIS.
+try {
+  class A {
+    static BLACK = A.fromRGB(0);
+    static fromRGB(x) { return "rgb" + x; }
+  }
+  ok("campo estatico usa metodo estatico declarado DEPOIS", A.BLACK === "rgb0");
+} catch (e) { console.log("FALHA campo->metodo posterior: " + e.message); }
+
+// a forma exata do spotify: campos de instancia declarados, ctor, 2 campos
+// estaticos e so entao os metodos
+try {
+  class V {
+    rgb; hsl;
+    constructor(e, t) { this.rgb = e; this.hsl = t; }
+    static BLACK = V.fromRGB({ r: 0 });
+    static WHITE = V.fromRGB({ r: 255 });
+    static fromRGBA(e) { return V.fromRGB(e); }
+    static fromRGB(e, t) { return new V(e, t); }
+  }
+  ok("forma do spotify (2 campos + metodos depois)", V.BLACK instanceof V && V.BLACK.rgb.r === 0);
+  ok("segundo campo tambem", V.WHITE.rgb.r === 255);
+  ok("metodo que chama outro metodo", V.fromRGBA({r:7}).rgb.r === 7);
+} catch (e) { console.log("FALHA forma spotify: " + e.message); }
+
+// ordem entre campos estaticos: o de baixo enxerga o de cima
+try {
+  class B { static X = 1; static Y = B.X + 1; static m(){ return 9; } }
+  ok("campo estatico ve o anterior", B.Y === 2);
+} catch (e) { console.log("FALHA ordem entre campos: " + e.message); }
+
+// metodo de PROTOTIPO tambem ja existe quando o campo estatico roda
+try {
+  class C { static I = new C(); metodo(){ return 5; } }
+  ok("metodo de prototipo disponivel p/ instancia criada em campo estatico", C.I.metodo() === 5);
+} catch (e) { console.log("FALHA proto method: " + e.message); }
+console.log("FIM");
+</script>

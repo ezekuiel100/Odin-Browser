@@ -1,0 +1,42 @@
+# Corpus CURTO para validar mudancas no MOTOR DE ESTILO (casamento de seletor,
+# cascata, computo). Subconjunto de sites.txt escolhido por densidade de CSS, nao
+# por cobertura -- para regressao ampla continua valendo o sites.txt completo.
+#
+# Criterio de escolha:
+#   - docs de framework: CSS utilitario (Tailwind) e muita regra com chave de
+#     CLASSE, o caso em que o Rule_Index ja filtra bem;
+#   - portais de noticia: reset/tipografia com chave de TAG e seletor
+#     descendente (`article p`, `.prose h2`), que e o caso caro do casamento;
+#   - plataformas: design system proprio, arvore grande.
+#
+# FORA de proposito (ver memoria js-engine-roadmap): airbnb (render pesado que ja
+# encheu a RAM da maquina) e os 5 BLANK conhecidos de webpack -- crates.io,
+# spotify, soundcloud, brave. Nao sao gap de estilo e so gastam tempo/RAM.
+
+# -- docs de framework (chave de classe, CSS utilitario denso)
+https://tailwindcss.com
+https://getbootstrap.com
+https://react.dev
+https://vuejs.org
+https://astro.build
+https://nextjs.org
+https://svelte.dev
+
+# -- noticia (chave de tag + descendente: o caso caro)
+https://www.bbc.com
+https://www.theguardian.com
+https://apnews.com
+https://g1.globo.com
+https://arstechnica.com
+https://www.theverge.com
+
+# -- referencia (arvore grande, CSS classico)
+https://en.wikipedia.org/wiki/Web_browser
+https://developer.mozilla.org/en-US/docs/Web/JavaScript
+https://www.w3.org
+
+# -- plataforma (design system proprio)
+https://github.com
+https://stripe.com
+https://www.cloudflare.com
+https://www.npmjs.com

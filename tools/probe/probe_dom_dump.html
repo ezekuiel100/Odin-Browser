@@ -1,0 +1,129 @@
+<!doctype html>
+<!-- Sonda de DIAGNOSTICO do DOM: imprime o VALOR CRU de cada API em vez de OK/BAD.
+     Serve para desambiguar o que o placar (probe_dom.html) so marca como falha:
+       - "0 ou ausente?"  -> rect/offsetWidth imprimem o numero
+       - "antes ou depois do layout?" -> as 3 FASES (parse / setTimeout / rAF)
+       - "shell ou implementado?"     -> gCS imprime as chaves que existem
+     Rode com varios frames:  browser.exe --render probe_dom_dump.html out.png 800 600 -1 -1 6 -->
+<html><head><title>probe dom dump</title>
+<style>#host{display:flex;width:300px;height:50px;color:rgb(1,2,3);padding:5px;font-size:20px}</style>
+</head>
+<body>
+<div id="host" class="a b" data-x="1" style="margin:7px"><p>texto</p><span>x</span></div>
+<x-t3 id="ce1">upgrade a partir do MARKUP</x-t3>
+<form id="f"><input id="i" name="n" value="v"><textarea id="ta">t</textarea><select id="s"><option value="o">o</option></select></form>
+<canvas id="c" width="10" height="10"></canvas>
+<svg id="svg" width="10" height="10"><rect width="5" height="5"/></svg>
+<dialog id="dlg">d</dialog>
+<script>
+var d = document, host = d.getElementById('host');
+function P(k, fn){ var r; try { r = fn(); } catch(e){ r = "THREW " + (e && e.name) + ": " + (e && e.message); } console.log("V\t" + k + "\t" + String(r)); }
+
+console.log("--- FASE 1: sincrono, durante o parse ---");
+
+// ---- geometria: 0 ou ausente? ----
+P("getBoundingClientRect typeof", function(){ return typeof host.getBoundingClientRect; });
+P("rect w/h/top", function(){ var r = host.getBoundingClientRect(); return r.width + "x" + r.height + " @" + r.top; });
+P("offsetWidth/Height", function(){ return host.offsetWidth + "x" + host.offsetHeight; });
+P("clientWidth/scrollHeight", function(){ return host.clientWidth + "/" + host.scrollHeight; });
+P("scrollTop/scrollY", function(){ return host.scrollTop + "/" + window.scrollY; });
+
+// ---- getComputedStyle: shell ou real? ----
+var cs = getComputedStyle(host);
+P("gCS chaves visiveis", function(){ var ks = []; for (var k in cs) { ks.push(k); if (ks.length > 14) break } return ks.join(','); });
+P("gCS.length", function(){ return cs.length; });
+P("gCS de FOLHA: display", function(){ return "[" + cs.display + "]"; });
+P("gCS de FOLHA: width", function(){ return "[" + cs.width + "]"; });
+P("gCS de FOLHA: color", function(){ return "[" + cs.color + "]"; });
+P("gCS de FOLHA: fontSize", function(){ return "[" + cs.fontSize + "]"; });
+P("gCS de FOLHA: paddingTop", function(){ return "[" + cs.paddingTop + "]"; });
+P("gCS de INLINE: margin", function(){ return "[" + cs.margin + "] marginTop=[" + cs.marginTop + "]"; });
+P("gCS getPropertyValue('display')", function(){ return "[" + cs.getPropertyValue('display') + "]"; });
+P("gCS de elemento so com style inline", function(){ var e = d.createElement('div'); e.style.color = 'red'; d.body.appendChild(e); return "[" + getComputedStyle(e).color + "]"; });
+P("el.style (leitura do inline)", function(){ return "[" + host.style.margin + "]"; });
+P("document.styleSheets", function(){ return typeof d.styleSheets + " len=" + (d.styleSheets && d.styleSheets.length); });
+P("CSS namespace", function(){ return typeof CSS + " supports=" + (typeof CSS === 'object' ? typeof CSS.supports : '-') + " escape=" + (typeof CSS === 'object' ? typeof CSS.escape : '-'); });
+P("CSS.supports('color: red') [1 arg]", function(){ return CSS.supports('color: red'); });
+P("CSS.supports('color','red') [2 args]", function(){ return CSS.supports('color', 'red'); });
+
+// ---- travessia ----
+P("firstElementChild", function(){ return typeof host.firstElementChild + " children=" + host.children.length + " childNodes=" + host.childNodes.length; });
+P("lastElementChild/nextElementSibling", function(){ return typeof host.lastElementChild + "/" + typeof d.querySelector('p').nextElementSibling; });
+P("parentElement/parentNode", function(){ return typeof host.parentElement + "/" + typeof host.parentNode; });
+P("attributes", function(){ return typeof host.attributes; });
+P("outerHTML", function(){ var e = d.createElement('b'); e.textContent = 'x'; return "[" + e.outerHTML + "]"; });
+P("getRootNode()", function(){ var r = host.getRootNode(); return typeof r + " ===document? " + (r === d) + " nodeName=" + (r && r.nodeName); });
+
+// ---- formulario / UI ----
+P("input.value", function(){ return "[" + d.getElementById('i').value + "]"; });
+P("textarea.value", function(){ return "[" + d.getElementById('ta').value + "]"; });
+P("select.value/selectedIndex", function(){ var s = d.getElementById('s'); return "[" + s.value + "] idx=" + s.selectedIndex; });
+P("input.checked/disabled", function(){ var i = d.getElementById('i'); return typeof i.checked + "/" + typeof i.disabled; });
+P("activeElement apos focus()", function(){ var i = d.getElementById('i'); i.focus(); return typeof d.activeElement + " isI=" + (d.activeElement === i); });
+P("dialog showModal/close/open", function(){ var g = d.getElementById('dlg'); return typeof g.showModal + "/" + typeof g.close + "/" + typeof g.open; });
+P("canvas.getContext", function(){ return typeof d.getElementById('c').getContext; });
+P("svg.getBBox", function(){ return typeof d.getElementById('svg').getBBox; });
+
+// ---- eventos: quais opcoes sao honradas ----
+P("construtores de evento", function(){ return "Event=" + typeof Event + " Custom=" + typeof CustomEvent + " Mouse=" + typeof MouseEvent + " Keyboard=" + typeof KeyboardEvent + " Pointer=" + typeof PointerEvent; });
+P("Event ctor opts", function(){ var e = new Event('x', {bubbles:true, cancelable:true}); return "bubbles=" + e.bubbles + " cancelable=" + e.cancelable; });
+P("preventDefault -> defaultPrevented", function(){ var e = new Event('q', {cancelable:true}); e.preventDefault(); return e.defaultPrevented; });
+P("metodos do evento", function(){ var e = new Event('x'); return typeof e.stopPropagation + "/" + typeof e.preventDefault + "/" + typeof e.stopImmediatePropagation + "/" + typeof e.composedPath + " eventPhase=" + typeof e.eventPhase; });
+P("{once:true} (esperado 1)", function(){ var n=0; host.addEventListener('w', function(){n++}, {once:true}); host.dispatchEvent(new Event('w')); host.dispatchEvent(new Event('w')); return n; });
+P("capture=true (esperado 1)", function(){ var n=0; d.body.addEventListener('cap', function(){n++}, true); host.dispatchEvent(new Event('cap', {bubbles:true})); return n; });
+P("{signal} do AbortController (esperado 0)", function(){ var c = new AbortController(); var n=0; host.addEventListener('sg', function(){n++}, {signal: c.signal}); c.abort(); host.dispatchEvent(new Event('sg')); return n; });
+
+// ---- observers: registram e disparam? ----
+var moHits = 0, ioHits = 0, roHits = 0;
+if (typeof MutationObserver === 'function') {
+  var mo = new MutationObserver(function(recs){ moHits += recs.length });
+  mo.observe(host, {childList: true, attributes: true});
+  host.appendChild(d.createElement('b'));
+  host.setAttribute('data-q', '1');
+}
+if (typeof IntersectionObserver === 'function') { new IntersectionObserver(function(e){ ioHits += e.length }).observe(host); }
+if (typeof ResizeObserver === 'function')       { new ResizeObserver(function(e){ roHits += e.length }).observe(host); }
+P("MutationObserver records (sync)", function(){ return moHits; });
+
+// ---- custom element: markup vs createElement ----
+var log = [];
+class XT3 extends HTMLElement {
+  constructor(){ super(); log.push('ctor') }
+  connectedCallback(){ log.push('conn') }
+}
+try { customElements.define('x-t3', XT3); } catch(e) { console.log("V\tcustomElements.define THREW\t" + e.message); }
+P("CE do MARKUP: instanceof + log", function(){ var e = d.getElementById('ce1'); return (e instanceof XT3) + " log=[" + log.join(',') + "]"; });
+var viaCreate = d.createElement('x-t3');
+d.body.appendChild(viaCreate);
+P("CE por createElement: instanceof", function(){ return (viaCreate instanceof XT3) + " log=[" + log.join(',') + "]"; });
+P("customElements.get/whenDefined", function(){ return typeof customElements.get + "/" + typeof customElements.whenDefined; });
+
+// ---- globais ----
+P("globalThis/window/self", function(){ return typeof globalThis + "/" + typeof window + "/" + typeof self; });
+P("Promise.resolve() instanceof Promise", function(){ return Promise.resolve() instanceof Promise; });
+P("document.write/DOMParser/XMLSerializer", function(){ return typeof d.write + "/" + typeof DOMParser + "/" + typeof XMLSerializer; });
+P("document.forms/images/links", function(){ return typeof d.forms + "/" + typeof d.images + "/" + typeof d.links; });
+P("createRange/getSelection", function(){ return typeof d.createRange + "/" + typeof window.getSelection; });
+P("devicePixelRatio/visualViewport", function(){ return typeof devicePixelRatio + "/" + typeof visualViewport; });
+P("'onerror'/'onpopstate' in window", function(){ return ('onerror' in window) + "/" + ('onpopstate' in window); });
+
+// ---- FASE 2 e 3: o layout ja rodou; muda alguma coisa? ----
+setTimeout(function(){
+  console.log("--- FASE 2: setTimeout 0 ---");
+  P("rect w/h", function(){ var r = host.getBoundingClientRect(); return r.width + "x" + r.height + " @" + r.top; });
+  P("offsetWidth/Height", function(){ return host.offsetWidth + "x" + host.offsetHeight; });
+  P("gCS display/width", function(){ var s = getComputedStyle(host); return "[" + s.display + "][" + s.width + "]"; });
+  P("MO/IO/RO records", function(){ return moHits + "/" + ioHits + "/" + roHits; });
+  P("CE log", function(){ return log.join(','); });
+}, 0);
+
+if (typeof requestAnimationFrame === 'function') requestAnimationFrame(function(){
+  console.log("--- FASE 3: requestAnimationFrame ---");
+  P("rect w/h", function(){ var r = host.getBoundingClientRect(); return r.width + "x" + r.height + " @" + r.top; });
+  P("offsetWidth/Height", function(){ return host.offsetWidth + "x" + host.offsetHeight; });
+  P("gCS display/width", function(){ var s = getComputedStyle(host); return "[" + s.display + "][" + s.width + "]"; });
+  P("MO/IO/RO records", function(){ return moHits + "/" + ioHits + "/" + roHits; });
+  console.log("=== PROBE_DOM_DUMP_END ===");
+});
+</script>
+</body></html>

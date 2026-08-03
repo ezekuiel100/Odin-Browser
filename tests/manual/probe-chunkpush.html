@@ -1,0 +1,40 @@
+<!doctype html><meta charset="utf-8"><title>webpack chunk push</title>
+<script>
+function ok(n, c) { console.log((c ? "OK  " : "FALHA ") + n); }
+
+// O runtime do webpack 5 SOBRESCREVE o push do array global de chunks:
+//   var g = self.webpackChunkX = self.webpackChunkX || [];
+//   g.forEach(cb.bind(null, 0));
+//   g.push = cb.bind(null, g.push.bind(g));
+// Se a sobrescrita for ignorada, o chunk entra no array e NUNCA é instalado.
+var a = [];
+var chamou = false;
+var original = a.push.bind(a);
+a.push = function (x) { chamou = true; return original(x); };
+a.push(["chunk", { 1: "mod" }]);
+ok("push sobrescrito em instancia de Array e CHAMADO", chamou);
+ok("o push original ainda funciona", a.length === 1);
+
+// variantes que o runtime usa
+var b = [];
+b.push = function () { return 42; };
+ok("push sobrescrito devolve o valor do override", b.push(9) === 42);
+ok("push sobrescrito NAO insere", b.length === 0);
+
+var c = [];
+Object.defineProperty(c, "push", { value: function(){ return 7; }, writable: true, configurable: true });
+ok("push via defineProperty", c.push(1) === 7);
+
+// e o forEach do array global antes da sobrescrita
+var d = [["ck", {2:"m"}]];
+var vistos = 0;
+d.forEach(function(item){ vistos += 1; });
+ok("forEach do array de chunks", vistos === 1);
+
+// bind de metodo nativo (o `g.push.bind(g)` acima)
+var e = [];
+var p = e.push.bind(e);
+p(1); p(2);
+ok("push nativo via bind insere", e.length === 2);
+console.log("FIM");
+</script>

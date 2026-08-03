@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- Padrão MDN: placement de grid DENTRO de @container. Antes, o bloco
+     @container era descartado (skip_at_rule) e os itens auto-placeavam (a
+     'toc' caía na gutter de 20px = "In this article" vertical). Agora a
+     condição @container avalia contra o viewport (proxy) e o placement aplica.
+     Itens fora de ordem no fonte (side, toc, main). Esperado:
+       side -> col1 (200px @x=0), main -> col3 (1fr @x=220), toc -> col5 (@x=800). -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .wrap { container-type: inline-size; width: 1000px; }
+  .layout {
+    display: grid;
+    grid-template-columns: 200px 20px 1fr 20px 200px;
+    width: 1000px;
+  }
+  @container (min-width: 100px) {
+    .side { grid-column: 1; }
+    .main { grid-column: 3; }
+    .toc  { grid-column: 5; }
+  }
+  .cell { padding: 8px; }
+</style></head><body>
+  <div class="wrap"><div class="layout">
+    <div class="side cell">esquerda</div>
+    <div class="toc cell">In this article</div>
+    <div class="main cell">conteúdo principal</div>
+  </div></div>
+</body></html>

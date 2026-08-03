@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>background-image SVG nao pode apagar o background-color</title>
+<style>
+  /* O caso do php.net: cor + textura SVG no proprio <html>. Antes do fix, o
+     SVG (Ready sem textura) virava um quad BRANCO ladrilhado que cobria a cor. */
+  html { background-color:#333; background-image:url('tile.svg'); color:#ccc }
+  body { margin:0; padding:20px; font:16px/1.5 sans-serif }
+  h1 { font-size:20px; margin:0 0 16px }
+  .caixa { padding:18px; margin:10px 0; color:#fff; font-weight:bold; border-radius:6px }
+
+  /* SVG externo, repeat default (o caso que quebrava) */
+  .a { background-color:#992222; background-image:url('tile.svg') }
+  /* SVG externo, no-repeat */
+  .b { background-color:#1d6b1d; background-image:url('tile.svg'); background-repeat:no-repeat }
+  /* SVG externo sobre GRADIENTE (o gradiente tambem nao pode ser apagado) */
+  .c { background-image:url('tile.svg'), linear-gradient(90deg,#3b2f8f,#8f2f6b) }
+  /* controle: so cor, sem imagem */
+  .d { background-color:#8a5a00 }
+  /* controle: imagem inexistente (404) + cor */
+  .e { background-color:#6b1d5a; background-image:url('nao-existe-xyz.svg') }
+</style>
+</head>
+<body>
+  <h1>Esperado: fundo da pagina cinza-escuro e TODAS as faixas coloridas.</h1>
+  <div class="caixa a">A — SVG externo + background-color (repeat default)</div>
+  <div class="caixa b">B — SVG externo + background-color (no-repeat)</div>
+  <div class="caixa c">C — SVG externo sobre linear-gradient</div>
+  <div class="caixa d">D — controle: so background-color</div>
+  <div class="caixa e">E — controle: background-image 404 + background-color</div>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fundo do canvas: raiz manda, body so entra se a raiz nao tiver</title>
+<style>
+  /* Conteudo CURTO de proposito: o fundo tem de cobrir a pagina INTEIRA,
+     nao so a caixa do elemento. */
+  html { background: #2b2f45; color: #dfe3f5 }
+  body { margin: 0; padding: 24px; font: 14px sans-serif }
+  .cartao { background:#fff; color:#111; padding:12px; width:320px; border-radius:6px }
+</style>
+</head>
+<body>
+  <div class="cartao">
+    Conteudo curto. Tudo abaixo daqui — ate o fim do viewport — tem de ficar
+    azul-escuro (o fundo do &lt;html&gt;), nao branco.
+  </div>
+</body>
+</html>

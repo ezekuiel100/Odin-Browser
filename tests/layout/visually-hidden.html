@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- GUARDA: padrão sr-only/visually-hidden (skip-links). O <a> deve ficar
+     1x1px e clipado (overflow:hidden + white-space:nowrap + clip). O golden
+     trava a caixa em ~1px de largura E uma linha (h pequeno) — se o texto
+     voltar a quebrar 1-char/linha (h grande), o diff acusa. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .box { width: 300px; padding: 20px; }
+</style></head><body>
+  <a class="sr-only" href="#main">Pular para o conteúdo principal</a>
+  <div class="box"><p>Parágrafo visível único.</p></div>
+</body></html>

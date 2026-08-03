@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head><style>
+  body { font-family: sans-serif; margin: 0; padding: 16px; background: #f4f4f5; }
+  h3 { margin: 4px 0 10px; color: #334155; }
+
+  /* flex-wrap + align-content: as linhas ficam centralizadas no eixo vertical */
+  .wrap {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    width: 340px; height: 220px; align-content: center;
+    background: #e2e8f0; border-radius: 8px; padding: 10px;
+    margin-bottom: 20px;
+  }
+  .wrap > div { width: 100px; height: 40px; background: #6366f1; color: white;
+                border-radius: 6px; text-align: center; line-height: 40px; }
+
+  /* grid justify-content: agrupa as TRILHAS (colunas de largura fixa) no centro */
+  .g {
+    display: grid; grid-template-columns: 120px 120px 120px; gap: 12px;
+    justify-content: center;
+    background: #e2e8f0; border-radius: 8px; padding: 12px;
+  }
+  .g > div { height: 40px; background: #0ea5e9; color: white;
+             border-radius: 6px; text-align: center; line-height: 40px; }
+</style></head>
+<body>
+  <h3>flex-wrap + align-content: center (linhas centralizadas na vertical)</h3>
+  <div class="wrap">
+    <div>1</div><div>2</div><div>3</div>
+    <div>4</div><div>5</div>
+  </div>
+
+  <h3>grid justify-content: center (as 3 colunas de 120px agrupadas no meio)</h3>
+  <div class="g">
+    <div>A</div><div>B</div><div>C</div>
+  </div>
+</body>
+</html>

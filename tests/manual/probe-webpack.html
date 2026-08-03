@@ -1,0 +1,52 @@
+<!doctype html><meta charset="utf-8"><title>padrao do runtime webpack</title>
+<script>
+function ok(nome, cond) { console.log((cond ? "OK  " : "FALHA ") + nome); }
+
+// 1) chave NUMERICA: o webpack indexa modulos por id numerico
+var m = {}; m[123] = "x";
+ok("m[123] com chave numerica", m[123] === "x");
+ok("m['123'] casa com m[123]",  m["123"] === "x");
+var lit = { 0: "a", 1: "b", 42: "c" };
+ok("literal com chaves numericas", lit[0] === "a" && lit[42] === "c");
+ok("indice por variavel numerica", (function(){ var i = 42; return lit[i] === "c"; })());
+
+// 2) chave numerica vinda de expressao/float inteiro
+ok("chave por expressao 40+2", lit[40 + 2] === "c");
+ok("chave 1.0 == 1", lit[1.0] === "b");
+
+// 3) o corpo do __webpack_require__
+var mods = {
+  "./a.js": function(module, exports, req) { exports.v = 1; },
+  7: function(module, exports, req) { module.exports = { v: req("./a.js").v + 1 }; }
+};
+var cache = {};
+function wreq(id) {
+  var c = cache[id];
+  if (c !== undefined) return c.exports;
+  var mod = cache[id] = { id: id, loaded: false, exports: {} };
+  mods[id].call(mod.exports, mod, mod.exports, wreq);
+  mod.loaded = true;
+  return mod.exports;
+}
+try { ok("__webpack_require__ por string", wreq("./a.js").v === 1); }
+catch (e) { console.log("FALHA require string: " + e.message); }
+try { ok("__webpack_require__ por id numerico", wreq(7).v === 2); }
+catch (e) { console.log("FALHA require numerico: " + e.message); }
+
+// 4) defineProperty com getter (o __esModule e os re-exports do webpack)
+var exp = {};
+Object.defineProperty(exp, "__esModule", { value: true });
+ok("defineProperty value", exp.__esModule === true);
+var alvo = {};
+Object.defineProperty(alvo, "prop", { get: function(){ return 9; }, enumerable: true });
+ok("defineProperty getter", alvo.prop === 9);
+var d = {}; Object.defineProperties(d, { a: { get: function(){return 1;} }, b: { get: function(){return 2;} } });
+ok("defineProperties (plural)", d.a === 1 && d.b === 2);
+
+// 5) padroes que o runtime usa em volta
+ok("Object.create(null) indexavel", (function(){ var o = Object.create(null); o[5] = "z"; return o[5] === "z"; })());
+ok("'in' com chave numerica", 42 in lit);
+ok("Object.keys ordena numericas", Object.keys(lit).join(",") === "0,1,42");
+ok("for-in com chave numerica", (function(){ var s=""; for (var k in lit) s += k + ";"; return s === "0;1;42;"; })());
+console.log("FIM DA SONDA");
+</script>

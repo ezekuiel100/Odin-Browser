@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  #alvo { padding: 12px 16px; background: #eef4ff; border-radius: 6px; display: inline-block; }
+  #alvo.ok { background: #e8f7ea; color: #0a7a0a; }
+  #ordem { color: #06c; margin-top: 12px; }
+</style>
+</head>
+<body>
+  <div id="alvo">esperando script externo...</div>
+  <p id="ordem">?</p>
+
+  <script>var antes = 'A';</script>
+  <script src="ext.js"></script>
+  <script>
+    // roda DEPOIS do externo: enxerga a global `depois` definida lá
+    document.getElementById('ordem').textContent = 'ordem: ' + antes + depois;
+  </script>
+</body>
+</html>

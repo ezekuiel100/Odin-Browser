@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>opacity:0 em pseudo e em elemento</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; background: #fff; }
+  p { padding: 8px; background: #e2e8f0; margin: 0 0 8px; }
+
+  /* A: o padrao do astro.build -- backdrop de modal, invisivel por padrao */
+  body:before {
+    content: ""; display: block; position: fixed; inset: 0;
+    background: #0d0f14; z-index: 11; opacity: 0; pointer-events: none;
+  }
+
+  /* B: elemento comum com opacity:0 (controle) */
+  .b { opacity: 0; }
+
+  /* C: pseudo NAO-fixed com opacity:0 */
+  .c::before { content: "NAO PODE APARECER"; opacity: 0; color: #dc2626; font-weight: bold; }
+
+  /* D: pseudo fixed com opacity 0.5 (tem de aparecer, meio transparente) */
+  .d::before {
+    content: ""; display: block; position: fixed; right: 20px; top: 20px;
+    width: 80px; height: 80px; background: #16a34a; opacity: 0.5; z-index: 20;
+  }
+</style>
+
+<p>1 — Este texto tem de estar VISIVEL (se a pagina sair lisa, o backdrop opacity:0 foi pintado opaco)</p>
+<p class="b">2 — Este tem opacity:0 e NAO pode aparecer</p>
+<p class="c">3 — O ::before deste NAO pode aparecer</p>
+<p class="d">4 — Deve haver um quadrado VERDE meio transparente no canto superior direito</p>
+<p>5 — Fim.</p>

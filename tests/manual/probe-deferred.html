@@ -1,0 +1,49 @@
+<!doctype html><meta charset="utf-8"><title>webpack4 checkDeferredModules</title>
+<script>
+function ok(n, c) { console.log((c ? "OK  " : "FALHA ") + n); }
+
+// ── as primitivas que o runtime do webpack 4 usa p/ ADIAR a entrada ──
+var d = [];
+var ex = [[123, "vendor", "encore"]];          // executeModules do chunk
+d.push.apply(d, ex || []);
+ok("push.apply espalha os itens", d.length === 1 && d[0][0] === 123);
+ok("o item mantem o length (deps)", d[0].length === 3);
+
+var inst = { "web-player": 0 };                 // installedChunks
+ok("chunk instalado === 0", inst["web-player"] === 0);
+ok("chunk AUSENTE !== 0", inst["vendor"] !== 0);
+
+// ── o checkDeferredModules literal ──
+function check(deferred, installed) {
+  var result, rodou = [];
+  for (var i = 0; i < deferred.length; i++) {
+    var dm = deferred[i];
+    var fulfilled = true;
+    for (var j = 1; j < dm.length; j++) {
+      var depId = dm[j];
+      if (installed[depId] !== 0) fulfilled = false;
+    }
+    if (fulfilled) {
+      deferred.splice(i--, 1);
+      rodou.push(dm[0]);
+    }
+  }
+  return rodou;
+}
+var dm1 = [[123, "vendor", "encore"]];
+var r1 = check(dm1, { "web-player": 0 });
+ok("NAO roda a entrada com deps faltando", r1.length === 0);
+ok("e o modulo continua na fila", dm1.length === 1);
+
+var dm2 = [[123, "vendor"]];
+var r2 = check(dm2, { "web-player": 0, "vendor": 0 });
+ok("roda quando as deps chegam", r2.length === 1 && r2[0] === 123);
+ok("e sai da fila (splice com i--)", dm2.length === 0);
+
+// splice(i--, 1) em laco: caso de 2 itens
+var arr = [[1],[2]];
+var out = [];
+for (var i = 0; i < arr.length; i++) { out.push(arr[i][0]); arr.splice(i--, 1); }
+ok("splice(i--,1) drena todos", out.length === 2 && arr.length === 0);
+console.log("FIM");
+</script>

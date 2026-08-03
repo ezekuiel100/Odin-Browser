@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lote 27 — família de pintura SVG + all</title>
+<style>
+  body { margin: 0; font: 13px system-ui, sans-serif; background: #fff; }
+  h2 { font-size: 12px; margin: 12px 8px 4px; color: #555; }
+  .row { display: flex; gap: 16px; padding: 0 10px; align-items: center; }
+  svg { width: 56px; height: 56px; }
+
+  /* 1. opacidade da TINTA (distinta de opacity, que compõe o elemento todo) */
+  .op path { fill: #1266d6; }
+  .o100 path { fill-opacity: 1; }
+  .o50  path { fill-opacity: .5; }
+  .o15  path { fill-opacity: .15; }
+
+  /* 2. linecap: butt (padrão) vs round vs square — o traço grosso mostra */
+  .cap { fill: none; stroke: #d6432f; stroke-width: 5px; }
+  .c-round  { stroke-linecap: round; }
+  .c-square { stroke-linecap: square; }
+
+  /* 3. linejoin: round arredonda o vértice do "V" */
+  .join { fill: none; stroke: #12a150; stroke-width: 4px; }
+  .j-round { stroke-linejoin: round; }
+
+  /* 4. stroke-opacity separado do fill */
+  .both path { fill: #7a3ff2; stroke: #000; stroke-width: 4px; fill-opacity: .3; stroke-opacity: 1; }
+</style>
+
+<h2>1. fill-opacity: 1 / .5 / .15 (mesma cor, tinta mais fraca)</h2>
+<div class="row op">
+  <svg class="o100" viewBox="0 0 24 24"><path d="M3 3h18v18H3z"/></svg>
+  <svg class="o50"  viewBox="0 0 24 24"><path d="M3 3h18v18H3z"/></svg>
+  <svg class="o15"  viewBox="0 0 24 24"><path d="M3 3h18v18H3z"/></svg>
+</div>
+
+<h2>2. stroke-linecap: butt (padrão) / round / square</h2>
+<div class="row">
+  <svg class="cap" viewBox="0 0 24 24"><path d="M6 12h12"/></svg>
+  <svg class="cap c-round" viewBox="0 0 24 24"><path d="M6 12h12"/></svg>
+  <svg class="cap c-square" viewBox="0 0 24 24"><path d="M6 12h12"/></svg>
+</div>
+
+<h2>3. stroke-linejoin: miter (padrão) / round</h2>
+<div class="row">
+  <svg class="join" viewBox="0 0 24 24"><path d="M5 6L12 18L19 6"/></svg>
+  <svg class="join j-round" viewBox="0 0 24 24"><path d="M5 6L12 18L19 6"/></svg>
+</div>
+
+<h2>4. fill-opacity .3 + stroke-opacity 1 no mesmo path</h2>
+<div class="row both">
+  <svg viewBox="0 0 24 24"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 2.5-7.5L3 9h7z"/></svg>
+</div>

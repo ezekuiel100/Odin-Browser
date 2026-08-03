@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>font-weight: escada de pesos e o default de heading</title>
+<style>
+body{margin:0;padding:14px;font:20px sans-serif;background:#fff;color:#111}
+div{margin:2px 0}
+</style>
+</head>
+<body>
+<p style="font:13px sans-serif;color:#555">Esperado (igual ao Chrome): 300/400/500 IDENTICOS (a Segoe UI nao tem face
+500 e a regra de font-matching do CSS desce p/ 400), 600 semibold, 700 bold. O h3 com font-weight:500
+tem de sair REGULAR — o negrito de heading e default do UA e o autor vence.</p>
+<div style="font-weight:300">300 Rapidly build modern websites</div>
+<div style="font-weight:400">400 Rapidly build modern websites</div>
+<div style="font-weight:500">500 Rapidly build modern websites</div>
+<div style="font-weight:600">600 Rapidly build modern websites</div>
+<div style="font-weight:700">700 Rapidly build modern websites</div>
+<div style="font-weight:600;font-style:italic">600 italico</div>
+<div style="font-weight:600;font-family:Georgia,serif">600 serif (sem semibold no sistema)</div>
+<div style="font-weight:600;font-family:Consolas,monospace">600 mono</div>
+<h3 style="margin:6px 0">h3 (default do UA = bold)</h3>
+<h3 style="font-weight:500;margin:6px 0">h3 com font-weight:500</h3>
+</body></html>

@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><script>
+// laco quente puro: mede o custo POR EVAL do tree-walker
+var t0 = Date.now();
+var x = 0;
+for (var i = 0; i < 2000000; i++) { x = x + i; }
+var t1 = Date.now();
+console.log("laco 2M iter: " + (t1 - t0) + " ms");
+
+// mesmo laco com acesso a PROPRIEDADE (get_member) no corpo
+var o = { v: 0 };
+var t2 = Date.now();
+for (var j = 0; j < 2000000; j++) { o.v = o.v + 1; }
+var t3 = Date.now();
+console.log("laco 2M com propriedade: " + (t3 - t2) + " ms");
+
+// e com CHAMADA de funcao no corpo
+function f(a) { return a + 1; }
+var t4 = Date.now();
+var y = 0;
+for (var k = 0; k < 500000; k++) { y = f(y); }
+var t5 = Date.now();
+console.log("laco 500k com chamada: " + (t5 - t4) + " ms");
+console.log("FIM");
+</script>

@@ -1,0 +1,161 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>stroke-miterlimit + shape-rendering</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 14px; background: #fff; color: #111 }
+  h2 { font-size: 13px; margin: 12px 0 4px; color: #555; font-weight: 600 }
+  .lbl { display: inline-block; width: 150px; color: #777; vertical-align: middle }
+  svg { vertical-align: middle }
+  .ml1  { stroke-miterlimit: 1 }
+  .ml10 { stroke-miterlimit: 10 }
+  .crisp { shape-rendering: crispEdges }
+  .geo   { shape-rendering: geometricPrecision }
+</style>
+
+<h2>1. Junta em BICO (miter) — o default do SVG. Angulo cada vez mais agudo.</h2>
+<div>
+  <span class="lbl">default (miter)</span>
+  <svg width="520" height="70" viewBox="0 0 520 70">
+    <g fill="none" stroke="#333" stroke-width="9">
+      <path d="M14 58 L40 14 L66 58"/>
+      <path d="M100 58 L118 14 L136 58"/>
+      <path d="M170 58 L182 14 L194 58"/>
+      <path d="M230 58 L238 14 L246 58"/>
+      <path d="M290 58 L295 14 L300 58"/>
+    </g>
+  </svg>
+</div>
+<div>
+  <span class="lbl">stroke-linejoin=bevel</span>
+  <svg width="520" height="70" viewBox="0 0 520 70">
+    <g fill="none" stroke="#c33" stroke-width="9" stroke-linejoin="bevel">
+      <path d="M14 58 L40 14 L66 58"/>
+      <path d="M100 58 L118 14 L136 58"/>
+      <path d="M170 58 L182 14 L194 58"/>
+      <path d="M230 58 L238 14 L246 58"/>
+      <path d="M290 58 L295 14 L300 58"/>
+    </g>
+  </svg>
+</div>
+<div>
+  <span class="lbl">stroke-linejoin=round</span>
+  <svg width="520" height="70" viewBox="0 0 520 70">
+    <g fill="none" stroke="#07a" stroke-width="9" stroke-linejoin="round">
+      <path d="M14 58 L40 14 L66 58"/>
+      <path d="M100 58 L118 14 L136 58"/>
+      <path d="M170 58 L182 14 L194 58"/>
+      <path d="M230 58 L238 14 L246 58"/>
+      <path d="M290 58 L295 14 L300 58"/>
+    </g>
+  </svg>
+</div>
+
+<h2>2. stroke-miterlimit: onde o bico VIRA bisel</h2>
+<div>
+  <span class="lbl">limit=4 (default)</span>
+  <svg width="520" height="70" viewBox="0 0 520 70">
+    <g fill="none" stroke="#333" stroke-width="9">
+      <path d="M14 58 L40 14 L66 58"/>
+      <path d="M100 58 L118 14 L136 58"/>
+      <path d="M170 58 L182 14 L194 58"/>
+      <path d="M230 58 L238 14 L246 58"/>
+      <path d="M290 58 L295 14 L300 58"/>
+    </g>
+  </svg>
+</div>
+<div>
+  <span class="lbl">limit=1 (tudo bisel)</span>
+  <svg width="520" height="70" viewBox="0 0 520 70">
+    <g fill="none" stroke="#a05" stroke-width="9" class="ml1">
+      <path d="M14 58 L40 14 L66 58"/>
+      <path d="M100 58 L118 14 L136 58"/>
+      <path d="M170 58 L182 14 L194 58"/>
+      <path d="M230 58 L238 14 L246 58"/>
+      <path d="M290 58 L295 14 L300 58"/>
+    </g>
+  </svg>
+</div>
+<div>
+  <span class="lbl">limit=10 (bico ate longe)</span>
+  <svg width="520" height="70" viewBox="0 0 520 70">
+    <g fill="none" stroke="#0a7" stroke-width="9" class="ml10">
+      <path d="M14 58 L40 14 L66 58"/>
+      <path d="M100 58 L118 14 L136 58"/>
+      <path d="M170 58 L182 14 L194 58"/>
+      <path d="M230 58 L238 14 L246 58"/>
+      <path d="M290 58 L295 14 L300 58"/>
+    </g>
+  </svg>
+</div>
+<div>
+  <span class="lbl">limit por ATRIBUTO=2</span>
+  <svg width="520" height="70" viewBox="0 0 520 70">
+    <g fill="none" stroke="#333" stroke-width="9" stroke-miterlimit="2">
+      <path d="M14 58 L40 14 L66 58"/>
+      <path d="M100 58 L118 14 L136 58"/>
+      <path d="M170 58 L182 14 L194 58"/>
+      <path d="M230 58 L238 14 L246 58"/>
+      <path d="M290 58 L295 14 L300 58"/>
+    </g>
+  </svg>
+</div>
+
+<h2>3. Miter em forma FECHADA e em retangulo</h2>
+<div>
+  <svg width="110" height="100" viewBox="0 0 110 100">
+    <polygon points="55,10 95,88 15,88" fill="none" stroke="#333" stroke-width="10"/></svg>
+  <svg width="110" height="100" viewBox="0 0 110 100">
+    <polygon points="55,10 95,88 15,88" fill="none" stroke="#c33" stroke-width="10" stroke-linejoin="round"/></svg>
+  <svg width="110" height="100" viewBox="0 0 110 100">
+    <rect x="15" y="15" width="80" height="70" fill="none" stroke="#07a" stroke-width="10"/></svg>
+  <svg width="110" height="100" viewBox="0 0 110 100">
+    <path d="M20 80 L40 25 L60 60 L90 20" fill="none" stroke="#a05" stroke-width="8"/></svg>
+  <span class="lbl">triangulo bico / round / retangulo / zigue-zague</span>
+</div>
+
+<h2>4. shape-rendering: crispEdges desliga o antialias</h2>
+<div>
+  <span class="lbl">auto (suavizado)</span>
+  <svg width="230" height="60" viewBox="0 0 230 60">
+    <circle cx="30" cy="30" r="22" fill="#07a"/>
+    <path d="M70 52 L92 8 L114 52 Z" fill="#0a7"/>
+    <line x1="130" y1="50" x2="215" y2="12" stroke="#333" stroke-width="5"/>
+  </svg>
+</div>
+<div>
+  <span class="lbl">crispEdges</span>
+  <svg width="230" height="60" viewBox="0 0 230 60" class="crisp">
+    <circle cx="30" cy="30" r="22" fill="#07a"/>
+    <path d="M70 52 L92 8 L114 52 Z" fill="#0a7"/>
+    <line x1="130" y1="50" x2="215" y2="12" stroke="#333" stroke-width="5"/>
+  </svg>
+</div>
+<div>
+  <span class="lbl">optimizeSpeed (= sem AA)</span>
+  <svg width="230" height="60" viewBox="0 0 230 60" shape-rendering="optimizeSpeed">
+    <circle cx="30" cy="30" r="22" fill="#07a"/>
+    <path d="M70 52 L92 8 L114 52 Z" fill="#0a7"/>
+    <line x1="130" y1="50" x2="215" y2="12" stroke="#333" stroke-width="5"/>
+  </svg>
+</div>
+<div>
+  <span class="lbl">herda: so o 2o circulo</span>
+  <svg width="230" height="60" viewBox="0 0 230 60">
+    <circle cx="30" cy="30" r="22" fill="#07a"/>
+    <g class="crisp"><circle cx="90" cy="30" r="22" fill="#07a"/></g>
+  </svg>
+</div>
+
+<h2>5. shape-rendering: geometricPrecision (curva mais fina)</h2>
+<div>
+  <span class="lbl">auto</span>
+  <svg width="230" height="70" viewBox="0 0 230 70">
+    <path d="M10 60 C 60 -20, 160 -20, 215 60" fill="none" stroke="#333" stroke-width="3"/>
+  </svg>
+</div>
+<div>
+  <span class="lbl">geometricPrecision</span>
+  <svg width="230" height="70" viewBox="0 0 230 70" class="geo">
+    <path d="M10 60 C 60 -20, 160 -20, 215 60" fill="none" stroke="#333" stroke-width="3"/>
+  </svg>
+</div>

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 20px; font-size: 20px; }
+  #eco { color: #06c; font-weight: bold; }
+  #status { color: #0a0; font-weight: bold; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h2>Input controlado (padrão React)</h2>
+  <div>Eco: <span id="eco">?</span></div>
+  <div id="status">?</div>
+
+  <script>
+    // Emula um componente de input controlado:
+    //   value vive no "estado"; oninput lê e.target.value e reescreve .value;
+    //   um <span> reflete o estado. Aqui "digitamos" programaticamente.
+    var estado = { texto: '' };
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = '';
+    document.body.appendChild(input);
+
+    var eco = document.getElementById('eco');
+
+    input.oninput = function(e) {
+      estado.texto = e.target.value;       // lê o valor atual do alvo
+      eco.textContent = estado.texto;      // "re-render"
+    };
+
+    // Simula o usuário digitando "Olá!" caractere a caractere.
+    var digitado = '';
+    var letras = ['O', 'l', 'á', '!'];
+    for (var i = 0; i < letras.length; i++) {
+      digitado += letras[i];
+      input.value = digitado;                    // teclado atualizaria .value
+      input.dispatchEvent(new Event('input'));   // ...e dispararia 'input'
+    }
+
+    // Reatribuir o handler (re-render) não deve acumular disparos:
+    input.oninput = function(e) { eco.textContent = e.target.value.toUpperCase(); };
+    input.value = 'fim';
+    input.dispatchEvent(new Event('input'));
+
+    var ok = (estado.texto === 'Olá!') && (eco.textContent === 'FIM');
+    document.getElementById('status').textContent =
+      ok ? 'OK input controlado: estado=Olá! eco=FIM' : 'FALHOU estado=' + estado.texto + ' eco=' + eco.textContent;
+  </script>
+</body>
+</html>

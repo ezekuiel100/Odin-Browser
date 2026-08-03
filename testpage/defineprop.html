@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 20px; font-size: 22px; }
+  #out { color: #0a0; font-weight: bold; }
+  .bad { color: #c00; }
+</style>
+</head>
+<body>
+  <h1 id="out">?</h1>
+  <div id="detalhe"></div>
+
+  <script>
+    // Emula o helper de exports do Babel/esbuild: exports preguiçosos via getter
+    // enumerável + marcador __esModule não-enumerável (value).
+    function _export(target, all) {
+      for (var name in all) {
+        Object.defineProperty(target, name, { enumerable: true, get: all[name] });
+      }
+    }
+
+    var exports = {};
+    Object.defineProperty(exports, '__esModule', { value: true });
+    // getter preguiçoso: acessar exports.soma INVOCA o getter e devolve o valor.
+    _export(exports, {
+      soma: function() { return function(a, b) { return a + b; }; }, // valor = função
+      versao: function() { return '1.0'; }                           // valor = string
+    });
+
+    // Re-export por for-in (interop de módulos): __esModule NÃO deve vazar.
+    var reexport = {};
+    for (var k in exports) reexport[k] = exports[k];
+
+    var checks = [
+      exports.__esModule === true,               // value lido
+      exports.soma(2, 3) === 5,                  // getter devolve a função somadora
+      exports.versao === '1.0',                  // getter devolve a string
+      Object.keys(exports).length === 2,         // __esModule oculto de keys
+      !('__esModule' in reexport),               // não vazou no re-export
+      Object.getOwnPropertyNames(exports).indexOf('__esModule') >= 0 // mas existe
+    ];
+
+    var passou = checks.filter(function(x) { return x; }).length;
+    var el = document.getElementById('out');
+    if (passou === checks.length) {
+      el.textContent = 'OK defineProperty ' + passou + '/' + checks.length;
+    } else {
+      el.className = 'bad';
+      el.textContent = 'FALHOU ' + passou + '/' + checks.length;
+    }
+    document.getElementById('detalhe').textContent =
+      'vec=' + checks.map(function(x) { return x ? '1' : '0'; }).join('') +
+      ' keys=' + Object.keys(exports).join(',');
+  </script>
+</body>
+</html>

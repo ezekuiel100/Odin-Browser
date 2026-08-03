@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@supports avaliado de verdade</title>
+<style>
+  body { font: 16px sans-serif; margin: 24px; background: #fff; color: #111 }
+  h2 { font-size: 15px; margin: 22px 0 6px }
+  .box { height: 46px; line-height: 46px; color: #fff; font-weight: bold;
+         padding: 0 12px; margin-bottom: 6px; background: #b00020 }
+  .ok { background: #1b7f3b }   /* verde = o que DEVE aparecer */
+  p.leg { font-size: 13px; color: #555; margin: 0 0 10px }
+
+  /* 1. condicao FALSA (propriedade que o motor nao conhece) */
+  @supports (nao-existe-mesmo: 1) { #t1 { background: #b00020 } }
+  @supports not (nao-existe-mesmo: 1) { #t1 { background: #1b7f3b } }
+
+  /* 2. progressive enhancement: o fallback do `not` NAO pode sobrescrever o
+        caminho moderno. Antes deste marco os dois blocos entravam e o `not`,
+        por vir depois na ordem de fonte, VENCIA. */
+  @supports (display: grid) { #t2 { background: #1b7f3b } }
+  @supports not (display: grid) { #t2 { background: #b00020 } }
+
+  /* 3. and / or / aninhamento */
+  @supports (display: grid) and (gap: 1px) { #t3 { background: #1b7f3b } }
+  @supports (nao-existe: 1) and (display: grid) { #t3 { background: #b00020 } }
+  @supports (nao-existe: 1) or (color: red) { #t3a { background: #1b7f3b } }
+
+  /* 4. custom properties: o teste classico tem de dar TRUE */
+  @supports (--x: 1) { #t4 { background: #1b7f3b } }
+
+  /* 5. valor com unidade que o motor NAO converte: dizer "suporto" faria o site
+        pular o fallback e ficar sem a propriedade. (`dvh` passou a ser
+        convertida no M222; `cqw` de container query segue fora.) */
+  #t5 { width: 320px; background: #1b7f3b }
+  @supports (width: 50cqw) { #t5 { width: 50cqw; background: #b00020 } }
+
+  /* 6. selector(): respondido pelo parser de seletor real */
+  @supports selector(a:has(img)) { #t6 { background: #1b7f3b } }
+  @supports selector(::selection) { #t6 { background: #b00020 } }
+
+  /* 7. @supports ANINHADO por CSS nesting (antes: descartado sempre) */
+  #t7 { background: #b00020; @supports (display: flex) { background: #1b7f3b } }
+
+  /* 8. sintaxe que nao sabemos avaliar continua PERMISSIVA (nada some) */
+  @supports bananas-do-futuro(x) { #t8 { background: #1b7f3b } }
+</style>
+
+<p class="leg">Tudo verde = correto. Qualquer faixa VERMELHA e um bloco de <code>@supports</code> aplicado na hora errada.</p>
+
+<h2>1. condicao falsa nao aplica / <code>not</code> dela aplica</h2>
+<div class="box" id="t1">@supports not (nao-existe-mesmo: 1)</div>
+
+<h2>2. fallback nao sobrescreve o caminho moderno</h2>
+<div class="box" id="t2">@supports (display: grid) vence o @supports not (display: grid)</div>
+
+<h2>3. and / or</h2>
+<div class="box" id="t3">(display:grid) and (gap:1px)</div>
+<div class="box" id="t3a">(nao-existe:1) or (color:red)</div>
+
+<h2>4. custom property</h2>
+<div class="box" id="t4">@supports (--x: 1)</div>
+
+<h2>5. unidade nao suportada (50cqw): o fallback sobrevive (largura 320px)</h2>
+<div class="box" id="t5">width: 320px</div>
+
+<h2>6. selector()</h2>
+<div class="box" id="t6">selector(a:has(img)) sim, selector(::selection) nao</div>
+
+<h2>7. @supports aninhado (CSS nesting)</h2>
+<div class="box" id="t7">#t7 { @supports (display: flex) { ... } }</div>
+
+<h2>8. sintaxe desconhecida continua permissiva</h2>
+<div class="box" id="t8">@supports bananas-do-futuro(x)</div>

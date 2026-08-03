@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>IntersectionObserver (M232) — prova visual</title>
+<style>
+  body { font: 16px sans-serif; margin: 0; background: #fff; }
+  .caixa { height: 110px; margin: 12px; padding: 10px; border: 2px solid #999;
+           background: #eee; color: #555; }
+  /* O padrão de site real de 2024+: o conteúdo NASCE invisível e só a classe
+     posta pelo observador o revela. Sem IntersectionObserver ele fica assim
+     para sempre — presente no DOM e no layout, e invisível. */
+  .revelar    { opacity: 0; background: #b00020; color: #fff; }
+  .revelar.on { opacity: 1; background: #0a7d32; }
+  #log { background: #003; color: #cfe; height: 60px; }
+  .espaco { height: 500px;  background: repeating-linear-gradient(45deg,#fafafa,#fafafa 20px,#f0f0f0 20px,#f0f0f0 40px); }
+  .abismo { height: 1800px; background: repeating-linear-gradient(45deg,#fafafa,#fafafa 20px,#f0f0f0 20px,#f0f0f0 40px); }
+</style>
+</head>
+<body>
+  <!-- Renderizar com viewport 800x600: so o log e o A cabem na captura, e o log
+       diz o que aconteceu com os que estao fora dela. -->
+  <div id="log">log: o callback NUNCA rodou (era o estado do stub)</div>
+  <div id="a" class="caixa revelar">A — dentro da viewport: DEVE ficar VERDE.</div>
+  <div class="espaco"></div>
+  <div id="b" class="caixa revelar">B — ~240px abaixo da dobra, observado com rootMargin 400px: DEVE entrar.</div>
+  <div class="abismo"></div>
+  <div id="c" class="caixa revelar">C — a 2800px, sem margem: tem de continuar FORA (vermelho).</div>
+
+  <script>
+    var vistos = [];
+    var todos  = ['a', 'b', 'c'];
+
+    function atualizaLog() {
+      var fora = todos.filter(function (id) { return vistos.indexOf(id) < 0 });
+      document.getElementById('log').textContent =
+        'log: revelados [' + vistos.join(',') + ']  |  fora [' + fora.join(',') + ']';
+    }
+
+    function revela(e, como) {
+      if (!e.isIntersecting) return;
+      e.target.classList.add('on');
+      e.target.textContent = e.target.id.toUpperCase() + ' — revelado ' + como +
+                             ' (ratio ' + e.intersectionRatio.toFixed(2) + ')';
+      if (vistos.indexOf(e.target.id) < 0) vistos.push(e.target.id);
+      atualizaLog();
+    }
+
+    // Observador comum (raiz = viewport, sem margem): pega o A, nao pode pegar o C.
+    var io = new IntersectionObserver(function (entries) {
+      for (var i = 0; i < entries.length; i++) revela(entries[i], 'na viewport');
+    });
+    io.observe(document.getElementById('a'));
+    io.observe(document.getElementById('c'));
+
+    // Pre-carregamento: antecipa 400px. E o unico jeito de o B entrar.
+    var io2 = new IntersectionObserver(function (entries) {
+      for (var i = 0; i < entries.length; i++) revela(entries[i], 'por rootMargin');
+    }, { rootMargin: '400px' });
+    io2.observe(document.getElementById('b'));
+  </script>
+</body>
+</html>

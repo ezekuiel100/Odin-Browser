@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>radial-gradient: forma, tamanho e posicao do preludio</title>
+<style>
+  body { margin:0; padding:12px; font:12px sans-serif; background:#fff; color:#111 }
+  .grade { display:flex; flex-wrap:wrap; gap:10px }
+  figure { margin:0; width:210px }
+  .cx { width:210px; height:120px; border:1px solid #bbb }
+  figcaption { padding-top:3px; font:11px monospace; color:#333 }
+
+  /* default: elipse, farthest-corner, centro 50% 50% */
+  .a  { background:radial-gradient(#1e6fff, #ffd21e) }
+  /* posicao */
+  .b  { background:radial-gradient(at 20% 30%, #1e6fff, #ffd21e) }
+  /* circulo vs elipse na mesma caixa retangular */
+  .c  { background:radial-gradient(circle, #1e6fff, #ffd21e) }
+  .d  { background:radial-gradient(ellipse, #1e6fff, #ffd21e) }
+  /* tamanhos por keyword, centro deslocado p/ diferenciarem */
+  .e  { background:radial-gradient(closest-side  at 30% 40%, #1e6fff, #ffd21e) }
+  .f  { background:radial-gradient(farthest-side at 30% 40%, #1e6fff, #ffd21e) }
+  .g  { background:radial-gradient(closest-corner at 30% 40%, #1e6fff, #ffd21e) }
+  .h  { background:radial-gradient(farthest-corner at 30% 40%, #1e6fff, #ffd21e) }
+  /* circulo com keyword de tamanho */
+  .i  { background:radial-gradient(circle closest-side at 30% 40%, #1e6fff, #ffd21e) }
+  /* raios explicitos */
+  .j  { background:radial-gradient(circle 40px at 30% 40%, #1e6fff, #ffd21e) }
+  .k  { background:radial-gradient(ellipse 80% 30% at 50% 50%, #1e6fff, #ffd21e) }
+  /* keywords de posicao */
+  .l  { background:radial-gradient(at top left, #1e6fff, #ffd21e) }
+  /* repeating */
+  .m  { background:repeating-radial-gradient(circle at 50% 50%, #1e6fff 0 12px, #ffd21e 12px 24px) }
+  /* alpha -> transparent (padrao "glow" dos heros modernos) */
+  .n  { background:radial-gradient(ellipse 80% 60% at 50% 0%, rgba(30,111,255,.85), rgba(30,111,255,0)) }
+  /* 3 stops com centro deslocado */
+  .o  { background:radial-gradient(circle at 30% 30%, #1e6fff, #ffd21e 40%, #ff2e93) }
+  /* stops em px (a linha do gradiente do radial = raio horizontal) */
+  .p  { background:radial-gradient(circle 100px at 50% 50%, #1e6fff 0, #1e6fff 40px, #ffd21e 40px, #ffd21e 100px) }
+</style>
+</head>
+<body>
+<div class="grade">
+  <figure><div class="cx a"></div><figcaption>default (elipse/farthest-corner)</figcaption></figure>
+  <figure><div class="cx b"></div><figcaption>at 20% 30%</figcaption></figure>
+  <figure><div class="cx c"></div><figcaption>circle</figcaption></figure>
+  <figure><div class="cx d"></div><figcaption>ellipse</figcaption></figure>
+  <figure><div class="cx e"></div><figcaption>closest-side at 30% 40%</figcaption></figure>
+  <figure><div class="cx f"></div><figcaption>farthest-side at 30% 40%</figcaption></figure>
+  <figure><div class="cx g"></div><figcaption>closest-corner at 30% 40%</figcaption></figure>
+  <figure><div class="cx h"></div><figcaption>farthest-corner at 30% 40%</figcaption></figure>
+  <figure><div class="cx i"></div><figcaption>circle closest-side</figcaption></figure>
+  <figure><div class="cx j"></div><figcaption>circle 40px</figcaption></figure>
+  <figure><div class="cx k"></div><figcaption>ellipse 80% 30%</figcaption></figure>
+  <figure><div class="cx l"></div><figcaption>at top left</figcaption></figure>
+  <figure><div class="cx m"></div><figcaption>repeating circle</figcaption></figure>
+  <figure><div class="cx n"></div><figcaption>glow: alpha -&gt; 0</figcaption></figure>
+  <figure><div class="cx o"></div><figcaption>3 stops at 30% 30%</figcaption></figure>
+  <figure><div class="cx p"></div><figcaption>stops em px (circle 100px)</figcaption></figure>
+</div>
+</body>
+</html>

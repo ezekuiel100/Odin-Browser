@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lote 30 — background-attachment: fixed</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; }
+  .faixa {
+    height: 260px; color: #fff; padding: 10px; font-weight: 700;
+    /* gradiente com faixas NÍTIDAS: dá p/ ver se o fundo escorregou */
+    background-image: repeating-linear-gradient(45deg, #1266d6 0 24px, #0b3f86 24px 48px);
+  }
+  .fixo   { background-attachment: fixed; }
+  .rola   { background-attachment: scroll; }
+  .texto  { padding: 10px; line-height: 2; }
+</style>
+<div class="faixa fixo">A — background-attachment: FIXED (o padrão não pode escorregar ao rolar)</div>
+<div class="texto">conteúdo de rolagem<br>conteúdo<br>conteúdo<br>conteúdo<br>conteúdo</div>
+<div class="faixa rola">B — background-attachment: SCROLL (este acompanha a caixa)</div>
+<div class="texto">fim<br>fim<br>fim<br>fim<br>fim<br>fim<br>fim<br>fim</div>

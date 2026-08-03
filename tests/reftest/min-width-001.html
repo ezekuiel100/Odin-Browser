@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<!-- TESTE: min-width prevalece sobre uma width menor.
+     width:50 + min-width:100 => 100 de largura. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .b { width: 50px; min-width: 100px; height: 100px; background: green; }
+</style>
+<link rel="match" href="min-width-001-ref.html">
+</head>
+<body><div class="b"></div></body>
+</html>

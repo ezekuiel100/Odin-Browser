@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>M222: unidades de viewport dinamicas + min/max/clamp misto</title>
+<!--
+  Viewport do runner: 800x600.
+  Unidades: dvh/svh/lvh e dvw/svw/lvw sao o MESMO viewport neste motor (sem UI de
+  navegador retratil, per css-values-4) e vi/vb sao os eixos inline/block.
+  Misto: min()/max()/clamp() que combinam % com absoluto viram a forma linear
+  CLAMPADA `clamp(lo, frac*base + off, hi)`. O par #d/#e e o que prova que o
+  limite e funcao da BASE, nao uma constante: o MESMO valor da 300 e 200.
+-->
+<style>
+  body { margin: 0 }
+  div { height: 10px }
+  #a { height: 50dvh }                   /* 300 */
+  #b { width: 50dvw }                    /* 400 */
+  #c { height: 10lvh }                   /*  60 */
+  #i { width: 25vi }                     /* 200 */
+  #j { height: 20vb }                    /* 120 */
+  /* os containers nao herdam a altura de sonda de 10px (senao os filhos
+     transbordam e o dump fica confuso de ler) */
+  #pai, #pai2 { height: auto }
+  #pai  { width: 800px }
+  #d { width: min(50%, 300px) }          /* 400 -> teto 300 */
+  #f { width: clamp(320px, 50%, 700px) } /* 400 */
+  #g { width: max(10%, 250px) }          /*  80 -> piso 250 */
+  #h { max-width: min(90%, 200px) }      /* 200 */
+  #k { width: min(calc(100% - 2rem), 60rem) } /* 768 (960 nao limita) */
+  #pai2 { width: 400px }
+  #e { width: min(50%, 300px) }          /* 200 (livre) */
+</style>
+<div id="a"></div>
+<div id="b"></div>
+<div id="c"></div>
+<div id="i"></div>
+<div id="j"></div>
+<div id="pai"><div id="d"></div><div id="f"></div><div id="g"></div><div id="h"></div><div id="k"></div></div>
+<div id="pai2"><div id="e"></div></div>

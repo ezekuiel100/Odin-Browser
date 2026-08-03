@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- REGRESSÃO do lote 24, achada só no lote 28 e que passou por 4 verificações
+     (unit + WPT + golden + visual): o array de trilhas efetivas era deixado no
+     ZERO-VALUE, e o zero de Grid_Track_Kind é .Fixed — então TODA linha implícita
+     virava "fixa" e a regra "linha fixa não cresce com o conteúdo" a segurava em 0.
+     `display:grid` SEM grid-template-rows/grid-auto-rows (o caso mais comum que
+     existe) colapsava: grid h=0, item h=2 (só bordas), conteúdo sobreposto.
+     Esperado: as duas linhas com a altura do conteúdo e o grid somando-as. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .g { display: grid; grid-template-columns: 150px 150px; }
+  .c { border: 1px solid #000; }
+</style></head><body>
+  <div class="g">
+    <div class="c"><div>um</div></div>
+    <div class="c"><div>dois</div></div>
+    <div class="c"><div>tres</div></div>
+    <div class="c"><div>quatro</div></div>
+  </div>
+</body></html>

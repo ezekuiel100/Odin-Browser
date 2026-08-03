@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>mask-image + overflow:hidden (layer com recorte INTERNO)</title>
+<!--
+  Regressao que este arquivo trava (achada no strip de logos do github.com):
+  um elemento com `mask-image` vai para uma LAYER (textura propria), e os
+  vertices dela sao deslocados para o espaco local da textura. O ClipRect dos
+  comandos vive em coordenadas de TELA; se ele NAO for deslocado junto, um
+  `overflow:hidden` dentro da layer recorta num retangulo que nem intercepta a
+  textura e a layer sai VAZIA. Quanto mais para baixo na pagina, mais garantido
+  o apagao - por isso o `top:400px` aqui, e nao `top:50px`.
+
+  Sem texto de proposito: o resultado nao depende de fonte nem de metrica, so
+  de geometria e cor.
+-->
+<style>
+  html, body { margin: 0; background: #fff; }
+  .box   { position: absolute; width: 200px; height: 100px; overflow: hidden; }
+  .wide  { width: 600px; height: 100px; }              /* transborda: prova o clip */
+  #alvo     { left: 50px;  top: 400px;
+              mask-image: linear-gradient(90deg, #0000, #000 40%, #000 60%, #0000);
+              -webkit-mask-image: linear-gradient(90deg, #0000, #000 40%, #000 60%, #0000); }
+  #alvo    .wide { background: #cc0000; }
+  #controle { left: 300px; top: 400px; }               /* mesmo clip, SEM mask */
+  #controle .wide { background: #0000cc; }
+</style>
+
+<div class="box" id="alvo"><div class="wide"></div></div>
+<div class="box" id="controle"><div class="wide"></div></div>

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 32px; font-size: 18px; line-height: 1.8; }
+  /* o padrao classico (impressao): mostra o href apos o link */
+  a::after { content: " <" attr(href) ">"; color: #888; font-size: 14px; }
+  /* prefixo via atributo custom */
+  .tt::before { content: attr(data-label) ": "; font-weight: bold; color: #1a73e8; }
+  /* concatenacao de multiplas strings */
+  .multi::after { content: "[" "x" "]"; color: #dc2626; }
+  /* attr com fallback (atributo ausente) */
+  .fb::after { content: attr(data-missing, " (sem dado)"); color: #16a34a; }
+  /* aspas geradas */
+  q.g::before { content: open-quote; }
+  q.g::after { content: close-quote; }
+</style>
+</head>
+<body>
+  <p><a href="https://example.com/page">Um link</a> — o href aparece depois (era o bug).</p>
+  <p><span class="tt" data-label="Nome">Valor</span></p>
+  <p><span class="multi">multi</span> — concatena strings.</p>
+  <p><span class="fb">fallback</span> — atributo ausente usa o fallback.</p>
+  <p>Cite: <q class="g">frase entre aspas geradas</q></p>
+</body>
+</html>

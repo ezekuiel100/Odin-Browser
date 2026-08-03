@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- -webkit-line-clamp: trunca em N linhas + "…". Sem o fix, o texto inteiro
+     vaza e o card cresce (quebra grids de teasers). Com o fix, o .clamp para
+     em 3 linhas e o .noclamp (controle) mostra tudo. Largura estreita (260px)
+     força varias linhas. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .card { width: 260px; font-size: 16px; line-height: 1.25; }
+  .clamp {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
+</style></head><body>
+  <div class="card clamp" id="c">Este é um parágrafo deliberadamente longo que deve ser truncado em exatamente três linhas com reticências no fim, porque o resto do texto excede o limite de linhas configurado e não deve aparecer nem esticar o cartão além da altura de três linhas.</div>
+  <div class="card" id="n">Este é um parágrafo deliberadamente longo que deve ser truncado em exatamente três linhas com reticências no fim, porque o resto do texto excede o limite de linhas configurado e não deve aparecer nem esticar o cartão além da altura de três linhas.</div>
+</body></html>

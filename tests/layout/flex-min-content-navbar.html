@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  /* Guarda do tamanho minimo automatico de item flex (CSS Flexbox 4.5).
+     Caso reduzido da navbar do GitHub: uma linha flex mais estreita que os itens.
+     O correto e TRANSBORDAR preservando o min-content de cada item, nao espremer
+     (antes os botoes saiam a 53px com texto de 61px, um por cima do outro).
+     Este golden roda por --dumplayout, que monta o atlas de fontes, entao AQUI a
+     largura de texto e medida de verdade -- ao contrario do `odin test`. */
+  body{margin:0;font:16px sans-serif}
+  .row{display:flex;background:#eee}
+  .folga{width:1000px}   /* cabe: controle, garante que a fixture mede o que eu acho */
+  .aperto{width:200px}   /* nao cabe: e aqui que o piso de min-content tem de valer */
+  .item{padding:0 12px;background:#cfc}
+  /* min-width:0 EXPLICITO opta por sair do minimo automatico: tem de encolher */
+  .zerado .item{min-width:0}
+  /* white-space:nowrap tira TODA oportunidade de quebra, entao min-content ==
+     max-content: o item tem de manter a frase INTEIRA, nao a palavra mais larga.
+     E a grafia real do botao do menu do GitHub, e medir "maior palavra" aqui
+     deixava `Open Source` recortado. */
+  .nw .item{white-space:nowrap}
+</style></head><body>
+<div class="row folga"><div class="item">Platform</div><div class="item">Solutions</div><div class="item">Open Source</div><div class="item">Pricing</div></div>
+<div class="row aperto"><div class="item">Platform</div><div class="item">Solutions</div><div class="item">Open Source</div><div class="item">Pricing</div></div>
+<div class="row aperto zerado"><div class="item">Platform</div><div class="item">Solutions</div><div class="item">Open Source</div><div class="item">Pricing</div></div>
+<div class="row aperto nw"><div class="item">Platform</div><div class="item">Solutions</div><div class="item">Open Source</div><div class="item">Pricing</div></div>
+</body></html>

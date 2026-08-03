@@ -1,0 +1,3 @@
+var k = 'x';
+var o = { get [k](){ return 7; } };
+console.log(o.x === 7 ? 'SYNTAX_OK' : 'VAL_FAIL');

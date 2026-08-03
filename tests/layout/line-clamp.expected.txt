@@ -1,0 +1,5 @@
+﻿<anon# .> block x=0 y=0 w=800 h=220
+  <html# .> block x=0 y=0 w=800 h=220
+    <body# .> block x=0 y=0 w=800 h=220
+      <div#c .card clamp> inline x=0 y=0 w=260 h=60
+      <div#n .card> inline x=0 y=60 w=260 h=160

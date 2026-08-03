@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lote 22 — aliases de fornecedor e legados</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #f4f4f6; }
+  h2 { font-size: 13px; margin: 14px 8px 4px; color: #444; }
+  .row { display: flex; }
+  .box { background: #4a6cf7; color: #fff; padding: 8px; }
+
+  /* 1. box-sizing prefixado: as 3 caixas de 200px COM borda de 10px devem
+        ter a MESMA largura total (200) — sem o alias, a 1ª estouraria p/ 220. */
+  .bs { width: 200px; border: 10px solid #1b2a6b; -webkit-box-sizing: border-box; }
+  .bs2 { width: 200px; border: 10px solid #1b2a6b; box-sizing: border-box; }
+
+  /* 2. flexbox legado (IE10 / WebKit 2009): centralizar sem a sintaxe moderna */
+  .legacy { display: flex; height: 80px; background: #dfe3ee;
+            -ms-flex-align: center; -webkit-box-align: center;
+            -ms-flex-pack: justify; -webkit-box-pack: justify; }
+
+  /* 3. flex-flow (shorthand) + grid-gap (nome obsoleto) */
+  .flow { display: flex; flex-flow: column wrap; height: 90px; background: #dfe3ee; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-gap: 6px 18px;
+          background: #dfe3ee; }
+
+  /* 4. grid-column-start/end (longhands) */
+  .g2 { display: grid; grid-template-columns: repeat(4, 1fr); background: #dfe3ee; }
+  .span { grid-column-start: 2; grid-column-end: 4; background: #e0554f; }
+
+  /* 5. -webkit-transform / -moz-border-radius / -webkit-box-shadow */
+  .fx { -webkit-transform: rotate(-8deg); -moz-border-radius: 14px;
+        -webkit-box-shadow: 0 6px 14px rgba(0,0,0,.45); width: 160px; margin: 20px; }
+</style>
+
+<h2>1. -webkit-box-sizing (as duas barras devem ter a MESMA largura)</h2>
+<div class="box bs">webkit</div>
+<div class="box bs2" style="margin-top:4px">padrão</div>
+
+<h2>2. flexbox legado: itens centralizados na vertical, afastados na horizontal</h2>
+<div class="legacy"><span class="box">esquerda</span><span class="box">direita</span></div>
+
+<h2>3. flex-flow: column wrap + grid-gap: 6px 18px</h2>
+<div class="flow"><span class="box">a</span><span class="box">b</span></div>
+<div class="grid" style="margin-top:8px">
+  <span class="box">1</span><span class="box">2</span><span class="box">3</span>
+  <span class="box">4</span><span class="box">5</span><span class="box">6</span>
+</div>
+
+<h2>4. grid-column-start/end (o vermelho ocupa as colunas 2 e 3)</h2>
+<div class="g2">
+  <span class="box">1</span><span class="span">2–3</span><span class="box">4</span>
+</div>
+
+<h2>5. -webkit-transform + -moz-border-radius + -webkit-box-shadow</h2>
+<div class="box fx">girado, arredondado e com sombra</div>

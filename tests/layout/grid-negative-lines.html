@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>grid-column com linha NEGATIVA (conta do fim do grid explicito)</title>
+<!--
+  Regressao travada aqui (achada no hero do stripe.com): `grid-column-end: -1`
+  e `-2` sao linhas contadas do FIM do grid explicito -- com 12 tracks existem 13
+  linhas, entao -1 = 13 e -2 = 12. O motor ignorava o negativo e caia em span 1,
+  entao o <h1> do hero saia com UMA coluna (86px de 1214) e o texto quebrava uma
+  palavra por linha.
+
+  Grid de 12 colunas em 1216px com gap 16: (1216 - 11*16) / 12 = 86,67 por coluna.
+  Larguras esperadas:
+    .full  1 / -1        12 cols + 11 gaps = 1216
+    .inset 2 / -2        10 cols +  9 gaps = 1010
+    .tail  -3 / -1        2 cols +  1 gap  =  189
+    .anch  span 2 / -1    idem, ancorado pelo FIM
+    .ctl   2 / 4          CONTROLE positivo: 2 cols + 1 gap = 189 (nunca esteve quebrado)
+-->
+<style>
+  html, body { margin: 0; padding: 0; }
+  .g { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr));
+       gap: 16px; width: 1216px; }
+  .g > div { height: 20px; }
+  .full  { grid-column-start: 1; grid-column-end: -1; }
+  .inset { grid-column-start: 2; grid-column-end: -2; }
+  .tail  { grid-column: -3 / -1; }
+  .anch  { grid-column: span 2 / -1; }
+  .ctl   { grid-column: 2 / 4; }
+</style>
+
+<div class="g">
+  <div class="full"></div>
+  <div class="inset"></div>
+  <div class="tail"></div>
+  <div class="anch"></div>
+  <div class="ctl"></div>
+</div>

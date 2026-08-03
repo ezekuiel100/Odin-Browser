@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- GUARDA: grid 12-col com repeat(N,1fr) + grid-column: a/b. Já funcionava
+     (A=2/3, B=1/3); o golden garante que o fix de named lines não regrediu
+     o caso comum sem nomes. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); width: 1200px; }
+  .a { grid-column: 1 / 9;  }
+  .b { grid-column: 9 / 13; }
+  .cell { padding: 10px; box-sizing: border-box; }
+</style></head><body>
+  <div class="grid">
+    <div class="a cell">A oito colunas</div>
+    <div class="b cell">B quatro colunas</div>
+  </div>
+</body></html>

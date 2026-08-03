@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<style>
+  body { font-size: 16px; }
+  .box { width: 260px; border: 2px solid steelblue; padding: 8px; margin-bottom: 12px; }
+  .overflow  { }
+  .breakword { overflow-wrap: break-word; }
+  .breakall  { word-break: break-all; }
+  .truncate  { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cliponly  { overflow: hidden; white-space: nowrap; }
+</style>
+</head>
+<body>
+  <div class="box overflow">SEM nada: palavralongademaisparacaberdentrodacaixaestreitaquevaza e estoura a borda.</div>
+  <div class="box breakword">COM overflow-wrap: palavralongademaisparacaberdentrodacaixaestreitaquevaza quebra dentro.</div>
+  <div class="box breakall">COM break-all: Loremipsumdolorsitametconsecteturadipiscingelitseddoeiusmod quebra em qualquer glifo.</div>
+  <div class="box truncate">COM ellipsis: este texto longo em uma linha so deveria terminar com reticencias aqui.</div>
+  <div class="box cliponly">SO clip: este texto longo em uma linha so e cortado seco na borda sem reticencias.</div>
+  <div class="box truncate"><a href="#">Link truncado com ellipsis tambem funciona quando o texto do link e comprido.</a></div>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <div id="saida"></div>
+  <script>
+    var titulo = 'Promoção de Verão: até 50% já!';
+    var linhas = [];
+    linhas.push('len=' + titulo.length);                       // 30
+    linhas.push('trunc=' + titulo.substring(0, 8));            // "Promoção" inteiro, sem cortar acento
+    linhas.push('char=' + titulo[4] + titulo.charAt(6));       // o ã
+    linhas.push('busca=' + titulo.indexOf('até'));             // índice em runes
+    linhas.push('fatia=' + titulo.slice(titulo.indexOf('até'), titulo.indexOf('até') + 3)); // "até"
+    linhas.push('split=' + 'ação'.split('').join('.'));        // a.ç.ã.o
+    var m = /\d+%/.exec(titulo);
+    linhas.push('re=' + m.index + '/' + m[0]);                 // índice rune + "50%"
+    document.getElementById('saida').innerHTML = linhas.map(function(l){ return '<p>' + l + '</p>'; }).join('');
+    console.log('[utf8] ' + linhas.join(' | '));
+  </script>
+</body>
+</html>

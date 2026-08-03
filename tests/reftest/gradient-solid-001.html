@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<!-- TESTE: um linear-gradient de verde para verde = verde solido.
+     Smoke test: o gradiente realmente pinta e preenche a caixa. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .b {
+    width: 100px;
+    height: 100px;
+    background: linear-gradient(to right, green, green);
+  }
+</style>
+<link rel="match" href="gradient-solid-001-ref.html">
+</head>
+<body><div class="b"></div></body>
+</html>

@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>font-weight: inherit / 700 / 500</title>
+<style>
+  body { font-family: sans-serif; font-size: 18px; padding: 20px; }
+  /* o reset que TODO preflight do Tailwind faz nos headings */
+  h1,h2,h3,h4 { font-size: inherit; font-weight: inherit; margin: 0; }
+  .b700 { font-weight: 700; }
+  .b500 { font-weight: 500; }
+  .b600 { font-weight: 600; }
+  .bbold { font-weight: bold; }
+  .row { margin-bottom: 6px; }
+</style>
+<div class="row">1. h3 SEM reset (controle, deve ser NEGRITO):</div>
+<div class="row"><b>--</b></div>
+<div class="row">2. h3 COM font-weight:inherit (deve ser NORMAL):</div>
+<h3 class="row">TEXTO EM h3 herdando peso</h3>
+<div class="row">3. p com font-weight:700 (deve ser NEGRITO):</div>
+<p class="row b700">TEXTO 700</p>
+<div class="row">4. font-weight:bold (deve ser NEGRITO):</div>
+<p class="row bbold">TEXTO bold</p>
+<div class="row">5. font-weight:500 / 600 (medium/semibold):</div>
+<p class="row b500">TEXTO 500</p>
+<p class="row b600">TEXTO 600</p>
+<div class="row">6. normal (referencia):</div>
+<p class="row">TEXTO normal</p>

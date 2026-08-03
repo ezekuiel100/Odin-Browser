@@ -1,0 +1,16 @@
+﻿<anon# .> block x=0 y=0 w=800 h=560
+  <html# .> block x=0 y=0 w=800 h=560
+    <body# .> block x=0 y=0 w=800 h=560
+      <div#a .> inline x=0 y=0 w=800 h=300
+      <div#b .> inline x=0 y=300 w=400 h=10
+      <div#c .> inline x=0 y=310 w=800 h=60
+      <div#i .> inline x=0 y=370 w=200 h=10
+      <div#j .> inline x=0 y=380 w=800 h=120
+      <div#pai .> block x=0 y=500 w=800 h=50
+        <div#d .> inline x=0 y=500 w=300 h=10
+        <div#f .> inline x=0 y=510 w=400 h=10
+        <div#g .> inline x=0 y=520 w=250 h=10
+        <div#h .> inline x=0 y=530 w=200 h=10
+        <div#k .> inline x=0 y=540 w=768 h=10
+      <div#pai2 .> block x=0 y=550 w=400 h=10
+        <div#e .> inline x=0 y=550 w=200 h=10

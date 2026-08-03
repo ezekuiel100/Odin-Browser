@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  html { scroll-behavior: smooth; }         /* troque p/ auto p/ comparar o pulo */
+  body { font-family: sans-serif; margin: 0; }
+  header { position: sticky; top: 0; background: #1a73e8; padding: 12px; }
+  header a { color: #fff; margin-right: 16px; text-decoration: none; }
+  /* scroll-margin-top: a âncora aterrissa 60px abaixo, livre do header sticky. */
+  section { height: 700px; padding: 24px; border-bottom: 2px solid #ddd; scroll-margin-top: 60px; }
+  #a { background: #fde; } #b { background: #dfe; } #c { background: #def; }
+  h2 { margin-top: 0; }
+</style>
+</head>
+<body>
+  <header>
+    <a href="#a">Seção A</a>
+    <a href="#b">Seção B</a>
+    <a href="#c">Seção C</a>
+    <a href="#top">Topo</a>
+  </header>
+  <section id="a"><h2>Seção A</h2><p>Clique nos links do topo. Com scroll-behavior:smooth a rolagem anima; troque para auto e ela pula.</p></section>
+  <section id="b"><h2>Seção B</h2><p>Âncora #b.</p></section>
+  <section id="c"><h2>Seção C</h2><p>Âncora #c. O link "Topo" (#top) volta ao início.</p></section>
+</body>
+</html>

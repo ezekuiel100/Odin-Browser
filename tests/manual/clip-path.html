@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; background: #f4f4f6; padding: 24px; }
+  h1 { font-size: 18px; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; }
+  figure { margin: 0; text-align: center; }
+  figcaption { font-size: 12px; color: #555; margin-top: 6px; font-family: monospace; }
+  .box {
+    width: 160px; height: 160px;
+    background: linear-gradient(135deg, #1a73e8, #e81a5f);
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-weight: bold;
+  }
+  .inset    { clip-path: inset(20px); }
+  .insetr   { clip-path: inset(10px round 30px); }
+  .circle   { clip-path: circle(50%); }
+  .circleat { clip-path: circle(60px at 20% 20%); }
+  .ellipse  { clip-path: ellipse(70px 40%); }
+  .tri      { clip-path: polygon(50% 0%, 100% 100%, 0% 100%); }
+  .star     { clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
+  /* clip-path deve recortar o CONTEÚDO junto (texto e filhos) */
+  .over     { clip-path: circle(45%); }
+  .over p   { background: #ffd400; color: #000; margin: 0; padding: 40px 0; }
+</style>
+</head>
+<body>
+  <h1>clip-path — formas básicas</h1>
+  <div class="row">
+    <figure><div class="box inset">A</div><figcaption>inset(20px)</figcaption></figure>
+    <figure><div class="box insetr">B</div><figcaption>inset(10px round 30px)</figcaption></figure>
+    <figure><div class="box circle">C</div><figcaption>circle(50%)</figcaption></figure>
+    <figure><div class="box circleat">D</div><figcaption>circle(60px at 20% 20%)</figcaption></figure>
+    <figure><div class="box ellipse">E</div><figcaption>ellipse(70px 40%)</figcaption></figure>
+    <figure><div class="box tri">F</div><figcaption>polygon triângulo</figcaption></figure>
+    <figure><div class="box star">G</div><figcaption>polygon estrela (10 pts)</figcaption></figure>
+    <figure><div class="box over"><p>corta filho</p></div><figcaption>circle(45%) + filho</figcaption></figure>
+  </div>
+</body>
+</html>

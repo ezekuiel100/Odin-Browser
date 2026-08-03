@@ -1,0 +1,5 @@
+{
+  "titulo": "dados via fetch",
+  "itens": ["alfa", "beta", "gama"],
+  "total": 3
+}

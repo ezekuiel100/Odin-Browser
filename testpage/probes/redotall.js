@@ -1,0 +1,1 @@
+console.log(/a.b/s.test('a\nb') ? 'SYNTAX_OK' : 'VAL_FAIL');

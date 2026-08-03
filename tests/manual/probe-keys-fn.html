@@ -1,0 +1,33 @@
+<!doctype html><meta charset="utf-8"><title>Object.keys sobre funcao</title>
+<script>
+function ok(n, c) { console.log((c ? "OK  " : "FALHA ") + n); }
+
+function f() {}
+f.j = function (id) { return false; };
+f.outra = 1;
+var ks = Object.keys(f);
+ok("Object.keys(funcao) ve props proprias", ks.length === 2);
+console.log("     keys = [" + ks.join(",") + "]");
+
+// o gate exato do webpack 5 (__webpack_require__.O):
+//   Object.keys(O).every(k => O[k](chunkId))
+// com O.j = id => installedChunks[id] === 0
+var O = function () {};
+var installed = { "web-player": 0 };          // vendor NAO instalado
+O.j = function (id) { return installed[id] === 0; };
+var fulfilled = Object.keys(O).every(function (k) { return O[k]("vendor"); });
+ok("gate NAO cumprido com chunk ausente", fulfilled === false);
+
+var installed2 = { "web-player": 0, "vendor": 0 };
+var O2 = function () {};
+O2.j = function (id) { return installed2[id] === 0; };
+ok("gate cumprido quando o chunk chega",
+   Object.keys(O2).every(function (k) { return O2[k]("vendor"); }) === true);
+
+// formas vizinhas
+ok("for-in sobre funcao", (function(){ var n=0; for (var k in f) n++; return n === 2; })());
+ok("Object.getOwnPropertyNames(funcao) inclui as props", Object.getOwnPropertyNames(f).indexOf("j") >= 0);
+ok("Object.entries(funcao)", Object.entries(f).length === 2);
+ok("[].every vazio e true (vacuidade, correto)", [].every(function(){ return false; }) === true);
+console.log("FIM");
+</script>

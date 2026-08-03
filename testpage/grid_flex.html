@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>Grid &amp; Flexbox — todas as funcionalidades</title>
+<style>
+  body { font-family: sans-serif; margin: 0 auto; max-width: 960px; padding: 24px;
+         background: #f4f4f5; color: #1e293b; line-height: 1.5; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 20px; margin: 34px 0 6px; border-bottom: 2px solid #cbd5e1; padding-bottom: 4px; color: #0f172a; }
+  h3 { font-size: 15px; margin: 18px 0 8px; color: #334155; }
+  .note { color: #64748b; font-size: 13px; margin: 0 0 12px; }
+  .head { background: linear-gradient(to right, #1e3a8a, #6d28d9); color: #fff;
+          padding: 24px; border-radius: 12px; }
+  .head h1 { color: #fff; }
+  .head p { margin: 6px 0 0; color: #e0e7ff; }
+  code { font-family: monospace; background: #e2e8f0; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+
+  /* paletas reutilizáveis */
+  .box  { color: #fff; padding: 12px; border-radius: 6px; text-align: center; font-size: 14px; }
+  .b1 { background: #6366f1; } .b2 { background: #0ea5e9; } .b3 { background: #10b981; }
+  .b4 { background: #f59e0b; } .b5 { background: #ef4444; } .b6 { background: #a855f7; }
+  .panel { background: #e2e8f0; border-radius: 10px; padding: 12px; }
+
+  /* ═══════════ FLEXBOX ═══════════ */
+
+  /* 1 · flex-direction */
+  .fdir { display: flex; gap: 8px; margin-bottom: 10px; }
+  .fdir-col { display: flex; flex-direction: column; gap: 8px; width: 160px; }
+  .fdir-rrev { display: flex; flex-direction: row-reverse; gap: 8px; }
+
+  /* 2 · justify-content (eixo principal) */
+  .jc { display: flex; gap: 6px; margin-bottom: 8px; }
+  .jc > div { width: 70px; }
+  .jc-start   { justify-content: flex-start; }
+  .jc-center  { justify-content: center; }
+  .jc-end     { justify-content: flex-end; }
+  .jc-between { justify-content: space-between; }
+  .jc-around  { justify-content: space-around; }
+  .jc-evenly  { justify-content: space-evenly; }
+
+  /* 3 · align-items (eixo cruzado) */
+  .ai { display: flex; gap: 8px; height: 90px; margin-bottom: 8px; }
+  .ai > div { width: 90px; }
+  .ai-start   { align-items: flex-start; }
+  .ai-center  { align-items: center; }
+  .ai-end     { align-items: flex-end; }
+  .ai-stretch { align-items: stretch; }
+
+  /* 4 · align-self */
+  .aself { display: flex; align-items: flex-start; gap: 8px; height: 110px; }
+  .aself > div { width: 80px; }
+  .s-start  { align-self: flex-start; }
+  .s-center { align-self: center; }
+  .s-end    { align-self: flex-end; }
+  .s-str    { align-self: stretch; }
+
+  /* 5 · flex-grow / shrink / basis */
+  .fgrow { display: flex; gap: 8px; }
+  .fgrow .g1 { flex-grow: 1; } .fgrow .g2 { flex-grow: 2; } .fgrow .g3 { flex-grow: 3; }
+  .fbasis { display: flex; gap: 8px; margin-top: 8px; }
+  .fbasis > div { flex-basis: 120px; }
+  .fbasis .grow { flex: 1; }
+
+  /* 6 · flex-wrap + align-content */
+  .fwrap { display: flex; flex-wrap: wrap; gap: 8px; width: 340px; height: 170px;
+           align-content: center; }
+  .fwrap > div { width: 100px; }
+
+  /* 7 · order + auto-margin */
+  .ford { display: flex; gap: 8px; }
+  .ford .o1 { order: 3; } .ford .o2 { order: 1; } .ford .o3 { order: 2; }
+  .ford .push { margin-left: auto; }
+
+  /* 8 · flex aninhado */
+  .fnest { display: flex; gap: 8px; height: 120px; }
+  .fnest .side { width: 120px; display: flex; flex-direction: column; gap: 8px; }
+  .fnest .side > div { flex: 1; }
+  .fnest .main { flex: 1; display: flex; align-items: center; justify-content: center; }
+
+  /* ═══════════ GRID ═══════════ */
+
+  /* 9 · grid-template-columns: fr */
+  .gfr { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 8px; }
+
+  /* 10 · repeat + auto-fill + minmax */
+  .gauto { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+
+  /* 11 · grid-column / grid-row + span */
+  .gspan { display: grid; grid-template-columns: repeat(3, 1fr);
+           grid-template-rows: 46px 46px; gap: 8px; }
+  .gspan .side { grid-row: 1 / 3; }         /* coluna 1, ocupa as 2 linhas */
+  .gspan .top  { grid-column: 2 / 4; }      /* linha 1, ocupa as colunas 2-3 */
+
+  /* 12 · justify-items / align-items na célula */
+  .gcell { display: grid; grid-template-columns: repeat(3, 100px);
+           grid-template-rows: 70px; gap: 8px; justify-items: center; align-items: center;
+           justify-content: center; }
+  .gcell > div { width: 60px; }
+
+  /* 13 · justify-self / align-self por item */
+  .gself { display: grid; grid-template-columns: repeat(3, 100px);
+           grid-template-rows: 80px; gap: 8px; }
+  .gself > div { width: 60px; }
+  .gself .js-start  { justify-self: start; align-self: start; }
+  .gself .js-center { justify-self: center; align-self: center; }
+  .gself .js-end    { justify-self: end; align-self: end; }
+
+  /* 14 · grid-template-areas + grid-area  (NOVO) */
+  .garea {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    grid-template-rows: 50px 1fr 40px;
+    grid-template-areas:
+      "hd hd"
+      "sb ct"
+      "ft ft";
+    gap: 8px; height: 240px;
+  }
+  .garea .hd { grid-area: hd; background: #1e293b; }
+  .garea .sb { grid-area: sb; background: #10b981; }
+  .garea .ct { grid-area: ct; background: #6366f1; }
+  .garea .ft { grid-area: ft; background: #f59e0b; }
+  .garea .box { display: flex; align-items: center; justify-content: center; }
+
+  /* 15 · grid-template (shorthand: areas + rows / cols)  (NOVO) */
+  .gshort {
+    display: grid;
+    grid-template:
+      "logo nav"   44px
+      "logo main"  1fr
+      / 120px 1fr;
+    gap: 8px; height: 200px;
+  }
+  .gshort .logo { grid-area: logo; background: #a855f7; }
+  .gshort .nav  { grid-area: nav;  background: #0ea5e9; }
+  .gshort .main { grid-area: main; background: #64748b; }
+  .gshort .box  { display: flex; align-items: center; justify-content: center; }
+
+  /* 16 · '.' célula vazia nas áreas  (NOVO) */
+  .gdot {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-areas:
+      "a  .  b"
+      ".  c  .";
+    gap: 8px; height: 130px;
+  }
+  .gdot .a { grid-area: a; background: #ef4444; }
+  .gdot .b { grid-area: b; background: #10b981; }
+  .gdot .c { grid-area: c; background: #6366f1; }
+  .gdot .box { display: flex; align-items: center; justify-content: center; }
+</style>
+</head>
+<body>
+
+<header class="head">
+  <h1>Grid &amp; Flexbox</h1>
+  <p>Todas as funcionalidades de layout da engine numa página só. Cada seção descreve o resultado esperado.</p>
+</header>
+
+<h2>Flexbox</h2>
+
+<h3>1 · flex-direction: row · column · row-reverse</h3>
+<p class="note">Esperado: linha normal; coluna empilhada; linha invertida (6→4).</p>
+<div class="fdir">
+  <div class="box b1">A</div><div class="box b2">B</div><div class="box b3">C</div>
+</div>
+<div class="fdir-col">
+  <div class="box b1">A</div><div class="box b2">B</div><div class="box b3">C</div>
+</div>
+<div class="fdir-rrev" style="margin-top:10px">
+  <div class="box b4">4</div><div class="box b5">5</div><div class="box b6">6</div>
+</div>
+
+<h3>2 · justify-content (start, center, end, space-between/around/evenly)</h3>
+<p class="note">Esperado: os 3 blocos deslocam ao longo do eixo principal conforme cada modo.</p>
+<div class="panel jc jc-start"><div class="box b1">s</div><div class="box b2">t</div><div class="box b3">a</div></div>
+<div class="panel jc jc-center"><div class="box b1">c</div><div class="box b2">e</div><div class="box b3">n</div></div>
+<div class="panel jc jc-end"><div class="box b1">e</div><div class="box b2">n</div><div class="box b3">d</div></div>
+<div class="panel jc jc-between"><div class="box b1">b</div><div class="box b2">tw</div><div class="box b3">n</div></div>
+<div class="panel jc jc-around"><div class="box b1">a</div><div class="box b2">rn</div><div class="box b3">d</div></div>
+<div class="panel jc jc-evenly"><div class="box b1">ev</div><div class="box b2">en</div><div class="box b3">ly</div></div>
+
+<h3>3 · align-items (start, center, end, stretch)</h3>
+<p class="note">Esperado: no eixo cruzado (vertical) os itens grudam no topo, centro, base ou esticam.</p>
+<div class="panel ai ai-start"><div class="box b1">start</div><div class="box b2" style="height:60px">alto</div></div>
+<div class="panel ai ai-center"><div class="box b1">center</div><div class="box b2" style="height:60px">alto</div></div>
+<div class="panel ai ai-end"><div class="box b1">end</div><div class="box b2" style="height:60px">alto</div></div>
+<div class="panel ai ai-stretch"><div class="box b1">stretch</div><div class="box b2">stretch</div></div>
+
+<h3>4 · align-self (cada item escolhe seu alinhamento)</h3>
+<p class="note">Esperado: container alinha no topo, mas cada caixa se posiciona: topo, centro, base e esticada.</p>
+<div class="panel aself">
+  <div class="box b1 s-start">start</div>
+  <div class="box b2 s-center">center</div>
+  <div class="box b3 s-end">end</div>
+  <div class="box b6 s-str">stretch</div>
+</div>
+
+<h3>5 · flex-grow &amp; flex-basis</h3>
+<p class="note">Esperado: 1ª linha divide a sobra em 1:2:3; 2ª linha usa flex-basis:120px e a do meio (flex:1) absorve o resto.</p>
+<div class="fgrow">
+  <div class="box b1 g1">grow 1</div>
+  <div class="box b2 g2">grow 2</div>
+  <div class="box b3 g3">grow 3</div>
+</div>
+<div class="fbasis">
+  <div class="box b4">basis 120</div>
+  <div class="box b5 grow">flex:1 (cresce)</div>
+  <div class="box b6">basis 120</div>
+</div>
+
+<h3>6 · flex-wrap + align-content: center</h3>
+<p class="note">Esperado: 5 itens de 100px quebram em linhas dentro de 340px; as linhas ficam centralizadas na vertical.</p>
+<div class="panel fwrap">
+  <div class="box b1">1</div><div class="box b2">2</div><div class="box b3">3</div>
+  <div class="box b4">4</div><div class="box b5">5</div>
+</div>
+
+<h3>7 · order + margin-left: auto</h3>
+<p class="note">Esperado: apesar da ordem no HTML, a exibição é verde→roxo→vermelho (order 1,2,3); o azul é empurrado à direita por auto-margin.</p>
+<div class="ford">
+  <div class="box b5 o1">DOM1 · order3</div>
+  <div class="box b3 o2">DOM2 · order1</div>
+  <div class="box b6 o3">DOM3 · order2</div>
+  <div class="box b2 push">push (auto)</div>
+</div>
+
+<h3>8 · flex aninhado (coluna dentro de linha)</h3>
+<p class="note">Esperado: sidebar de 2 caixas empilhadas à esquerda; área principal centralizando o conteúdo.</p>
+<div class="fnest">
+  <div class="side">
+    <div class="box b1">topo</div>
+    <div class="box b3">base</div>
+  </div>
+  <div class="box b6 main">conteúdo centralizado</div>
+</div>
+
+<h2>Grid</h2>
+
+<h3>9 · grid-template-columns com fr (1fr 2fr 1fr)</h3>
+<p class="note">Esperado: coluna central com o dobro da largura das laterais.</p>
+<div class="gfr">
+  <div class="box b1">1fr</div><div class="box b2">2fr</div><div class="box b3">1fr</div>
+</div>
+
+<h3>10 · repeat(auto-fill, minmax(140px, 1fr))</h3>
+<p class="note">Esperado: colunas de no mínimo 140px que refluem conforme a largura disponível.</p>
+<div class="gauto">
+  <div class="box b1">1</div><div class="box b2">2</div><div class="box b3">3</div>
+  <div class="box b4">4</div><div class="box b5">5</div><div class="box b6">6</div>
+</div>
+
+<h3>11 · grid-column / grid-row + span</h3>
+<p class="note">Esperado: a caixa roxa ocupa 2 linhas na coluna 1 (grid-row: 1/3); a azul ocupa 2 colunas na linha 1 (grid-column: 2/4); B e C preenchem a linha 2.</p>
+<div class="gspan">
+  <div class="box b6 side">grid-row<br>1 / 3</div>
+  <div class="box b1 top">grid-column: 2 / 4</div>
+  <div class="box b2">B</div>
+  <div class="box b3">C</div>
+</div>
+
+<h3>12 · justify-items + align-items (itens centrados na célula)</h3>
+<p class="note">Esperado: cada item (menor que a célula) fica centrado horizontal e verticalmente; as trilhas agrupadas no meio (justify-content:center).</p>
+<div class="panel gcell">
+  <div class="box b1">A</div><div class="box b2">B</div><div class="box b3">C</div>
+</div>
+
+<h3>13 · justify-self / align-self por item</h3>
+<p class="note">Esperado: 1º no canto superior-esquerdo da sua célula; 2º centralizado; 3º no canto inferior-direito.</p>
+<div class="panel gself">
+  <div class="box b4 js-start">start</div>
+  <div class="box b5 js-center">center</div>
+  <div class="box b6 js-end">end</div>
+</div>
+
+<h3>14 · grid-template-areas + grid-area <span style="color:#7c3aed">(novo)</span></h3>
+<p class="note">Esperado: layout clássico — header no topo (2 col), sidebar à esquerda, conteúdo à direita, footer embaixo (2 col).</p>
+<div class="garea">
+  <div class="box hd">header</div>
+  <div class="box sb">sidebar</div>
+  <div class="box ct">content</div>
+  <div class="box ft">footer</div>
+</div>
+
+<h3>15 · grid-template (shorthand: areas + linhas / colunas) <span style="color:#7c3aed">(novo)</span></h3>
+<p class="note">Esperado: logo abrange as 2 linhas à esquerda (120px); nav no topo-direito (44px); main preenche o resto. Tudo numa só propriedade <code>grid-template</code>.</p>
+<div class="gshort">
+  <div class="box logo">logo</div>
+  <div class="box nav">nav</div>
+  <div class="box main">main</div>
+</div>
+
+<h3>16 · células vazias com '.' nas áreas <span style="color:#7c3aed">(novo)</span></h3>
+<p class="note">Esperado: 'a' no canto sup-esq, 'b' no canto sup-dir, 'c' no centro-baixo; as células marcadas com <code>.</code> ficam vazias.</p>
+<div class="gdot">
+  <div class="box a">a</div>
+  <div class="box b">b</div>
+  <div class="box c">c</div>
+</div>
+
+<p class="note" style="margin-top:32px">Fim. Se todas as 16 seções apareceram como descrito, flex-direction/wrap/justify/align/self/content, grow/shrink/basis, order, auto-margin, flex aninhado, e no grid: fr, repeat/auto-fill/minmax, span, place-items/self, <b>grid-template-areas</b>, <b>grid-area</b> e o shorthand <b>grid-template</b> estão funcionando.</p>
+
+</body>
+</html>

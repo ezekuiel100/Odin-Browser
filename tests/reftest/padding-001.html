@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<!-- TESTE: padding desloca o conteudo p/ dentro. Pai vermelho 100x100
+     (border-box) com padding 25 => filho verde 50x50 fica em (25,25).
+     Resultado: anel vermelho de 25px com quadrado verde 50x50 no centro. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .outer { width: 100px; height: 100px; box-sizing: border-box; padding: 25px; background: red; }
+  .inner { width: 50px; height: 50px; background: green; }
+</style>
+<link rel="match" href="padding-001-ref.html">
+</head>
+<body>
+  <div class="outer"><div class="inner"></div></div>
+</body>
+</html>

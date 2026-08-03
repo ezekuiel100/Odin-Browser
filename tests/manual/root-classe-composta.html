@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>:root.classe sem a classe no html</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; background: #fff; }
+  p { padding: 8px; background: #e2e8f0; margin: 0 0 8px; }
+
+  /* backdrop invisivel por padrao (astro.build) */
+  body:before {
+    content: ""; display: block; position: fixed; inset: 0;
+    background: #0d0f14; z-index: 11; opacity: 0; pointer-events: none;
+  }
+  /* SO acende quando o <html> ganha a classe -- que aqui ele NAO tem */
+  :root.disclosure-open body:before { opacity: 1; }
+
+  /* variantes p/ isolar a forma do seletor */
+  :root.nao-tenho p.v1        { background: #dc2626; }  /* :root + classe ausente */
+  html.nao-tenho p.v2         { background: #dc2626; }  /* html + classe ausente  */
+  :root p.v3                  { background: #16a34a; }  /* :root puro (DEVE valer) */
+  .nao-tenho p.v4             { background: #dc2626; }  /* classe ausente sozinha */
+</style>
+
+<p>1 — VISIVEL: se a pagina sair lisa, o `:root.disclosure-open` casou sem a classe</p>
+<p class="v1">2 — CINZA (`:root.nao-tenho p`): vermelho aqui = bug</p>
+<p class="v2">3 — CINZA (`html.nao-tenho p`): vermelho aqui = bug</p>
+<p class="v3">4 — VERDE (`:root p`): tem de casar</p>
+<p class="v4">5 — CINZA (`.nao-tenho p`): vermelho aqui = bug</p>

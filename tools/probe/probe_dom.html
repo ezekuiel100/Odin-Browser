@@ -1,0 +1,324 @@
+<!doctype html>
+<html><head><title>probe</title></head>
+<body>
+<div id="host" class="a b" data-x="1"><p>texto</p><span>x</span></div>
+<form id="f"><input id="i" name="n" value="v"><select id="s"><option>o</option></select></form>
+<template id="t"><b>tpl</b></template>
+<canvas id="c" width="10" height="10"></canvas>
+<svg id="svg" width="10" height="10"><rect width="5" height="5"/></svg>
+<dialog id="dlg">d</dialog>
+<script>
+var out = [];
+var cat = "";
+function C(c){ cat = c; }
+function T(name, fn){
+  var r;
+  try { r = fn(); } catch(e){
+    var m = "?";
+    try { m = (e && e.name ? e.name + ": " : "") + (e && e.message ? e.message : String(e)); } catch(e2){}
+    out.push("FAIL\t" + cat + "\t" + name + "\t" + m); return;
+  }
+  if (r === true) out.push("OK\t" + cat + "\t" + name);
+  else out.push("BAD\t" + cat + "\t" + name + "\tgot=" + String(r));
+}
+var d = document, host = d.getElementById('host');
+
+C("core");
+T("globalThis", function(){ return typeof globalThis === 'object'; });
+T("window === globalThis", function(){ return typeof window === 'object'; });
+T("document.readyState", function(){ return typeof d.readyState === 'string'; });
+T("document.documentElement/head/body", function(){ return !!d.documentElement && !!d.head && !!d.body; });
+T("querySelector/All", function(){ return d.querySelectorAll('#host p').length === 1; });
+T("seletor complexo :not/:nth-child", function(){ return d.querySelectorAll('#host > *:nth-child(1)').length === 1; });
+T("closest / matches", function(){ return d.querySelector('p').closest('#host') === host && host.matches('.a'); });
+T("classList add/toggle/contains", function(){ host.classList.toggle('c'); return host.classList.contains('c'); });
+T("dataset", function(){ return host.dataset.x === '1'; });
+T("getAttributeNames", function(){ return host.getAttributeNames().indexOf('data-x') >= 0; });
+T("attributes NamedNodeMap", function(){ return host.attributes.length >= 2 && host.attributes[0].name.length > 0; });
+T("isConnected", function(){ return host.isConnected === true; });
+T("children/childNodes/firstElementChild", function(){ return host.children.length === 2 && host.firstElementChild.tagName === 'P'; });
+T("textContent get/set", function(){ var e = d.createElement('i'); e.textContent = 'q'; return e.textContent === 'q'; });
+T("innerHTML set + parse", function(){ var e = d.createElement('div'); e.innerHTML = '<b>x</b>'; return e.children.length === 1; });
+T("outerHTML", function(){ var e = d.createElement('b'); e.textContent='x'; return e.outerHTML === '<b>x</b>'; });
+T("insertAdjacentHTML", function(){ var e = d.createElement('div'); e.insertAdjacentHTML('beforeend', '<i>x</i>'); return e.children.length === 1; });
+T("append/prepend/before/after/remove", function(){ var e = d.createElement('div'); e.append('a'); return e.textContent === 'a' && typeof e.remove === 'function'; });
+T("replaceChildren", function(){ var e = d.createElement('div'); e.innerHTML='<b></b>'; e.replaceChildren(); return e.children.length === 0; });
+T("cloneNode(true)", function(){ return host.cloneNode(true).children.length === 2; });
+T("importNode / adoptNode", function(){ return typeof d.importNode === 'function'; });
+T("createDocumentFragment", function(){ var f = d.createDocumentFragment(); f.appendChild(d.createElement('b')); return f.childNodes.length === 1; });
+T("createTextNode/createComment", function(){ return d.createTextNode('a').nodeValue === 'a' && !!d.createComment('c'); });
+T("template.content", function(){ return d.getElementById('t').content.querySelector('b') !== null; });
+T("compareDocumentPosition/contains", function(){ return host.contains(d.querySelector('p')) === true; });
+T("Node.normalize", function(){ return typeof host.normalize === 'function'; });
+T("NodeList.forEach", function(){ var n=0; d.querySelectorAll('#host *').forEach(function(){n++}); return n === 2; });
+T("HTMLCollection live", function(){ var e = d.createElement('div'); var c = e.children; e.appendChild(d.createElement('b')); return c.length === 1; });
+
+C("eventos");
+T("addEventListener + dispatchEvent", function(){ var hit=0; host.addEventListener('x', function(){hit++}); host.dispatchEvent(new Event('x')); return hit === 1; });
+T("CustomEvent detail", function(){ var v; host.addEventListener('y', function(e){ v = e.detail }); host.dispatchEvent(new CustomEvent('y', {detail: 7})); return v === 7; });
+T("bubbling + stopPropagation", function(){ var n=0; d.body.addEventListener('z', function(){n++}); host.dispatchEvent(new Event('z', {bubbles:true})); return n === 1; });
+T("preventDefault/defaultPrevented", function(){ var e = new Event('q', {cancelable:true}); e.preventDefault(); return e.defaultPrevented === true; });
+T("once / capture options", function(){ var n=0; host.addEventListener('w', function(){n++}, {once:true}); host.dispatchEvent(new Event('w')); host.dispatchEvent(new Event('w')); return n === 1; });
+T("removeEventListener", function(){ var n=0; function h(){n++} host.addEventListener('r', h); host.removeEventListener('r', h); host.dispatchEvent(new Event('r')); return n === 0; });
+T("EventTarget construivel/subclasse", function(){ var t = new EventTarget(); var n=0; t.addEventListener('a', function(){n++}); t.dispatchEvent(new Event('a')); return n===1; });
+T("MouseEvent/KeyboardEvent/PointerEvent", function(){ return typeof MouseEvent === 'function' && typeof KeyboardEvent === 'function' && typeof PointerEvent === 'function'; });
+T("InputEvent/FocusEvent/WheelEvent", function(){ return typeof InputEvent === 'function' && typeof FocusEvent === 'function' && typeof WheelEvent === 'function'; });
+T("AbortController + signal", function(){ var c = new AbortController(); return typeof c.signal === 'object' && typeof c.abort === 'function'; });
+T("addEventListener com signal", function(){ var c = new AbortController(); var n=0; host.addEventListener('sg', function(){n++}, {signal: c.signal}); c.abort(); host.dispatchEvent(new Event('sg')); return n === 0; });
+T("event.target/currentTarget", function(){ var t; host.addEventListener('tt', function(e){ t = e.target }); host.dispatchEvent(new Event('tt')); return t === host; });
+T("onclick property", function(){ var n=0; host.onclick = function(){n++}; host.dispatchEvent(new Event('click')); return n===1; });
+
+C("layout/estilo");
+T("getComputedStyle", function(){ return typeof getComputedStyle(host).color === 'string'; });
+T("getComputedStyle valor resolvido", function(){ var v = getComputedStyle(host).display; return v === 'block' ? true : 'display=' + v; });
+T("element.style set/get", function(){ host.style.color = 'red'; return host.style.color === 'red'; });
+T("style.setProperty + custom prop", function(){ host.style.setProperty('--k', '1px'); return host.style.getPropertyValue('--k') === '1px'; });
+T("cssText", function(){ var e = d.createElement('div'); e.style.cssText = 'color:red'; return e.style.color === 'red'; });
+T("getBoundingClientRect", function(){ var r = host.getBoundingClientRect(); return typeof r.width === 'number' && r.width > 0; });
+T("offsetWidth/offsetHeight/offsetTop", function(){ return typeof host.offsetWidth === 'number' && host.offsetWidth > 0; });
+T("clientWidth/scrollHeight", function(){ return typeof host.clientWidth === 'number'; });
+T("getClientRects", function(){ return typeof host.getClientRects === 'function' && host.getClientRects().length >= 1; });
+T("scrollIntoView / scrollTo", function(){ return typeof host.scrollIntoView === 'function' && typeof window.scrollTo === 'function'; });
+T("window.innerWidth/innerHeight", function(){ return window.innerWidth > 0; });
+T("document.styleSheets", function(){ return typeof d.styleSheets === 'object' && typeof d.styleSheets.length === 'number'; });
+T("CSSStyleSheet.insertRule", function(){ var s = d.createElement('style'); d.head.appendChild(s); try { s.sheet.insertRule('.zz{color:red}', 0); return s.sheet.cssRules.length === 1; } catch(e){ return 'sheet=' + typeof (s.sheet) + ' ' + e.name } });
+T("new CSSStyleSheet + adoptedStyleSheets", function(){ return typeof CSSStyleSheet === 'function' && Array.isArray(d.adoptedStyleSheets); });
+T("CSS.supports / CSS.escape", function(){ return CSS.supports('color: red') === true && typeof CSS.escape === 'function'; });
+// ⚠️ estes dois checavam `typeof ... === 'boolean'` e `typeof addEventListener ===
+// 'function'`: davam OK contra o stub que respondia SEMPRE false. Agora exigem a
+// RESPOSTA certa, com um par verdadeiro/falso (a sonda roda em 800x600).
+T("matchMedia + matches", function(){
+  var sim = matchMedia('(min-width: 1px)').matches, nao = matchMedia('(min-width: 99999px)').matches;
+  return (sim === true && nao === false) ? true : 'sim=' + sim + ' nao=' + nao;
+});
+T("matchMedia media/addListener", function(){
+  var m = matchMedia('(max-width: 99999px)');
+  return (m.media === '(max-width: 99999px)' && m.matches === true &&
+          typeof m.addEventListener === 'function' && typeof m.addListener === 'function')
+    ? true : 'media=' + m.media + ' matches=' + m.matches;
+});
+T("Element.animate (WAAPI)", function(){ return typeof host.animate === 'function'; });
+T("requestAnimationFrame", function(){ return typeof requestAnimationFrame === 'function'; });
+T("requestIdleCallback", function(){ return typeof requestIdleCallback === 'function'; });
+T("ResizeObserver/IntersectionObserver/MutationObserver", function(){ return typeof ResizeObserver === 'function' && typeof IntersectionObserver === 'function' && typeof MutationObserver === 'function'; });
+
+C("canvas/midia");
+// ⚠️ EXERCITA o contexto (o `g ? true` de antes daria OK para qualquer objeto
+// vazio — a mesma armadilha do typeof que este arquivo já pagou 4 vezes).
+T("canvas.getContext('2d')", function(){
+  var g = d.getElementById('c').getContext('2d');
+  if (!g) return 'retornou ' + String(g);
+  g.fillStyle = '#ff0000';
+  g.fillRect(0, 0, 5, 5);
+  g.beginPath(); g.arc(5, 5, 3, 0, Math.PI * 2); g.fill();
+  return (g.fillStyle === '#ff0000' && g.canvas === d.getElementById('c') &&
+          typeof g.measureText('ab').width === 'number' && g.measureText('ab').width > 0)
+    ? true : 'fillStyle=' + g.fillStyle + ' w=' + g.measureText('ab').width;
+});
+T("canvas.toDataURL", function(){ return typeof d.getElementById('c').toDataURL === 'function'; });
+T("OffscreenCanvas", function(){ return typeof OffscreenCanvas === 'function'; });
+T("WebGL", function(){ var g = null; try { g = d.getElementById('c').getContext('webgl'); } catch(e){} return g ? true : 'null'; });
+T("new Image()", function(){ return typeof Image === 'function' && new Image() instanceof HTMLElement; });
+T("img.onload/decode", function(){ return typeof (new Image()).decode === 'function'; });
+T("Audio/Video element", function(){ return typeof Audio === 'function' || typeof HTMLAudioElement === 'function'; });
+T("SVG: getElementById em svg", function(){ return d.getElementById('svg').querySelector('rect') !== null; });
+T("SVGElement API (getBBox)", function(){ return typeof d.getElementById('svg').getBBox === 'function'; });
+T("createElementNS", function(){ return d.createElementNS('http://www.w3.org/2000/svg','circle').tagName.toLowerCase() === 'circle'; });
+
+C("rede/dados");
+T("fetch", function(){ return typeof fetch === 'function'; });
+T("Request/Response/Headers", function(){ return typeof Request === 'function' && typeof Response === 'function' && typeof Headers === 'function'; });
+T("new Response().json()", function(){ return typeof new Response('{}').json === 'function'; });
+T("XMLHttpRequest", function(){ return typeof XMLHttpRequest === 'function'; });
+T("FormData", function(){ var f = new FormData(); f.append('a','1'); return f.get('a') === '1'; });
+T("FormData(form)", function(){ return new FormData(d.getElementById('f')).get('n') === 'v'; });
+T("URL + searchParams", function(){ var u = new URL('https://a.b/c?x=1'); return u.searchParams.get('x') === '1'; });
+T("URLSearchParams", function(){ return new URLSearchParams('a=1').get('a') === '1'; });
+T("Blob", function(){ return typeof Blob === 'function' && new Blob(['a']).size === 1; });
+T("URL.createObjectURL", function(){ return typeof URL.createObjectURL === 'function'; });
+T("File/FileReader", function(){ return typeof File === 'function' && typeof FileReader === 'function'; });
+T("WebSocket", function(){ return typeof WebSocket === 'function'; });
+T("EventSource", function(){ return typeof EventSource === 'function'; });
+T("Worker / SharedWorker", function(){ return typeof Worker === 'function'; });
+T("navigator.serviceWorker", function(){ return typeof navigator.serviceWorker === 'object'; });
+T("indexedDB", function(){ return typeof indexedDB === 'object'; });
+T("localStorage/sessionStorage", function(){ localStorage.setItem('k','1'); return localStorage.getItem('k') === '1' && typeof sessionStorage === 'object'; });
+T("document.cookie", function(){ return typeof d.cookie === 'string'; });
+T("MessageChannel/postMessage", function(){ return typeof MessageChannel === 'function' && typeof window.postMessage === 'function'; });
+T("BroadcastChannel", function(){ return typeof BroadcastChannel === 'function'; });
+T("ReadableStream", function(){ return typeof ReadableStream === 'function'; });
+T("crypto.getRandomValues", function(){ var a = new Uint8Array(4); crypto.getRandomValues(a); return a.length === 4; });
+T("crypto.randomUUID", function(){ return typeof crypto.randomUUID === 'function' && crypto.randomUUID().length === 36; });
+T("crypto.subtle", function(){ return typeof crypto.subtle === 'object'; });
+
+C("navegacao/misc");
+T("location.href/pathname/search", function(){ return typeof location.href === 'string' && typeof location.pathname === 'string'; });
+T("history.pushState/replaceState", function(){ return typeof history.pushState === 'function'; });
+T("popstate/hashchange", function(){ return typeof onpopstate !== 'undefined' || 'onpopstate ausente'; });
+T("navigator.userAgent/language", function(){ return typeof navigator.userAgent === 'string' && typeof navigator.language === 'string'; });
+T("navigator.clipboard", function(){ return typeof navigator.clipboard === 'object'; });
+T("navigator.geolocation", function(){ return typeof navigator.geolocation === 'object'; });
+T("screen.width", function(){ return typeof screen === 'object' && screen.width > 0; });
+T("visualViewport", function(){ return typeof visualViewport === 'object'; });
+T("devicePixelRatio", function(){ return typeof devicePixelRatio === 'number'; });
+T("performance.now/mark", function(){ return typeof performance.now() === 'number' && typeof performance.mark === 'function'; });
+T("PerformanceObserver", function(){ return typeof PerformanceObserver === 'function'; });
+T("DOMParser", function(){ return new DOMParser().parseFromString('<a><b/></a>','text/html').querySelector('b') !== null; });
+T("XMLSerializer", function(){ return typeof XMLSerializer === 'function'; });
+T("Range / createRange", function(){ return typeof d.createRange === 'function'; });
+T("Selection / getSelection", function(){ return typeof getSelection === 'function'; });
+T("document.execCommand", function(){ return typeof d.execCommand === 'function'; });
+T("contentEditable", function(){ var e = d.createElement('div'); e.contentEditable = 'true'; return e.isContentEditable === true; });
+T("focus/blur/activeElement", function(){ var i = d.getElementById('i'); i.focus(); return d.activeElement === i; });
+T("form.submit/reset + validity", function(){ var i = d.getElementById('i'); return typeof i.checkValidity === 'function'; });
+T("input.value / select.value", function(){ return d.getElementById('i').value === 'v' && d.getElementById('s').value === 'o'; });
+T("dialog.showModal", function(){ return typeof d.getElementById('dlg').showModal === 'function'; });
+T("details/summary toggle", function(){ return typeof HTMLDetailsElement === 'function'; });
+T("customElements.define + upgrade", function(){ var ran = 0; class X extends HTMLElement { connectedCallback(){ ran++ } } customElements.define('x-t', X); var e = d.createElement('x-t'); d.body.appendChild(e); return ran === 1 ? true : 'connectedCallback=' + ran; });
+T("attachShadow + slot", function(){ var e = d.createElement('div'); var r = e.attachShadow({mode:'open'}); r.innerHTML = '<slot></slot>'; return e.shadowRoot === r; });
+T("getRootNode", function(){ return host.getRootNode() === d; });
+T("Notification/permissions", function(){ return typeof Notification === 'function'; });
+T("document.fonts", function(){ return typeof d.fonts === 'object'; });
+T("document.title set", function(){ d.title = 'z'; return d.title === 'z'; });
+T("document.write", function(){ return typeof d.write === 'function'; });
+T("alert/confirm/prompt", function(){ return typeof alert === 'function'; });
+T("structuredClone (janela)", function(){ return typeof structuredClone === 'function'; });
+T("reportError / onerror", function(){ return typeof onerror !== 'undefined' || 'onerror ausente'; });
+
+// ── preparação do MutationObserver ───────────────────────────────────────────
+// A entrega é ASSÍNCRONA por spec (fim do microtask checkpoint): registrar,
+// mutar e conferir na MESMA tarefa dá zero até no Chrome — a versão anterior
+// desta sonda fazia exatamente isso e media a coisa errada. Então mutamos AQUI,
+// no script de carga, e conferimos no setTimeout lá embaixo: uma tarefa depois.
+var moN = 0, moRec = null, moSuportado = (typeof MutationObserver === 'function');
+if (moSuportado) {
+  var moAlvo = d.createElement('div');
+  host.appendChild(moAlvo);
+  var moObs = new MutationObserver(function (recs) { moN += recs.length; moRec = recs[0]; });
+  moObs.observe(moAlvo, { childList: true });
+  moAlvo.appendChild(d.createElement('b'));
+}
+
+// ── preparação do IntersectionObserver ───────────────────────────────────────
+// ⚠️ esta sonda dizia OK para "IntersectionObserver dispara" testando
+// `typeof IntersectionObserver === 'function'` — o EXATO erro que o cabeçalho
+// deste arquivo manda evitar, e que deu OK durante meses para um stub cujo
+// callback nunca rodava. Agora a API é EXERCITADA: dois alvos, um dentro e um
+// fora da tela, conferidos numa tarefa POSTERIOR (a entrega vem do passo de
+// interseção do hospedeiro, que roda DEPOIS dos timers do frame — no Chrome é
+// igual: um setTimeout(0) registrado junto roda ANTES do 1º callback).
+var ioN = 0, ioEnt = null, ioLongeN = 0, ioLongeVis = null;
+var ioSuportado = (typeof IntersectionObserver === 'function');
+if (ioSuportado) {
+  new IntersectionObserver(function (es) { ioN += es.length; ioEnt = es[es.length - 1]; }).observe(host);
+  var ioLonge = d.createElement('div');
+  ioLonge.setAttribute('style', 'position:absolute;top:5000px;left:0;width:50px;height:50px');
+  d.body.appendChild(ioLonge);
+  new IntersectionObserver(function (es) { ioLongeN += es.length; ioLongeVis = es[0].isIntersecting; }).observe(ioLonge);
+}
+
+// ── preparação do ResizeObserver ────────────────────────────────────────────
+// Mesma entrega diferida do IntersectionObserver (passo do hospedeiro, depois
+// dos timers), então também é conferido lá no 2º salto.
+var roN = 0, roEnt = null, roSuportado = (typeof ResizeObserver === 'function');
+if (roSuportado) {
+  var roAlvo = d.createElement('div');
+  roAlvo.setAttribute('style', 'width:222px;height:44px');
+  d.body.appendChild(roAlvo);
+  new ResizeObserver(function (es) { roN += es.length; roEnt = es[es.length - 1]; }).observe(roAlvo);
+}
+
+// Tudo acima roda SÍNCRONO, durante o parse — o mesmo momento em que o script de
+// carga de um site roda. Emite já, para que a sonda ainda dê resultado se a
+// página rodar com 1 frame só (o bloco diferido abaixo não chega a disparar).
+console.log("=== PROBE_DOM_BEGIN ===");
+for (var i = 0; i < out.length; i++) console.log(out[i]);
+var emitidos = out.length;
+
+// ── pos-layout ───────────────────────────────────────────────────────────────
+// Metade do DOM só faz sentido DEPOIS do primeiro layout: medir geometria e
+// estilo resolvido no meio do parse mede o momento errado. Este bloco repete as
+// perguntas que dependem de layout num setTimeout — ou seja, no mesmo ponto em
+// que roda o código interativo de um site (timer, rAF, handler de evento).
+// ⚠️ exige frames>=2 no --render; o probe.ps1 já invoca assim.
+setTimeout(function () {
+  C("pos-layout");
+  T("getComputedStyle display", function () { var v = getComputedStyle(host).display; return v === 'block' ? true : 'got=' + v; });
+  T("getComputedStyle color", function () { var v = getComputedStyle(host).color; return /^rgb/.test(v) ? true : 'got=' + v; });
+  T("getComputedStyle width", function () { var v = getComputedStyle(d.getElementById('f')).width; return /^\d+(\.\d+)?px$/.test(v) ? true : 'got=' + v; });
+  T("getComputedStyle camelCase", function () { var v = getComputedStyle(host).fontSize; return /px$/.test(v) ? true : 'got=' + v; });
+  T("getComputedStyle getPropertyValue", function () { var v = getComputedStyle(host).getPropertyValue('display'); return v === 'block' ? true : 'got=' + v; });
+  T("getBoundingClientRect", function () { var r = host.getBoundingClientRect(); return r.width > 0 ? true : 'w=' + r.width; });
+  T("offsetWidth", function () { return host.offsetWidth > 0 ? true : 'got=' + host.offsetWidth; });
+  T("clientWidth/offsetTop", function () { return (host.clientWidth > 0 && typeof host.offsetTop === 'number') ? true : 'cw=' + host.clientWidth + ' ot=' + host.offsetTop; });
+  T("rect derivados (right/bottom)", function () { var r = host.getBoundingClientRect(); return (r.right === r.x + r.width && r.bottom === r.y + r.height) ? true : 'right=' + r.right + ' bottom=' + r.bottom; });
+  T("documentElement.clientHeight = viewport", function () { var v = d.documentElement.clientHeight; return v > 0 ? true : 'got=' + v; });
+  T("body.scrollHeight (documento)", function () { var v = d.body.scrollHeight; return v > 0 ? true : 'got=' + v; });
+  T("window.scrollY é número", function () { return typeof window.scrollY === 'number' ? true : 'got=' + typeof window.scrollY; });
+  // A mutação foi feita no script de carga (ver "preparação" acima); aqui já é
+  // outra tarefa, então o callback tem de ter rodado.
+  T("MutationObserver dispara", function () {
+    if (!moSuportado) return 'sem MutationObserver';
+    return moN > 0 ? true : 'records=' + moN;
+  });
+  T("MutationObserver record util", function () {
+    if (!moRec) return 'sem record';
+    return (moRec.type === 'childList' && moRec.addedNodes.length === 1 &&
+            moRec.addedNodes[0].tagName === 'B' && moRec.target === moAlvo)
+      ? true : 'type=' + moRec.type + ' added=' + moRec.addedNodes.length;
+  });
+  // takeRecords É síncrono por spec: dá para conferir dentro da mesma tarefa.
+  T("MutationObserver takeRecords", function () {
+    if (!moSuportado) return 'sem MutationObserver';
+    var alvo = d.createElement('div'); host.appendChild(alvo);
+    var mo = new MutationObserver(function () {});
+    mo.observe(alvo, { childList: true });
+    alvo.appendChild(d.createElement('i'));
+    var q = mo.takeRecords(); mo.disconnect();
+    return (q.length === 1 && q[0].addedNodes[0].tagName === 'I') ? true : 'q=' + q.length;
+  });
+  T("MutationObserver attributeFilter+oldValue", function () {
+    if (!moSuportado) return 'sem MutationObserver';
+    var alvo = d.createElement('div'); alvo.className = 'antes'; host.appendChild(alvo);
+    var mo = new MutationObserver(function () {});
+    mo.observe(alvo, { attributeFilter: ['class'], attributeOldValue: true });
+    alvo.setAttribute('data-z', '1');   // fora do filtro: não deve gerar record
+    alvo.className = 'depois';
+    var q = mo.takeRecords(); mo.disconnect();
+    return (q.length === 1 && q[0].attributeName === 'class' && q[0].oldValue === 'antes')
+      ? true : 'q=' + q.length + ' n=' + (q[0] && q[0].attributeName) + ' old=' + (q[0] && q[0].oldValue);
+  });
+  // ── uma tarefa DEPOIS ──────────────────────────────────────────────────────
+  // O passo de interseção do hospedeiro roda depois dos timers do frame, então
+  // nada do IntersectionObserver chegou até aqui. Este segundo salto (~2 frames)
+  // é onde ele já entregou — e é também de onde TODAS as linhas diferidas são
+  // impressas, para o placar sair completo. ⚠️ exige frames>=3 no --render.
+  setTimeout(function () {
+    C("pos-layout");
+    T("IntersectionObserver dispara", function () {
+      if (!ioSuportado) return 'sem IntersectionObserver';
+      if (ioN < 1) return 'entries=' + ioN + ' (callback nunca rodou)';
+      return (ioEnt.isIntersecting === true && ioEnt.target === host && ioEnt.intersectionRatio > 0)
+        ? true : 'vis=' + ioEnt.isIntersecting + ' ratio=' + ioEnt.intersectionRatio;
+    });
+    T("ResizeObserver dispara com o tamanho", function () {
+      if (!roSuportado) return 'sem ResizeObserver';
+      if (roN < 1) return 'entries=' + roN + ' (callback nunca rodou)';
+      var w = roEnt.contentRect.width, bs = roEnt.borderBoxSize && roEnt.borderBoxSize[0];
+      return (w === 222 && bs && bs.inlineSize === 222) ? true : 'w=' + w + ' border=' + (bs && bs.inlineSize);
+    });
+    T("IntersectionObserver observacao inicial fora da tela", function () {
+      // O alvo a 5000px NAO intersecta -- mas a spec manda entregar assim mesmo
+      // uma 1a entry com isIntersecting=false. E dela que todo lazy-load depende.
+      if (!ioSuportado) return 'sem IntersectionObserver';
+      return (ioLongeN === 1 && ioLongeVis === false) ? true : 'n=' + ioLongeN + ' vis=' + ioLongeVis;
+    });
+
+    for (var i = emitidos; i < out.length; i++) console.log(out[i]);
+    var ok=0, bad=0, fail=0;
+    for (var i = 0; i < out.length; i++) { if (out[i].indexOf('OK\t')===0) ok++; else if (out[i].indexOf('BAD\t')===0) bad++; else fail++; }
+    console.log("=== PROBE_DOM_END total=" + out.length + " ok=" + ok + " bad=" + bad + " fail=" + fail + " ===");
+  }, 32);
+}, 0);
+</script>
+</body></html>

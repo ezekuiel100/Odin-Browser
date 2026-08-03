@@ -1,0 +1,2 @@
+var re = /a/y; re.lastIndex = 1;
+console.log(re.test('ba') ? 'SYNTAX_OK' : 'VAL_FAIL');

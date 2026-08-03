@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>text-decoration atravessa o espaco entre palavras</title>
+<!--
+  A decoracao pertence ao elemento DECORADOR, nao a palavra: o sublinhado de um
+  link de varias palavras e UMA linha continua, inclusive por cima do espaco.
+  O motor pintava um traco por palavra e o link saia picotado.
+
+  Banda 1 (y 0..120): UM link com duas palavras -> uma unica corrida de tinta.
+  Banda 2 (y 120..240): DOIS links vizinhos     -> duas corridas (controle).
+
+  text-underline-offset afasta a linha dos glifos para a ultima fileira com
+  tinta da banda ser o sublinhado, sem depender das metricas da fonte.
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #fff; }
+  p { margin: 0; height: 120px; padding: 30px 20px 0; font: 40px/60px sans-serif; }
+  a { color: #0000ff; text-decoration: underline; text-underline-offset: 14px; }
+</style>
+<p><a href="#um">aa bb</a></p>
+<p><a href="#dois">aa</a> <a href="#tres">bb</a></p>

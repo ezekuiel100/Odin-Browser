@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  li { color: #06c; }
+</style>
+</head>
+<body>
+  <ul id="lista"></ul>
+  <p id="soma">?</p>
+
+  <script>
+    // generator infinito de Fibonacci, consumido com um limite via for-of + break
+    function* fib() {
+      var a = 0, b = 1;
+      while (true) {
+        yield a;
+        var t = a + b; a = b; b = t;
+      }
+    }
+
+    // generator com yield* delegando a um array e a outro generator
+    function* letras() { yield* ['x', 'y']; }
+    function* rotulos() { yield 'inicio'; yield* letras(); yield 'fim'; }
+
+    var ul = document.getElementById('lista');
+    var soma = 0;
+    var count = 0;
+    for (var n of fib()) {
+      if (count++ >= 8) break;   // 0 1 1 2 3 5 8 13
+      var li = document.createElement('li');
+      li.textContent = 'fib=' + n;
+      ul.appendChild(li);
+      soma += n;
+    }
+
+    var rot = [...rotulos()].join(',');
+    document.getElementById('soma').textContent = 'soma=' + soma + ' rotulos=' + rot;
+
+    console.log('[gen] soma dos 8 primeiros fibs =', soma);
+    console.log('[gen] rotulos =', rot);
+  </script>
+</body>
+</html>

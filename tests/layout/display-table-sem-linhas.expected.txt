@@ -1,0 +1,7 @@
+﻿<anon# .> block x=0 y=0 w=800 h=42
+  <html# .> block x=0 y=0 w=800 h=42
+    <body# .> block x=0 y=0 w=800 h=42
+      <div# .t> block x=0 y=0 w=600 h=21
+        <div# .c> inline x=0 y=0 w=600 h=21
+      <div# .p> block x=0 y=21 w=600 h=21
+        <div# .c> inline x=0 y=21 w=600 h=21

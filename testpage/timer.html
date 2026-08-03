@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  #box {
+    padding: 14px 18px; font-size: 18px;
+    background: #eef4ff; color: #333;
+    display: inline-block; border-radius: 6px;
+  }
+  #box.pronto { background: #e8f7ea; color: #0a7a0a; }
+  #stop { margin-top: 14px; font-size: 14px; color: #888; }
+</style>
+</head>
+<body>
+  <div id="box">esperando timers...</div>
+  <p id="stop">relogio: 0</p>
+
+  <script>
+    // setInterval: atualiza um contador a cada 100ms
+    var t = 0;
+    var id = setInterval(function() {
+      t++;
+      document.getElementById('stop').textContent = 'relogio: ' + t;
+    }, 100);
+
+    // setTimeout: aos 500ms muda o texto e a classe (re-estiliza)
+    setTimeout(function() {
+      var b = document.getElementById('box');
+      b.textContent = 'setTimeout disparou!';
+      b.classList.add('pronto');
+    }, 500);
+
+    // aos 900ms, para o relogio (clearInterval)
+    setTimeout(function() {
+      clearInterval(id);
+      document.getElementById('stop').textContent = 'relogio parado em ' + t;
+    }, 900);
+  </script>
+</body>
+</html>

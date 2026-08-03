@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>resize — a alça é pintada também em item de flex e de grid</title>
+<!--
+  Irmão do resize-grip.html: mesma geometria e as MESMAS regiões amostradas, mas
+  cada caixa é item de um CONTAINER (flex row em cima, grid embaixo) em vez de
+  estar no fluxo/absoluto. O que isso cobre além do outro: em flex/grid quem
+  decide o tamanho do item é o container, e o item de grid abaixo é ESTICADO pela
+  trilha (não tem width própria) — a alça tem de ir para o canto do tamanho FINAL.
+
+    A (canto 220,120)  textarea em flex row, 200x100      -> TEM alça
+    B (canto 420,120)  idem, resize:none                  -> SEM alça (par de A)
+    C (canto 220,260)  textarea em grid, ESTICADO a 200px -> TEM alça
+    D (canto 420,260)  idem, resize:none                  -> SEM alça (par de C)
+-->
+<style>
+  body { margin: 0; background: #fff }
+  textarea {
+    height: 100px; box-sizing: border-box;
+    padding: 0; border: 1px solid #888; background: #fff; font-size: 16px;
+  }
+  .row  { position: absolute; left: 20px; top: 20px;  display: flex; width: 460px }
+  .grade { position: absolute; left: 20px; top: 160px; display: grid;
+           grid-template-columns: 200px 200px; width: 460px }
+  .row textarea { width: 200px } /* no grid a largura vem da TRILHA, de propósito */
+</style>
+<div class="row">
+  <textarea></textarea>
+  <textarea style="resize:none"></textarea>
+</div>
+<div class="grade">
+  <textarea></textarea>
+  <textarea style="resize:none"></textarea>
+</div>

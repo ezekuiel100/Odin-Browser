@@ -1,0 +1,54 @@
+<!doctype html>
+<html data-color-mode="dark" data-dark-theme="dark">
+<head><meta charset="utf-8"><title>fill por regra CSS: o caso do GitHub (fill=none no ROOT + var em cadeia)</title>
+<style>
+  /* Como o Primer define a cor do logo: lista de seletores + var em CADEIA */
+  :root, [data-color-mode=light] { --c-chain: var(--c-base); }
+  [data-color-mode=dark]         { --c-chain: var(--c-base); }
+  :root                          { --c-base: #cc0000; }
+
+  body { font: 14px sans-serif; background: #fff; color: #111; margin: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; height: 52px; }
+  .lbl { width: 380px; }
+
+  /* A = replica do Primer: alvo `svg` E `path`, valor var em CADEIA */
+  .a svg, .a path { fill: var(--c-chain); }
+  /* B = mesma forma, var de UM nivel */
+  .b svg, .b path { fill: var(--c-base); }
+  /* C = mesma forma, cor DIRETA (isola var de cascata) */
+  .c svg, .c path { fill: #cc0000; }
+  /* D = regra so no `path` (sem a parte `svg` da lista) */
+  .d path { fill: #cc0000; }
+  /* E = regra so no `svg` (o path tem de HERDAR pela subarvore) */
+  .e svg { fill: #cc0000; }
+  /* F = aninhado, como o marquee do GitHub */
+  .f .inner .deep path { fill: #cc0000; }
+</style></head>
+<body>
+<p>Cada linha deve mostrar um bloco VERMELHO. Ausente = a regra nao venceu o fill="none" do root.</p>
+
+<div class="row a"><span class="lbl">A: var em CADEIA, `.a svg, .a path` (replica Primer)</span>
+  <svg width="120" height="40" viewBox="0 0 120 40" fill="none"><path d="M0 0H120V40H0Z"/></svg></div>
+
+<div class="row b"><span class="lbl">B: var de UM nivel</span>
+  <svg width="120" height="40" viewBox="0 0 120 40" fill="none"><path d="M0 0H120V40H0Z"/></svg></div>
+
+<div class="row c"><span class="lbl">C: cor DIRETA na mesma forma de seletor</span>
+  <svg width="120" height="40" viewBox="0 0 120 40" fill="none"><path d="M0 0H120V40H0Z"/></svg></div>
+
+<div class="row d"><span class="lbl">D: regra so no `path`</span>
+  <svg width="120" height="40" viewBox="0 0 120 40" fill="none"><path d="M0 0H120V40H0Z"/></svg></div>
+
+<div class="row e"><span class="lbl">E: regra so no `svg` (path herda)</span>
+  <svg width="120" height="40" viewBox="0 0 120 40" fill="none"><path d="M0 0H120V40H0Z"/></svg></div>
+
+<div class="row f"><span class="lbl">F: descendente aninhado (marquee)</span>
+  <div class="inner"><div class="deep">
+  <svg width="120" height="40" viewBox="0 0 120 40" fill="none"><path d="M0 0H120V40H0Z"/></svg></div></div></div>
+
+<div class="row"><span class="lbl">CONTROLE 1: fill no ATRIBUTO do path</span>
+  <svg width="120" height="40" viewBox="0 0 120 40" fill="none"><path fill="#cc0000" d="M0 0H120V40H0Z"/></svg></div>
+
+<div class="row"><span class="lbl">CONTROLE 2: sem fill nenhum (default SVG = preto)</span>
+  <svg width="120" height="40" viewBox="0 0 120 40"><path d="M0 0H120V40H0Z"/></svg></div>
+</body></html>

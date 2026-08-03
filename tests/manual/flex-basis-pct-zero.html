@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>flex-1 do Tailwind: basis 0% vs 0 vs 0px</title>
+<style>
+  body { margin: 0; font-family: sans-serif; }
+  .barra { display: flex; justify-content: space-between; align-items: center; height: 64px; }
+  .logo { width: 160px; height: 32px; background: #dbeafe; }
+  .links { width: 300px; height: 32px; background: #dbeafe; }
+  /* o wrapper da busca do tradebig: flex-1 + max-w-lg + mx-8 */
+  .busca { max-width: 512px; margin: 0 32px; background: #fee2e2; height: 40px; }
+  .a .busca { flex: 1; }          /* o que a fixture antiga provavelmente usava */
+  .b .busca { flex: 1 1 0%; }     /* o que o Tailwind `flex-1` REALMENTE emite */
+  .c .busca { flex: 1 1 0px; }
+  .d .busca { flex-grow: 1; flex-shrink: 1; flex-basis: 0%; } /* longhands */
+  .rot { font-size: 12px; color: #64748b; padding: 4px; }
+</style>
+<div class="rot">A: flex: 1</div>
+<div class="barra a"><div class="logo"></div><div class="busca" id="a"></div><div class="links"></div></div>
+<div class="rot">B: flex: 1 1 0%  (o do Tailwind)</div>
+<div class="barra b"><div class="logo"></div><div class="busca" id="b"></div><div class="links"></div></div>
+<div class="rot">C: flex: 1 1 0px</div>
+<div class="barra c"><div class="logo"></div><div class="busca" id="c"></div><div class="links"></div></div>
+<div class="rot">D: longhands, basis 0%</div>
+<div class="barra d"><div class="logo"></div><div class="busca" id="d"></div><div class="links"></div></div>

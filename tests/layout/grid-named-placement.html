@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- BUG (a corrigir): placement de item por NOME de linha. Padrão MDN
+     (reference-layout): trilhas nomeadas + grid-column: <nome>, com os itens
+     FORA da ordem visual (é justamente pra isso que named placement existe).
+     Ordem no fonte: main, toc, sidebar. Colocação desejada por nome:
+       sidebar -> col 1 (200px @x=0)
+       main    -> col 2 (600px @x=200)
+       toc     -> col 3 (200px @x=800)
+     Sem o fix, os nomes não resolvem (start=0 -> auto-place em ordem de fonte):
+       main -> col1 (200px, ESPREMIDO), toc -> col2 (600px), sidebar -> col3.
+     Ou seja: 'main' colapsa e 'toc' incha — o inverso do certo. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .layout {
+    display: grid;
+    grid-template-columns:
+      [sidebar-start] 200px
+      [sidebar-end main-start] 1fr
+      [main-end toc-start] 200px
+      [toc-end];
+    width: 1000px;
+  }
+  .sidebar { grid-column: sidebar; }
+  .main    { grid-column: main; }
+  .toc     { grid-column: toc; }
+  .cell { padding: 8px; }
+</style></head><body>
+  <div class="layout">
+    <div class="main cell">conteúdo principal</div>
+    <div class="toc cell">In this article</div>
+    <div class="sidebar cell">esquerda</div>
+  </div>
+</body></html>

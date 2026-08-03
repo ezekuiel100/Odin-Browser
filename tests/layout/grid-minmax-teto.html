@@ -1,0 +1,30 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>minmax(): o max e' TETO de crescimento</title>
+<style>
+  html,body{margin:0}
+  /* Grid §12.6: numa trilha minmax(min, max) a base e' a funcao de MINIMO e o max
+     e' apenas um LIMITE DE CRESCIMENTO, alcancavel so com espaco livre. Aqui a
+     trilha do meio pede ate 1536px numa grade de 800: tem de ficar com o que
+     sobra (800 - 40 - 40 = 720), nao com os 1536.
+
+     Reduzido de tailwindcss.com, que escreve
+       grid-template-columns: var(--gutter-width) minmax(0,var(--breakpoint-2xl)) var(--gutter-width)
+     = 40px minmax(0,1536px) 40px. O motor dava os 1536 inteiros, a coluna
+     transbordava e o <h1> de 96px cabia em 2 linhas em vez de 3. */
+  .g { display: grid; grid-template-columns: 40px minmax(0, 1536px) 40px; }
+  .g > div { background: #ddd }
+
+  /* CONTROLE 1: tamanho UNICO nao cede. Aqui o autor pediu 1536px de verdade, e
+     transbordar e' o comportamento certo — o par distingue as duas coisas. */
+  .fixa { display: grid; grid-template-columns: 40px 1536px 40px; }
+
+  /* CONTROLE 2: o MINIMO e' PISO e vence a falta de espaco. 900 > 720 (o que
+     sobra), entao a trilha tem de ficar em 900 e TRANSBORDAR — se eu tivesse
+     escrito 600px o piso nunca morderia (720 > 600) e o caso nao provaria nada. */
+  .piso { display: grid; grid-template-columns: 40px minmax(900px, 1536px) 40px; }
+</style></head>
+<body>
+  <div class="g"><div>a</div><div>b</div><div>c</div></div>
+  <div class="fixa"><div>a</div><div>b</div><div>c</div></div>
+  <div class="piso"><div>a</div><div>b</div><div>c</div></div>
+</body></html>

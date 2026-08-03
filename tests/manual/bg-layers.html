@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>background-image com varias camadas (lista separada por virgula)</title>
+<style>
+  body { margin:0; padding:12px; font:12px sans-serif; background:#fff; color:#111 }
+  .cx { width:300px; height:130px; border:1px solid #999; margin:0 0 4px }
+  p  { margin:0 0 14px; font:11px monospace; color:#333 }
+
+  /* duas e tres camadas: cada gradiente tem sua propria posicao */
+  .dois { background-image:
+      radial-gradient(circle 60px at 20% 50%, #1e6fff, rgba(0,0,0,0)),
+      radial-gradient(circle 60px at 80% 50%, #ff2e93, rgba(0,0,0,0)) }
+  .tres { background-image:
+      radial-gradient(circle 40px at 25% 30%, #1e6fff, rgba(0,0,0,0)),
+      radial-gradient(circle 40px at 50% 70%, #22aa55, rgba(0,0,0,0)),
+      radial-gradient(circle 40px at 75% 30%, #ff2e93, rgba(0,0,0,0)) }
+  /* ORDEM: a 1a camada da lista fica POR CIMA -> resultado vermelho, nao azul */
+  .ordem { background-image:
+      linear-gradient(90deg, #e00, #e00),
+      linear-gradient(0deg, #00f, #00f) }
+  /* a cor de fundo fica EMBAIXO de todas as camadas */
+  .cor { background:
+      linear-gradient(90deg, rgba(30,111,255,.35), rgba(30,111,255,.35)),
+      #ffd21e }
+  /* background-image NAO herda: o filho NAO pode repintar as camadas do pai */
+  .pai { width:300px; padding:16px; box-sizing:border-box; background-image:
+      linear-gradient(90deg, rgba(224,0,0,.6), rgba(224,0,0,.6)),
+      linear-gradient(0deg, #00f, #00f) }
+  .filho { padding:12px; border:1px solid #000; color:#fff }
+  .neto { padding:8px; background:#fff; color:#000 }
+</style>
+</head>
+<body>
+  <div class="cx dois"></div>
+  <p>1) duas camadas: bolha azul a esquerda + rosa a direita</p>
+
+  <div class="cx tres"></div>
+  <p>2) tres camadas</p>
+
+  <div class="cx ordem"></div>
+  <p>3) ordem: a 1a camada (vermelha) cobre a azul -&gt; VERMELHO</p>
+
+  <div class="cx cor"></div>
+  <p>4) gradiente translucido SOBRE background-color amarelo -&gt; esverdeado</p>
+
+  <div class="pai">PAI (2 camadas)
+    <div class="filho">FILHO sem background proprio: mostra o do PAI, NAO repinta
+      <div class="neto">NETO branco</div>
+    </div>
+  </div>
+  <p>5) camadas nao herdam (filho transparente, nao magenta solido proprio)</p>
+</body>
+</html>

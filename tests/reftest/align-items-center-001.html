@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- TESTE: align-items:center centraliza o item no eixo cruzado (vertical em row).
+     Container 100 de altura, item 50 => item em y=25..75. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .row { display: flex; align-items: center; width: 100px; height: 100px; }
+  .item { width: 100px; height: 50px; background: green; }
+</style>
+<link rel="match" href="align-items-center-001-ref.html">
+</head>
+<body>
+  <div class="row"><div class="item"></div></div>
+</body>
+</html>

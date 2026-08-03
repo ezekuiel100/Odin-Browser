@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<!-- TESTE: grid-template-columns:100px 100px cria 2 colunas.
+     Duas celulas verdes preenchem 200x100 (lado a lado). -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .g { display: grid; grid-template-columns: 100px 100px; width: 200px; }
+  .c { height: 100px; background: green; }
+</style>
+<link rel="match" href="grid-columns-001-ref.html">
+</head>
+<body>
+  <div class="g"><div class="c"></div><div class="c"></div></div>
+</body>
+</html>

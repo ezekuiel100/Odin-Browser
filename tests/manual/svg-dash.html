@@ -1,0 +1,97 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>stroke-dasharray / stroke-dashoffset</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 16px; background: #fff; color: #111 }
+  h2 { font-size: 13px; margin: 14px 0 4px; color: #555; font-weight: 600 }
+  .row { display: block; margin-bottom: 2px }
+  svg { vertical-align: middle; overflow: visible }
+  .lbl { display: inline-block; width: 190px; color: #777 }
+  /* caminho de REGRA CSS (a ponte g_svg_css) */
+  .css-dash  { stroke: #0a7; stroke-width: 3; stroke-dasharray: 12 6 }
+  .css-odd   { stroke: #0a7; stroke-width: 3; stroke-dasharray: 5 }
+  .css-em    { stroke: #0a7; stroke-width: 3; stroke-dasharray: 1em 0.5em; font-size: 10px }
+  .css-none  { stroke-dasharray: none }
+  .css-off   { stroke: #c33; stroke-width: 3; stroke-dasharray: 12 6; stroke-dashoffset: 12 }
+  .css-offn  { stroke: #c33; stroke-width: 3; stroke-dasharray: 12 6; stroke-dashoffset: -6 }
+</style>
+
+<h2>1. Linha: sólido (controle) vs tracejado por ATRIBUTO</h2>
+<div class="row"><span class="lbl">sem dasharray</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#333" stroke-width="3"/></svg></div>
+<div class="row"><span class="lbl">stroke-dasharray="12 6"</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#333" stroke-width="3" stroke-dasharray="12 6"/></svg></div>
+<div class="row"><span class="lbl">virgula: "12,6"</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#333" stroke-width="3" stroke-dasharray="12,6"/></svg></div>
+<div class="row"><span class="lbl">impar "5" (= 5 5)</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#333" stroke-width="3" stroke-dasharray="5"/></svg></div>
+
+<h2>2. Por REGRA CSS e por style= (a ponte que os icon-sets usam)</h2>
+<div class="row"><span class="lbl">regra .css-dash</span>
+  <svg width="300" height="14"><line class="css-dash" x1="2" y1="7" x2="298" y2="7"/></svg></div>
+<div class="row"><span class="lbl">regra .css-odd (impar)</span>
+  <svg width="300" height="14"><line class="css-odd" x1="2" y1="7" x2="298" y2="7"/></svg></div>
+<div class="row"><span class="lbl">regra .css-em (1em/.5em)</span>
+  <svg width="300" height="14"><line class="css-em" x1="2" y1="7" x2="298" y2="7"/></svg></div>
+<div class="row"><span class="lbl">style="stroke-dasharray:2 10"</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#333" stroke-width="3" style="stroke-dasharray:2 10"/></svg></div>
+<div class="row"><span class="lbl">REGRA vence o ATRIBUTO</span>
+  <svg width="300" height="14"><line class="css-dash" x1="2" y1="7" x2="298" y2="7" stroke-dasharray="none"/></svg></div>
+
+<h2>3. stroke-dashoffset (o mesmo padrao 12/6, deslocado)</h2>
+<div class="row"><span class="lbl">offset 0 (referencia)</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#c33" stroke-width="3" stroke-dasharray="12 6"/></svg></div>
+<div class="row"><span class="lbl">offset 12 (comeca no VAO)</span>
+  <svg width="300" height="14"><line class="css-off" x1="2" y1="7" x2="298" y2="7"/></svg></div>
+<div class="row"><span class="lbl">offset -6 (enrola)</span>
+  <svg width="300" height="14"><line class="css-offn" x1="2" y1="7" x2="298" y2="7"/></svg></div>
+<div class="row"><span class="lbl">offset por ATRIBUTO = 6</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#c33" stroke-width="3" stroke-dasharray="12 6" stroke-dashoffset="6"/></svg></div>
+
+<h2>4. Pontilhado: dasharray "0 10" + linecap round</h2>
+<div class="row"><span class="lbl">butt (spec: nao aparece)</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#333" stroke-width="5" stroke-dasharray="0 10"/></svg></div>
+<div class="row"><span class="lbl">round (pontos)</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#333" stroke-width="5" stroke-dasharray="0 10" stroke-linecap="round"/></svg></div>
+<div class="row"><span class="lbl">1 10 round (quase ponto)</span>
+  <svg width="300" height="14"><line x1="2" y1="7" x2="298" y2="7" stroke="#333" stroke-width="5" stroke-dasharray="1 10" stroke-linecap="round"/></svg></div>
+
+<h2>5. Formas FECHADAS e &lt;path&gt; (o caminho do svg_emit_multi)</h2>
+<div class="row">
+  <svg width="90" height="90" viewBox="0 0 90 90">
+    <rect x="8" y="8" width="74" height="74" fill="none" stroke="#333" stroke-width="3"/></svg>
+  <svg width="90" height="90" viewBox="0 0 90 90">
+    <rect x="8" y="8" width="74" height="74" fill="none" stroke="#333" stroke-width="3" stroke-dasharray="10 5"/></svg>
+  <svg width="90" height="90" viewBox="0 0 90 90">
+    <circle cx="45" cy="45" r="36" fill="none" stroke="#07a" stroke-width="3"/></svg>
+  <svg width="90" height="90" viewBox="0 0 90 90">
+    <circle cx="45" cy="45" r="36" fill="none" stroke="#07a" stroke-width="3" stroke-dasharray="8 6"/></svg>
+  <svg width="90" height="90" viewBox="0 0 90 90">
+    <path d="M12 78 L30 30 L50 60 L78 14" fill="none" stroke="#a05" stroke-width="3"
+          stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <svg width="90" height="90" viewBox="0 0 90 90">
+    <path d="M12 78 L30 30 L50 60 L78 14" fill="none" stroke="#a05" stroke-width="3"
+          stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="9 5"/></svg>
+</div>
+
+<h2>6. Herança pelo &lt;g&gt;, e o none que a CANCELA</h2>
+<div class="row">
+  <svg width="300" height="60" viewBox="0 0 300 60">
+    <g stroke="#333" stroke-width="3" fill="none" stroke-dasharray="8 4">
+      <line x1="4" y1="12" x2="296" y2="12"/>
+      <line x1="4" y1="30" x2="296" y2="30"/>
+      <line x1="4" y1="48" x2="296" y2="48" class="css-none"/>
+    </g>
+  </svg>
+</div>
+<p style="color:#777">A 3a linha do grupo tem <code>stroke-dasharray:none</code> por regra: tem de sair SOLIDA.</p>
+
+<h2>7. Anel de progresso (o uso #1 da prop em site real)</h2>
+<div class="row">
+  <svg width="80" height="80" viewBox="0 0 80 80">
+    <circle cx="40" cy="40" r="34" fill="none" stroke="#e5e5e5" stroke-width="8"/>
+    <circle cx="40" cy="40" r="34" fill="none" stroke="#0a7" stroke-width="8" stroke-linecap="round"
+            stroke-dasharray="213.6" stroke-dashoffset="64" transform="rotate(-90 40 40)"/>
+  </svg>
+  <span class="lbl">70% (dasharray = perimetro, offset = 30%)</span>
+</div>

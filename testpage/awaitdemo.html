@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  #titulo { color: #06c; font-size: 20px; }
+  .item { background: #e8f7ea; color: #0a7a0a; padding: 6px 12px; margin: 4px 0; border-radius: 4px; }
+  #passos { color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+  <p id="titulo">carregando...</p>
+  <div id="lista"></div>
+  <p id="passos"></p>
+
+  <script>
+    // o estilo moderno: async/await em vez de cadeias de .then
+    async function carrega() {
+      var passos = 'fetch';
+      var r = await fetch('data.json');
+      passos += ' -> json';
+      var data = await r.json();
+      passos += ' -> pronto';
+
+      document.getElementById('titulo').textContent = data.titulo + ' via async/await';
+      for (var i = 0; i < data.itens.length; i++) {
+        var d = document.createElement('div');
+        d.classList.add('item');
+        d.textContent = `${i + 1}. ${data.itens[i]}`;   // template literal
+        document.getElementById('lista').appendChild(d);
+      }
+      document.getElementById('passos').textContent = passos;
+    }
+    carrega();
+  </script>
+</body>
+</html>

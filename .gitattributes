@@ -1,0 +1,22 @@
+# NENHUMA normalização de fim de linha. Isto é deliberado.
+#
+# Metade das ferramentas deste repositório é PowerShell 5.1, que decide o
+# encoding de um .ps1 pelo BOM: um script UTF-8 SEM BOM é lido como ANSI, todo
+# acento vira lixo e o parser quebra. Já custou uma rodada inteira do gap-miner,
+# perdida porque um passo intermediário regravou o arquivo sem o BOM.
+#
+# E `wpt-baseline-fails.txt` é UTF-8-com-BOM + CRLF de propósito: é a lista
+# nomeada que o diff do WPT consome, e um lado reencodado transforma o diff em
+# dezenas de "consertos" que são só ausência de medição.
+#
+# `* -text` manda o git guardar e devolver os bytes EXATOS. Este projeto só
+# builda no Windows (main.odin importa core:sys/windows), então não há o
+# incômodo usual de checkout multiplataforma para compensar.
+* -text
+
+# Marcados como binários para não sujarem diff nem `git grep`.
+*.png    binary
+*.bmp    binary
+*.woff2  binary
+*.ttf    binary
+*.bin    binary

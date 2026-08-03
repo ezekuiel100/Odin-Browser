@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>paint gate: window.innerWidth/innerHeight (M232)</title>
+<style>
+  /* Gate renderiza em 400x300. As duas caixas de cima medem 200px SE
+     innerWidth for 400; com os antigos 800 fixos elas sairiam com 400 e
+     vazariam para a direita. Cores chapadas, posicao absoluta: nada aqui
+     depende de fonte. */
+  html, body { margin: 0; padding: 0; background: #fff; }
+  .cx  { position: absolute; height: 60px; }
+  #meia { left: 0px;   top: 10px;  width: 0px; background: #1030c0; }
+  #ctl  { left: 0px;   top: 110px; width: 200px; background: #0a7d32; }
+  #alt  { left: 300px; top: 160px; width: 60px;  height: 0px; background: #b00020; }
+  /* matchMedia: o SIM tem de virar verde e o NAO tem de continuar azul. Com o
+     stub antigo (matches sempre false) os dois ficavam como nasceram. */
+  #mqsim    { left: 0px;   top: 210px; width: 120px; background: #b00020; }
+  #mqsim.on { background: #0a7d32; }
+  #mqnao    { left: 140px; top: 210px; width: 120px; background: #1030c0; }
+  #mqnao.on { background: #f0d000; }
+</style>
+</head>
+<body>
+  <div id="meia" class="cx"></div>
+  <div id="ctl"  class="cx"></div>
+  <div id="alt"  class="cx"></div>
+  <div id="mqsim" class="cx"></div>
+  <div id="mqnao" class="cx"></div>
+  <script>
+    // matchMedia contra o viewport REAL de 400px: a 1a casa, a 2a nao.
+    if (window.matchMedia('(min-width: 300px)').matches) document.getElementById('mqsim').classList.add('on');
+    if (window.matchMedia('(min-width: 900px)').matches) document.getElementById('mqnao').classList.add('on');
+    // Metade da LARGURA da janela: 200 com o viewport real (400), 400 com o
+    // valor fixo antigo (800) -- e ai a caixa cobre a tela toda.
+    document.getElementById('meia').setAttribute('style', 'width:' + (window.innerWidth / 2) + 'px');
+    // Um terco da ALTURA: 100 com o viewport real (300), 200 com o antigo (600).
+    document.getElementById('alt').setAttribute('style', 'height:' + (window.innerHeight / 3) + 'px');
+  </script>
+</body>
+</html>

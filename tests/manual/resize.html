@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>resize (css-ui) — alça de redimensionamento</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 16px; background: #fff; color: #111 }
+  h2 { font-size: 13px; margin: 18px 0 6px; color: #555; font-weight: 600 }
+  .caixa { width: 200px; height: 90px; padding: 8px; border: 1px solid #888;
+           background: #eef3ff; overflow: auto }
+  .linha { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap }
+  textarea { width: 220px; height: 70px }
+  code { background: #f2f2f2; padding: 0 3px; border-radius: 3px }
+</style>
+
+<h2>1. &lt;textarea&gt; — o padrão da UA é <code>resize: both</code> (alça nos dois eixos)</h2>
+<div class="linha">
+  <textarea>arraste o canto inferior direito</textarea>
+  <textarea style="resize:none">resize:none — SEM alça</textarea>
+  <textarea style="resize:vertical">resize:vertical — só altura</textarea>
+  <textarea style="resize:horizontal">resize:horizontal — só largura</textarea>
+</div>
+
+<h2>2. Aplicabilidade: só vale com <code>overflow</code> ≠ visible</h2>
+<div class="linha">
+  <div class="caixa" style="resize:both">
+    overflow:auto + resize:both → TEM alça
+  </div>
+  <div class="caixa" style="resize:both; overflow:visible">
+    overflow:visible + resize:both → NÃO deve ter alça (é o que o Chrome faz)
+  </div>
+</div>
+
+<h2>3. Eixo único e grafias lógicas (horizontal-tb: inline=x, block=y)</h2>
+<div class="linha">
+  <div class="caixa" style="resize:horizontal">resize:horizontal</div>
+  <div class="caixa" style="resize:vertical">resize:vertical</div>
+  <div class="caixa" style="resize:inline">resize:inline ≡ horizontal</div>
+  <div class="caixa" style="resize:block">resize:block ≡ vertical</div>
+</div>
+
+<h2>4. min/max continuam mandando (o arraste entra pelos campos de width/height)</h2>
+<div class="linha">
+  <div class="caixa" style="resize:both; min-width:150px; max-width:300px; min-height:60px; max-height:160px">
+    o arraste trava entre 150–300 px de largura e 60–160 px de altura
+  </div>
+  <div class="caixa" style="resize:both; box-sizing:border-box; padding:16px">
+    box-sizing:border-box — a alça mede a caixa DE BORDA
+  </div>
+</div>
+
+<h2>5. Aninhado: a alça mais INTERNA vence o clique</h2>
+<div class="linha">
+  <div class="caixa" style="resize:both; width:320px; height:220px; background:#fff3e0">
+    externa
+    <div class="caixa" style="resize:both; width:140px; height:80px; background:#e8f5e9">interna</div>
+  </div>
+</div>

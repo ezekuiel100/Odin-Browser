@@ -1,0 +1,73 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>transition-property / timing-function / delay (M223)</title>
+<!--
+  ⚠️ Esta pagina SO vale no app interativo (browser.exe e passe o mouse): uma
+  transicao precisa de uma MUDANCA depois do primeiro paint, e o `--render`
+  headless nao entrega isso (o `init` snapa no primeiro frame, e timer com atraso
+  nao dispara no render de arquivo local -- ver a memoria do M223).
+
+  Passe o mouse em cada faixa e confira a descricao ao lado.
+-->
+<style>
+  body { font: 15px sans-serif; margin: 24px; background: #fff; color: #111 }
+  h2 { font-size: 14px; margin: 26px 0 8px; color: #444 }
+  .row { display: flex; align-items: center; gap: 16px; margin-bottom: 10px }
+  .box { width: 190px; height: 54px; line-height: 54px; text-align: center;
+         color: #fff; font-weight: bold; background: #334155; border: 4px solid #334155 }
+  .nota { font-size: 13px; color: #555 }
+
+  /* 1. transition-property: so o canal NOMEADO anima -------------------------- */
+  #p1 { transition: background-color 1.2s linear }
+  #p1:hover { background: #b45309; border-color: #16a34a; opacity: .5 }
+  #p2 { transition: opacity 1.2s linear }
+  #p2:hover { background: #b45309; border-color: #16a34a; opacity: .5 }
+  #p3 { transition: all 1.2s linear }
+  #p3:hover { background: #b45309; border-color: #16a34a; opacity: .5 }
+
+  /* 2. timing-function: mesma duracao, curvas diferentes ---------------------- */
+  .t { transition-property: transform; transition-duration: 1.4s }
+  #t1 { transition-timing-function: linear }
+  #t2 { transition-timing-function: ease-in }
+  #t3 { transition-timing-function: ease-out }
+  #t4 { transition-timing-function: cubic-bezier(0.68, -0.55, 0.27, 1.55) }
+  #t5 { transition-timing-function: steps(4) }
+  .t:hover { transform: scale(1.6) }
+
+  /* 3. delay: escalonamento -------------------------------------------------- */
+  .d { transition-property: background-color; transition-duration: .4s; transition-timing-function: linear }
+  #d1 { transition-delay: 0s }
+  #d2 { transition-delay: .3s }
+  #d3 { transition-delay: .6s }
+  #escada:hover .d { background: #b45309 }
+
+  /* 4. lista com props/tempos proprios na MESMA declaracao -------------------- */
+  #multi { transition: background-color .3s linear, transform 1.5s ease-in .5s }
+  #multi:hover { background: #b45309; transform: scale(1.3) }
+</style>
+
+<h2>1. <code>transition-property</code> — o :hover muda fundo, borda e opacidade nas TRES</h2>
+<div class="row"><div class="box" id="p1">background-color</div>
+  <span class="nota">so o FUNDO desliza; borda e opacidade saltam</span></div>
+<div class="row"><div class="box" id="p2">opacity</div>
+  <span class="nota">so a OPACIDADE desliza; fundo e borda saltam</span></div>
+<div class="row"><div class="box" id="p3">all</div>
+  <span class="nota">os tres deslizam juntos</span></div>
+
+<h2>2. <code>transition-timing-function</code> — mesma duracao (1,4s), curvas diferentes</h2>
+<div class="row"><div class="box t" id="t1">linear</div><span class="nota">velocidade constante</span></div>
+<div class="row"><div class="box t" id="t2">ease-in</div><span class="nota">comeca devagar</span></div>
+<div class="row"><div class="box t" id="t3">ease-out</div><span class="nota">termina devagar</span></div>
+<div class="row"><div class="box t" id="t4">cubic-bezier (back)</div><span class="nota">passa do alvo e volta</span></div>
+<div class="row"><div class="box t" id="t5">steps(4)</div><span class="nota">4 degraus, nao desliza</span></div>
+
+<h2>3. <code>transition-delay</code> — passe o mouse na area: as tres em escada</h2>
+<div id="escada">
+  <div class="row"><div class="box d" id="d1">delay 0s</div><span class="nota">sai na hora</span></div>
+  <div class="row"><div class="box d" id="d2">delay .3s</div><span class="nota">espera 0,3s</span></div>
+  <div class="row"><div class="box d" id="d3">delay .6s</div><span class="nota">espera 0,6s</span></div>
+</div>
+
+<h2>4. lista: <code>background-color .3s linear, transform 1.5s ease-in .5s</code></h2>
+<div class="row"><div class="box" id="multi">duas de uma vez</div>
+  <span class="nota">o fundo troca rapido; a escala so comeca depois de 0,5s e demora 1,5s</span></div>

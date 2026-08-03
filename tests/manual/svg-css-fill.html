@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lote 23 — fill/stroke/stroke-width por REGRA CSS</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; background: #fff; }
+  h2 { font-size: 13px; margin: 12px 8px 4px; color: #444; }
+  .row { display: flex; gap: 18px; padding: 0 10px; align-items: center; }
+  svg { width: 48px; height: 48px; }
+
+  /* 1. o padrão de TODO icon-set moderno: a cor vem do `color` do contexto */
+  .icon { fill: currentColor; }
+  .verde { color: #12a150; }
+  .roxo  { color: #7a3ff2; }
+
+  /* 2. fill por regra descendente (o atributo do <path> deve PERDER) */
+  .card path { fill: #e0554f; }
+
+  /* 3. traçado por CSS: fill:none + stroke + stroke-width */
+  .line { fill: none; stroke: #1266d6; stroke-width: 3px; }
+  .line-grossa { stroke-width: 6px; stroke: #d68112; }
+</style>
+
+<h2>1. fill: currentColor (a cor vem do contexto: preto, verde, roxo)</h2>
+<div class="row">
+  <svg class="icon" viewBox="0 0 24 24"><path d="M12 2L2 22h20L12 2z"/></svg>
+  <svg class="icon verde" viewBox="0 0 24 24"><path d="M12 2L2 22h20L12 2z"/></svg>
+  <svg class="icon roxo" viewBox="0 0 24 24"><path d="M12 2L2 22h20L12 2z"/></svg>
+</div>
+
+<h2>2. regra CSS vence o atributo fill="black" (deve sair VERMELHO)</h2>
+<div class="row card">
+  <svg viewBox="0 0 24 24"><path fill="black" d="M3 3h18v18H3z"/></svg>
+  <svg viewBox="0 0 24 24"><path fill="black" d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 2.5-7.5L3 9h7z"/></svg>
+</div>
+
+<h2>3. fill:none + stroke + stroke-width por CSS (contorno, não sólido)</h2>
+<div class="row">
+  <svg class="line" viewBox="0 0 24 24"><path d="M3 3h18v18H3z"/></svg>
+  <svg class="line line-grossa" viewBox="0 0 24 24"><path d="M3 3h18v18H3z"/></svg>
+  <svg class="line" viewBox="0 0 24 24"><path d="M4 12h16M12 4v16"/></svg>
+</div>

@@ -1,0 +1,11 @@
+<!doctype html>
+<!-- GUARDA: palavra mais larga que o container SEM word-break deve TRANSBORDAR
+     numa linha só (spec CSS) — NÃO quebrar 1-char/linha. O golden trava a
+     altura da caixa em ~1 linha. Se o quebrador regredir para quebra mid-word,
+     a altura explode e o diff acusa. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .narrow { width: 40px; background: #eee; }
+</style></head><body>
+  <div class="narrow">Pneumonoultramicroscopicsilicovolcanoconiosis</div>
+</body></html>

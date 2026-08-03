@@ -1,0 +1,3 @@
+function* g(){ yield 10; yield 20; }
+var [a, b] = g();
+console.log(a === 10 && b === 20 ? 'SYNTAX_OK' : 'VAL_FAIL ' + a + ',' + b);

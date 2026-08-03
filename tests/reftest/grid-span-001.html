@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<!-- TESTE: grid-column:span 2 faz o item ocupar as duas colunas.
+     Item largo (span 2) na 1a linha + 2 celulas na 2a => 200x100 verde solido. -->
+<html>
+<head>
+<style>
+  body { margin: 0; background: white; }
+  .g { display: grid; grid-template-columns: 100px 100px; width: 200px; }
+  .c { height: 50px; background: green; }
+  .wide { grid-column: span 2; }
+</style>
+<link rel="match" href="grid-span-001-ref.html">
+</head>
+<body>
+  <div class="g">
+    <div class="c wide"></div>
+    <div class="c"></div><div class="c"></div>
+  </div>
+</body>
+</html>

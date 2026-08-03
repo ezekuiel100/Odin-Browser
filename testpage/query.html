@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; padding: 16px; }
+  li { padding: 4px 8px; margin: 3px 0; font-size: 15px; list-style: none; }
+  .fruta { background: #eef4ff; }
+  .ok    { background: #e8f7ea; color: #0a7a0a; }
+  #saida { color: #06c; font-size: 16px; margin-top: 14px; }
+</style>
+</head>
+<body>
+  <ul id="lista">
+    <li class="fruta">maca</li>
+    <li class="fruta destaque">banana</li>
+    <li>cenoura</li>
+    <li class="fruta">uva</li>
+  </ul>
+  <p id="saida">?</p>
+
+  <script>
+    // seletor composto com descendente: #lista .destaque
+    document.querySelector('#lista .destaque').textContent = 'banana [via #lista .destaque]';
+
+    // :not() — o matcher real do CSS engine em ação
+    document.querySelector('#lista li:not(.fruta)').textContent = 'cenoura [via :not(.fruta)]';
+
+    // querySelectorAll + forEach + classList: pinta todas as frutas de verde
+    var frutas = document.querySelectorAll('li.fruta');
+    frutas.forEach(function(el) { el.classList.add('ok'); });
+
+    // resultado numerico
+    document.getElementById('saida').textContent =
+      'li.fruta: ' + frutas.length + ' | li no total: ' + document.querySelectorAll('#lista > li').length;
+  </script>
+</body>
+</html>

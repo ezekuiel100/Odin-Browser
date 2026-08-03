@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- Achado pelo oracle-diff (php.net era a PIOR página, 53%): um <div> com
+     display:table SEM linhas/células é idioma antigo de shrink-to-fit/centralizar
+     (`#intro .container{display:table;margin:0 auto}`). Per-spec ele geraria
+     linha+célula ANÔNIMAS em volta dos filhos; como não fazemos isso, o
+     layout_table batia em `len(rows)==0 -> return 0` e os filhos NUNCA eram
+     layoutados: todo width:100% dentro dele colapsava p/ ZERO (o hero inteiro do
+     php.net sumia). Sem estrutura de tabela, o box cai no caminho de BLOCO.
+     A 2ª caixa é o CONTROLE (mesmo filho, pai bloco) — as duas têm de bater. -->
+<html><head><style>
+  body { margin: 0; font-family: sans-serif; }
+  .t { display: table; width: 600px; }
+  .p { width: 600px; }
+  .c { width: 100%; }
+</style></head><body>
+  <div class="t"><div class="c">dentro de display:table</div></div>
+  <div class="p"><div class="c">controle: dentro de bloco</div></div>
+</body></html>
