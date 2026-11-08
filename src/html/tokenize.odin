@@ -4,11 +4,11 @@ package html
 // modo `browser.exe --tokenize`, que o html5lib-tokenizer.ps1 compara com o campo
 // "output" esperado.
 //
-// REUSA os mesmos helpers de baixo nível do parser.odin (parse_open_tag,
-// decode_entities, find_raw_close, strip_cdata, is_void, normalize_tag, ...), de
-// modo que a suíte mede a tokenização REAL do nosso motor — não uma cópia. Só o
-// estado Data (o default do html5lib) é coberto; o runner PULA testes com
-// initialStates != Data.
+// Compartilha helpers de baixo nível com parser.odin (parse_open_tag,
+// decode_entities, find_raw_close, strip_cdata, is_void, normalize_tag, ...),
+// mas é separado do Tokenizer usado pelo tree builder principal em
+// treebuild.odin. O runner cobre Data, PLAINTEXT, RCDATA, RAWTEXT, Script data e
+// CDATA section; estados não mapeados são pulados.
 //
 // Formato de saída: uma linha JSON por token (o PS junta e compara estrutura):
 //   ["Character", <dados>]
@@ -17,9 +17,9 @@ package html
 //   ["Comment", <dados>]
 //   ["DOCTYPE", <nome|null>, <public|null>, <system|null>, <correctness_bool>]
 //
-// LIMITAÇÕES CONHECIDAS (honestas — geram DIFF, não bug): entidades nomeadas só
-// o subconjunto de named_entity(); &nbsp;→espaço (não U+00A0); runes fora do BMP
-// descartadas (sanitize_text); DOCTYPE com quirks/ids complexos aproximado.
+// Diferenças remanescentes são registradas como DIFF pelo runner. Erros de parse
+// do corpus não são emitidos como tokens; a comparação considera os tokens de
+// conteúdo e ignora entradas ParseError esperadas.
 
 import "core:strings"
 import "core:unicode/utf8"

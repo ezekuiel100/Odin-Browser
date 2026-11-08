@@ -28,8 +28,8 @@ Todos os números foram medidos em **2026-08-03**, na árvore que está aqui.
 |---|---|---|
 | Testes de unidade (`test.ps1`) | **2904 / 2904** ✅ | 7 pacotes: 1868 js · 758 ui · 163 css · 81 html · 20 brotli · 10 woff2 · 4 net |
 | Reftests do WPT | **353 PASS / 128 FAIL / 0 ERRO** (de 481) | conformidade de CSS e layout contra as referências da spec |
-| html5lib, tree-construction | **1689 / 1709** (12 diff, **0 crash**) | conformidade do parser de HTML |
-| html5lib, tokenizer | **7028 / 7036** | conformidade do tokenizador |
+| html5lib, tree-construction | **1689 / 1709** (12 diff, **0 crash**) | conformidade de `parse_document`/`parse_fragment`, o tree builder principal |
+| html5lib, tokenizer | **7028 / 7036** | conformidade do emissor `--tokenize` nos estados suportados |
 | Test262 | **170 / 299** | conformidade da linguagem JavaScript (subconjunto curado; um caso oscila entre rodadas) |
 | Golden de layout | 17 fixtures | regressão de geometria, com nome e número |
 | Portão de pintura | 73 asserções | caixa no lugar certo mas **não pintada** — o ponto cego do golden |
@@ -96,7 +96,7 @@ swapchain).
 | `--diagnose <url> [out.json]` | relatório de "por que esta página pode estar quebrada" |
 | `--imgdiff <a.png> <b.png>` | diferença visual entre dois renders |
 | `--js262 <a.js> [b.js …]` | executa JS numa VM única, sem janela |
-| `--parsetree <arquivo>` · `--tokenize <arquivo>` | serializações no formato do html5lib |
+| `--parsetree <arquivo>` · `--parsefragment <arquivo> <contexto>` · `--tokenize <arquivo>` | serializações para o html5lib; `--parsetree-legacy` mede o parser simplificado legado |
 | `--fetch <url>` | só o pipeline de rede |
 
 ## Testar

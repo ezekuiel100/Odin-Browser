@@ -4,8 +4,10 @@ package html
 // algoritmo real da spec, usado pelo modo `browser.exe --parsetree` e medido
 // pela suíte html5lib tree-construction.
 //
-// Diferente do parser.odin (um SUBCONJUNTO de passada única, usado pela
-// renderização), aqui implementamos:
+// Diferente do parser.odin (parser simplificado legado, mantido para comparação
+// e para helpers compartilhados), este é o parser principal: parse_document
+// alimenta o html5lib e parse_render é usado pela navegação e renderização. Aqui
+// implementamos:
 //   - o esqueleto <html>/<head>/<body> sintetizado
 //   - o nó <!DOCTYPE> e detecção de quirks
 //   - a pilha de elementos abertos com escopos
@@ -14,9 +16,9 @@ package html
 //     select → after body → frameset)
 //   - foster parenting
 //
-// LIMITAÇÕES desta versão (geram DIFF, não crash): conteúdo estrangeiro
-// (SVG/MathML) é tratado como HTML comum; <template> vira elemento normal (sem
-// o document-fragment "content"); fragment parsing não é exposto.
+// Também inclui parsing de fragmentos dependente do contexto, conteúdo
+// estrangeiro SVG/MathML e a pilha de insertion modes de <template>, cujo
+// conteúdo é representado pelo nó interno #content.
 //
 // Reusa os helpers de baixo nível do parser.odin (parse_open_tag,
 // decode_entities, find_raw_close, is_void, close_tag_name, has_at,

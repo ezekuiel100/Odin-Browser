@@ -1,7 +1,11 @@
 package html
 
-// Parser de HTML simplificado (mas real): tokeniza e constrói a árvore DOM
-// numa única passada, usando uma pilha de elementos abertos.
+// Parser de HTML simplificado e legado: tokeniza e constrói uma árvore DOM
+// numa única passada, usando uma pilha de elementos abertos. Não é o caminho
+// principal de navegação/renderização nem o usado por innerHTML: esses passam por
+// parse_document/parse_render e parse_fragment, em treebuild.odin. Este arquivo
+// permanece para comparação via --parsetree-legacy e conserva helpers de baixo
+// nível compartilhados.
 //
 // Cobre o grosso do HTML do mundo real:
 //   - tags de abertura/fechamento e auto-fechadas (<br/>)
@@ -73,8 +77,9 @@ parse :: proc(input: string) -> ^dom.Node {
             // Não é curiosidade de spec: o lit-html emite `<?lit$xxx$>` como marcador
             // de posição JUSTAMENTE porque o parser vira comentário. Aqui virava um
             // ELEMENTO `?lit$xxx$` que engolia o resto do template — o componente
-            // renderizava vazio. (O parser de spec, parse_document, já fazia certo;
-            // este caminho legado é o que o innerHTML usa.)
+            // renderizava vazio. O parser de spec, parse_document, já fazia certo;
+            // este caminho pertence somente ao parser legado. innerHTML usa
+            // treebuild.parse_fragment.)
             if next == '?' {
                 end := index_byte_from(input, i, '>')
                 body_end := end if end >= 0 else n

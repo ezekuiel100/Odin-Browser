@@ -48,11 +48,13 @@ pode rodar com segurança enquanto outra coisa mexe no CSS.
 
 ## Duas armadilhas que valem saber antes de mexer
 
-**Há dois parsers de HTML.** O de spec (`treebuild.odin`, medido pelo html5lib) e
-o que a renderização usa (`parser.odin`). Eles divergem em detalhe — por exemplo
-na grafia de atributo com namespace (`xlink:href` contra `xlink href`) — e o modo
-de linha de comando escolhe um ou outro conforme a origem. Ao consertar um bug de
-parsing, confira em qual dos dois você está.
+**Há dois caminhos de parsing de HTML.** O caminho principal e de spec fica em
+`treebuild.odin`: `parse_document` produz a árvore medida pelo html5lib,
+`parse_render` aplica somente a preparação visual e é usado pela navegação e
+pelos modos de renderização, e `parse_fragment` atende `innerHTML` e
+`insertAdjacentHTML`. O parser simplificado de `parser.odin` é legado, conserva
+helpers compartilhados e permanece disponível para comparação explícita pelo
+modo `--parsetree-legacy`.
 
 **O estado global de pacote + o runner paralelo de testes do Odin = flake.** O
 `odin test` monta 16 páginas ao mesmo tempo; qualquer global mutável em `src/ui`

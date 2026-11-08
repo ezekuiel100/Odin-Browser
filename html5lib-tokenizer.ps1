@@ -1,7 +1,8 @@
 # Runner do html5lib tokenizer-tests contra o nosso browser.exe --tokenize.
 #
 # Para cada teste de cada tests\html5lib-tokenizer\*.test:
-#   1. (skip se initialStates != ["Data state"] — so cobrimos o estado Data)
+#   1. roda cada estado inicial suportado: Data, PLAINTEXT, RCDATA, RAWTEXT,
+#      Script data e CDATA section; pula apenas estados nao mapeados
 #   2. desfaz doubleEscaped (\uXXXX -> char) no input e no output esperado
 #   3. roda  browser.exe --tokenize <input>  COM TIMEOUT
 #   4. compara os tokens emitidos com o "output" esperado, FILTRANDO "ParseError"

@@ -6,11 +6,10 @@
 #   3. compara a serializacao com o #document esperado
 # Classifica:
 #   PASS  - serializacao identica ao esperado
-#   DIFF  - parseou ok, arvore difere (esperado: o parser e um SUBCONJUNTO -
-#           nao sintetiza <html>/<head>/<body>, ignora <!DOCTYPE>, etc.)
+#   DIFF  - o parser concluiu, mas a arvore serializada difere da esperada
 #   CRASH - o processo morreu ou TRAVOU no input (o ganho principal: robustez)
-#   SKIP  - teste de fragmento (#document-fragment) ou scripted (#script-on):
-#           exigem um modo de parse que nao expomos
+#   SKIP  - caso scripted (#script-on), ou fragmento quando -Legacy esta ativo;
+#           o modo padrao executa fragmentos via --parsefragment
 #
 # Uso:  .\html5lib-test.ps1                    (roda tudo)
 #       .\html5lib-test.ps1 -Filter tests1     (so .dat cujo nome casa)
@@ -32,9 +31,10 @@ $root    = $PSScriptRoot
 $browser = Join-Path $root "browser.exe"
 $datDir  = Join-Path $root "tests\html5lib"
 $tmpIn   = Join-Path $env:TEMP "h5l_in.html"
-# -Legacy mede o parser da RENDERIZACAO (htmlp.parse), nao o de spec.
+# -Legacy mede htmlp.parse, o parser simplificado legado; a renderizacao normal
+# usa parse_render, baseado no tree builder de spec.
 $parseFlag = if ($Legacy) { "--parsetree-legacy" } else { "--parsetree" }
-if ($Legacy) { Write-Host "MODO LEGADO: medindo htmlp.parse (o parser que renderiza)" -ForegroundColor Yellow }
+if ($Legacy) { Write-Host "MODO LEGADO: medindo htmlp.parse (parser simplificado legado)" -ForegroundColor Yellow }
 
 if (-not (Test-Path $browser)) {
     Write-Host "browser.exe nao encontrado. Rode build.bat primeiro." -ForegroundColor Red; exit 1
