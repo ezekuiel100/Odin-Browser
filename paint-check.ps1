@@ -1,4 +1,4 @@
-﻿# paint-check.ps1 - portao de PINTURA (o layout-golden.ps1 nao pega isto).
+# paint-check.ps1 - portao de PINTURA (o layout-golden.ps1 nao pega isto).
 #
 # O golden de layout serializa a arvore de caixas: uma caixa pode estar no lugar
 # certo e NAO SER PINTADA. Foi exatamente o caso do strip de logos do github.com
@@ -991,6 +991,42 @@ try {
             ("delta fundo="+($noneBg-$normalBg)+", delta tinta="+($noneInk-$normalInk))
     }
 } finally { $bmp18.Dispose() }
+
+# Acabamento: cantos sem alpha duplicado, interior arredondado e sombras CSS.
+$finishPng = Join-Path $outDir "paint-finish.png"
+if (Test-Path $finishPng) { Remove-Item -LiteralPath $finishPng -Force }
+& $Browser --render (Join-Path $PSScriptRoot "tests\paint\paint-finish.html") $finishPng 400 280 0 0 3 | Out-Null
+if (-not (Test-Path $finishPng)) { throw "paint-finish: sem PNG" }
+$finish = New-Object System.Drawing.Bitmap $finishPng
+try {
+    $corner = $finish.GetPixel(24,24)
+    Assert "borda translucida: canto nao acumula alpha" ($corner.R -gt 245 -and $corner.G -ge 120 -and $corner.G -le 135) ("pixel="+$corner)
+    $inside = $finish.GetPixel(184,42)
+    Assert "borda desigual arredondada preserva interior" ($inside.R -gt 245 -and $inside.G -gt 245 -and $inside.B -gt 245) ("pixel="+$inside)
+    $black = $finish.GetPixel(90,210)
+    Assert "sombra preta opaca permanece opaca" ($black.R -lt 5 -and $black.G -lt 5 -and $black.B -lt 5) ("pixel="+$black)
+    $red = $finish.GetPixel(210,210)
+    Assert "primeira sombra fica por cima" ($red.R -gt 245 -and $red.B -lt 5) ("pixel="+$red)
+    $green = $finish.GetPixel(330,210)
+    Assert "sombra sem cor usa currentColor" ($green.G -ge 120 -and $green.G -le 135 -and $green.R -lt 5) ("pixel="+$green)
+} finally { $finish.Dispose() }
+
+# Pausa + delay negativo tornam a amostra de animacao deterministica.
+$animPng = Join-Path $outDir "animation-forms.png"
+if (Test-Path $animPng) { Remove-Item -LiteralPath $animPng -Force }
+& $Browser --render (Join-Path $PSScriptRoot "tests\paint\animation-forms.html") $animPng 500 240 0 0 3 | Out-Null
+if (-not (Test-Path $animPng)) { throw "animation-forms: sem PNG" }
+$animBmp = New-Object System.Drawing.Bitmap $animPng
+try {
+    $linear = $animBmp.GetPixel(40,40)
+    $reverse = $animBmp.GetPixel(120,40)
+    $steps = $animBmp.GetPixel(200,40)
+    $delay = $animBmp.GetPixel(280,40)
+    Assert "animation linear pausada preserva progresso de 25%" ($linear.R -ge 60 -and $linear.R -le 68) ("pixel="+$linear)
+    Assert "animation reverse inverte progresso" ($reverse.R -ge 187 -and $reverse.R -le 195) ("pixel="+$reverse)
+    Assert "animation steps preserva salto discreto" ($steps.R -lt 5) ("pixel="+$steps)
+    Assert "animation sem backwards preserva fundo durante delay" ($delay.R -gt 245 -and $delay.G -lt 5) ("pixel="+$delay)
+} finally { $animBmp.Dispose() }
 
 if (-not $Keep) { Remove-Item -Recurse -Force $outDir -ErrorAction SilentlyContinue }
 

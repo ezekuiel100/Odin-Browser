@@ -1,0 +1,14 @@
+<!doctype html>
+<style>
+html,body{margin:0;background:white}
+.box{position:absolute;box-sizing:border-box;width:100px;height:100px;background:white}
+#square{left:20px;top:20px;border:12px solid rgba(255,0,0,.5)}
+#square{border-left-width:20px}
+#round{left:160px;top:20px;border:8px solid red;border-left:20px solid blue;border-radius:30px}
+.shadow{top:180px;width:60px;height:60px}
+#opaque{left:20px;box-shadow:20px 0 0 black}
+#layers{left:140px;box-shadow:20px 0 0 red,30px 0 0 blue}
+#current{left:260px;color:rgb(0,128,0);box-shadow:20px 0 0}
+</style>
+<div id="square" class="box"></div><div id="round" class="box"></div>
+<div id="opaque" class="box shadow"></div><div id="layers" class="box shadow"></div><div id="current" class="box shadow"></div>

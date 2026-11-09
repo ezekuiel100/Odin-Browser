@@ -18,9 +18,7 @@ package ui
 // continua instantânea, como sempre foi. A degradação está nomeada em
 // `trans_chans_for`, que é a lista do que dá para animar.
 //
-// ⚠️ `animation-timing-function` (de @keyframes) continua no `ease_inout`
-// hardcoded: o avaliador `timing_eval` daqui serve, mas ligá-lo mexeria no
-// render de @keyframes — feature separada, fora deste marco.
+// O avaliador timing_eval tambem e usado por animation e pelos keyframes.
 
 import "core:strings"
 import "core:strconv"
@@ -129,7 +127,6 @@ trans_chans_for :: proc(name: string) -> bit_set[Trans_Chan] {
 }
 
 // Palavra-chave/função de timing → Timing. ok=false se o token não for timing.
-@(private = "file")
 parse_timing :: proc(tok: string) -> (Timing, bool) {
     t := strings.trim_space(tok)
     switch t {

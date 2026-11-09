@@ -951,6 +951,7 @@ Anim_Stop :: struct {
     has_bg:      bool, bg:      u32,
     has_rot:     bool, rot:     f32, // rotação (rad)
     has_scale:   bool, sx, sy:  f32, // escala
+    has_timing: bool, timing: Timing,
 }
 Anim :: struct {
     active:    bool,
@@ -958,6 +959,8 @@ Anim :: struct {
     delay:     f32,  // segundos
     iter:      f32,  // nº de iterações (0 = infinito)
     alternate: bool, // direction: alternate
+    reverse, fill_before, fill_after, paused: bool,
+    timing: Timing,
     n:         int,  // nº de stops preenchidos
     stops:     [ANIM_MAX_STOPS]Anim_Stop,
 }
@@ -7601,7 +7604,7 @@ parse_text_shadow :: proc(comp: ^Computed, value: string, fs: f32, vw: f32 = 128
 
 @(private="file")
 parse_one_shadow :: proc(part: string, fs: f32, cur: u32 = 0, vw: f32 = 1280, vh: f32 = 720) -> (Shadow, bool) {
-    sh: Shadow
+    sh := Shadow{color = cur}
     nums: [4]f32
     nn := 0
     got_color := false
@@ -7712,58 +7715,96 @@ is_anim_keyword :: proc(t: string) -> bool {
 // Resolve `animation`/@keyframes p/ este nó: acha o keyframe set e baka os stops
 // das props de PINTURA (opacity/cor/fundo) em comp.anim. Anima por frame na pintura.
 @(private="file")
+first_animation_value :: proc(v: string) -> string {
+    items := split_commas_paren(v)
+    return len(items) > 0 ? strings.trim_space(items[0]) : ""
+}
+
 resolve_animation :: proc(comp: ^Computed, decls: map[string]string, kf: []csspkg.Keyframe_Set, vars: map[string]string, vw, vh: f32) {
     if len(kf) == 0 do return
     name := ""
     dur, delay: f32 = 0, 0
     iter: f32 = 1
+    infinite := false
     alt := false
+    rev, before, after, paused := false, false, false, false
+    timing := TIMING_DEFAULT
 
     if v, ok := decls["animation"]; ok {
-        rv := strings.to_lower(resolve_var(v, vars), context.temp_allocator)
+        rv := resolve_var(v, vars)
         // só a 1ª animação (antes da 1ª vírgula) — não suportamos várias por elemento
-        if ci := strings.index_byte(rv, ','); ci >= 0 do rv = rv[:ci]
+        rv = first_animation_value(rv)
         time_seen := 0
-        for tok in strings.fields(rv, context.temp_allocator) {
+        for raw_tok in fields_paren(rv) {
+            tok := strings.to_lower(raw_tok, context.temp_allocator)
             if d, isd := parse_time_token(tok); isd {
                 if time_seen == 0 do dur = d
                 else              do delay = d
                 time_seen += 1
             } else if tok == "infinite" {
                 iter = 0
+                infinite = true
             } else if n, isn := strconv.parse_f64(tok); isn {
                 iter = f32(n)
             } else if tok == "alternate" || tok == "alternate-reverse" {
                 alt = true
+                rev = tok == "alternate-reverse"
+            } else if tok == "reverse" {
+                rev = true
+            } else if tok == "forwards" || tok == "backwards" || tok == "both" {
+                before = tok != "forwards"; after = tok != "backwards"
+            } else if tok == "paused" {
+                paused = true
+            } else if tm, valid := parse_timing(tok); valid {
+                timing = tm
             } else if is_anim_keyword(tok) {
                 // ignora timing/fill/etc
             } else if name == "" {
-                name = tok
+                name = raw_tok
             }
         }
     }
-    if v, ok := decls["animation-name"]; ok do name = strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
+    if v, ok := decls["animation-name"]; ok do name = strings.trim_space(first_animation_value(resolve_var(v, vars)))
     if v, ok := decls["animation-duration"]; ok do dur = parse_duration(resolve_var(v, vars))
     if v, ok := decls["animation-delay"]; ok do delay = parse_duration(resolve_var(v, vars))
     if v, ok := decls["animation-iteration-count"]; ok {
         iv := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
-        if iv == "infinite" do iter = 0
+        infinite = iv == "infinite"
+        if infinite do iter = 0
         else if nn, k := strconv.parse_f64(iv); k do iter = f32(nn)
     }
     if v, ok := decls["animation-direction"]; ok {
-        alt = strings.contains(strings.to_lower(resolve_var(v, vars), context.temp_allocator), "alternate")
+        direction := strings.trim_space(first_animation_value(resolve_var(v, vars)))
+        alt = direction == "alternate" || direction == "alternate-reverse"
+        rev = direction == "reverse" || direction == "alternate-reverse"
     }
+    if v, ok := decls["animation-timing-function"]; ok {
+        if tm, valid := parse_timing(strings.trim_space(first_animation_value(resolve_var(v, vars)))); valid do timing = tm
+    }
+    if v, ok := decls["animation-fill-mode"]; ok {
+        fill := strings.trim_space(first_animation_value(resolve_var(v, vars)))
+        before = fill == "backwards" || fill == "both"
+        after = fill == "forwards" || fill == "both"
+    }
+    if v, ok := decls["animation-play-state"]; ok do paused = strings.trim_space(first_animation_value(resolve_var(v, vars))) == "paused"
 
-    if name == "" || name == "none" || dur <= 0 do return
+    if name == "" || name == "none" || dur <= 0 || (!infinite && iter <= 0) do return
     set: ^csspkg.Keyframe_Set
-    for &s in kf do if strings.equal_fold(s.name, name) { set = &s; break }
+    for &s in kf do if s.name == name { set = &s; break }
     if set == nil do return
 
     comp.anim.dur = dur; comp.anim.delay = delay; comp.anim.iter = iter; comp.anim.alternate = alt
+    comp.anim.reverse = rev; comp.anim.fill_before = before; comp.anim.fill_after = after
+    comp.anim.timing = timing; comp.anim.paused = paused
     comp.anim.n = 0
     for st in set.stops {
         if comp.anim.n >= ANIM_MAX_STOPS do break
         as := Anim_Stop{ pct = st.pct }
+        if tv, ok := st.decls["animation-timing-function"]; ok {
+            if tm, valid := parse_timing(strings.trim_space(resolve_var(tv, vars))); valid {
+                as.has_timing = true; as.timing = tm
+            }
+        }
         if ov, ok := st.decls["opacity"]; ok {
             if f, k := strconv.parse_f64(strings.trim_space(ov)); k { as.has_opacity = true; as.opacity = clamp(f32(f), 0, 1) }
         }

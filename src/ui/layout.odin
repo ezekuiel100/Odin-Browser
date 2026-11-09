@@ -467,6 +467,7 @@ Box :: struct {
     ctrl:          Form_Control,
     ctrl_checked:  bool,
     ctrl_disabled: bool,
+    ctrl_readonly: bool,
     edit_buf:      [EDIT_CAP]u8, // valor editável (text/password), null-terminado
     edit_hint:     string,       // placeholder (owned)
     // ::placeholder (M218). `hint_color == 0` = sem regra de COR → segue o padrão
@@ -1796,7 +1797,8 @@ apply_placeholder_style :: proc(b: ^Box, comp: Computed) {
 // filhos): checkbox/radio, ou campo de texto editável (copia value/placeholder).
 @(private="file")
 set_input_control :: proc(b: ^Box, node: ^dompkg.Node) {
-    dis := "disabled" in node.attrs || "readonly" in node.attrs
+    dis := "disabled" in node.attrs
+    b.ctrl_readonly = "readonly" in node.attrs
     switch node.attrs["type"] {
     case "checkbox":
         b.ctrl = .Checkbox
@@ -1924,7 +1926,8 @@ set_select_control :: proc(b: ^Box, node: ^dompkg.Node, comp: Computed) {
 @(private="file")
 set_textarea_control :: proc(b: ^Box, node: ^dompkg.Node, comp: Computed) {
     b.ctrl = .Textarea
-    b.ctrl_disabled = "disabled" in node.attrs || "readonly" in node.attrs
+    b.ctrl_disabled = "disabled" in node.attrs
+    b.ctrl_readonly = "readonly" in node.attrs
 
     // valor inicial = conteúdo textual do elemento (RCDATA no parser)
     sb := strings.builder_make(context.temp_allocator)
@@ -7265,9 +7268,9 @@ paint_layout :: proc(s: ^State, root: ^Box) {
 // empilhando N retângulos translúcidos crescentes (núcleo opaco, bordas suaves).
 @(private="file")
 draw_box_shadow :: proc(dl: ^im.DrawList, x0, y0, x1, y1, radius: f32, sh: Shadow, eff: f32) {
-    // opacidade base: do alpha da cor (byte alto; 0 = sem alpha → 40% padrão)
+    // Mesma convencao das demais cores CSS: byte alto zero significa opaco.
     ab := (sh.color >> 24) & 0xff
-    base := ab == 0 ? f32(0.4) : f32(ab) / 255.0
+    base := ab == 0 ? f32(1) : f32(ab) / 255.0
     if base <= 0 do return
 
     steps := 1
@@ -7278,6 +7281,7 @@ draw_box_shadow :: proc(dl: ^im.DrawList, x0, y0, x1, y1, radius: f32, sh: Shado
     for i in 0 ..< steps {
         // i=0 = núcleo (cresce só pelo spread); último = spread + blur
         grow := sh.spread + sh.blur * (f32(i) / f32(max(steps - 1, 1)))
+        if x1 - x0 + 2 * grow <= 0 || y1 - y0 + 2 * grow <= 0 do continue
         rr := max(radius + grow, 0)
         c := col_o(rgb, eff * a_each)
         im.DrawList_AddRectFilled(dl, {x0 + sh.dx - grow, y0 + sh.dy - grow}, {x1 + sh.dx + grow, y1 + sh.dy + grow}, c, rr)
@@ -7291,7 +7295,7 @@ draw_box_shadow :: proc(dl: ^im.DrawList, x0, y0, x1, y1, radius: f32, sh: Shado
 @(private="file")
 draw_inset_shadow :: proc(dl: ^im.DrawList, x0, y0, x1, y1, radius: f32, sh: Shadow, eff: f32) {
     ab := (sh.color >> 24) & 0xff
-    base := ab == 0 ? f32(0.4) : f32(ab) / 255.0
+    base := ab == 0 ? f32(1) : f32(ab) / 255.0
     if base <= 0 do return
     reach := max(sh.spread + sh.blur, 1)
     steps := clamp(int(reach * 0.7), 2, 12)
@@ -7362,19 +7366,23 @@ Anim_Eval :: struct {
 // iteration-count, alternate), acha os stops vizinhos e interpola opacity/cor/fundo.
 @(private="file")
 eval_anim :: proc(a: ^Anim, t_elapsed: f32) -> Anim_Eval {
+    if a.n < 2 || a.dur <= 0 do return {}
     tt := t_elapsed - a.delay
+    if tt < 0 && !a.fill_before do return {}
     if tt < 0 do tt = 0
     cycles := a.dur > 0 ? tt / a.dur : 0
     prog: f32
     if a.iter > 0 && cycles >= a.iter {
-        // terminou: segura no fim (fill aproximado). alternate: par=fim 1, ímpar=0.
-        whole := int(a.iter)
-        prog = a.alternate && (whole % 2 == 0) ? 0 : 1
+        if !a.fill_after do return {}
+        whole := int(math.ceil(a.iter)) - 1
+        prog = a.iter - f32(whole)
+        if a.alternate && whole % 2 == 1 do prog = 1 - prog
     } else {
         w := int(cycles)
         prog = cycles - f32(w)
         if a.alternate && (w % 2 == 1) do prog = 1 - prog
     }
+    if a.reverse do prog = 1 - prog
 
     // stops vizinhos por pct (stops já ordenados)
     lo := 0
@@ -7383,7 +7391,7 @@ eval_anim :: proc(a: ^Anim, t_elapsed: f32) -> Anim_Eval {
     s0, s1 := a.stops[lo], a.stops[hi]
     span := s1.pct - s0.pct
     lt := span > 0 ? clamp((prog - s0.pct) / span, 0, 1) : 0
-    lt = ease_inout(lt) // timing-function default (ease) por intervalo
+    lt = timing_eval(s0.has_timing ? s0.timing : a.timing, lt)
 
     out: Anim_Eval
     if s0.has_opacity || s1.has_opacity {
@@ -7413,6 +7421,8 @@ eval_anim :: proc(a: ^Anim, t_elapsed: f32) -> Anim_Eval {
     }
     return out
 }
+
+test_eval_anim :: proc(a: ^Anim, elapsed: f32) -> Anim_Eval { return eval_anim(a, elapsed) }
 
 // Recolore os vértices emitidos desde `vtx0` com a cor do gradiente NA POSIÇÃO de
 // cada vértice — é assim que `background-clip: text` vira texto com gradiente de
@@ -7562,7 +7572,9 @@ paint_text_input :: proc(b: ^Box, screen: im.Vec2, eff: f32) {
 
     flags: im.InputTextFlags
     if b.ctrl == .Password do flags += {.Password}
-    if b.ctrl_disabled     do flags += {.ReadOnly}
+    if b.ctrl_disabled || b.ctrl_readonly do flags += {.ReadOnly}
+    im.BeginDisabled(b.ctrl_disabled)
+    defer im.EndDisabled()
 
     id := fmt.ctprintf("##ti_%p", b)
 
@@ -7905,8 +7917,8 @@ stroke_inside :: proc(dl: ^im.DrawList, p0, p1: im.Vec2, col: u32, radius, w: f3
 }
 
 // Pinta a borda. Uniforme (mesma largura e cor nos 4 lados) usa um único
-// traço interno (respeita o raio). Não-uniforme desenha cada lado como retângulo
-// preenchido, dentro da border-box (sem raio — aproximação).
+// traco interno (respeita o raio). Lados diferentes usam um anel compartilhado,
+// com curvas internas elipticas e sem sobreposicao nos cantos.
 @(private="file")
 paint_border :: proc(dl: ^im.DrawList, screen: im.Vec2, b: ^Box, cols: [4]u32, eff, radius: f32, flags: im.DrawFlags) {
     bwt, bwr, bwb, bwl := b.border_w[0], b.border_w[1], b.border_w[2], b.border_w[3]
@@ -7916,34 +7928,7 @@ paint_border :: proc(dl: ^im.DrawList, screen: im.Vec2, b: ^Box, cols: [4]u32, e
         stroke_inside(dl, screen, {screen.x + b.w, screen.y + b.h}, col_o(cols[0], eff), radius, bwt, flags)
         return
     }
-    x0, y0 := screen.x, screen.y
-    x1, y1 := screen.x + b.w, screen.y + b.h
-
-    // Bordas não-uniformes COM raio (ex.: `border:1px; border-left:4px; border-radius`):
-    // desenha a borda MAIS FINA como um traço arredondado (que acompanha os cantos)
-    // e cada lado mais grosso preenchendo o MESMO retângulo arredondado, mas
-    // RECORTADO à faixa daquele lado — assim o acento curva junto com os cantos.
-    if radius > 0.5 {
-        minw := min(min(bwt, bwr), min(bwb, bwl))
-        stroke_inside(dl, {x0, y0}, {x1, y1}, col_o(cols[0], eff), radius, minw, flags)
-        // preenche o retângulo arredondado externo recortado à faixa do lado
-        fill_side :: proc(dl: ^im.DrawList, c0, c1, r0, r1: im.Vec2, color: u32, radius: f32, flags: im.DrawFlags) {
-            im.DrawList_PushClipRect(dl, c0, c1, true)
-            im.DrawList_AddRectFilled(dl, r0, r1, color, radius, flags)
-            im.DrawList_PopClipRect(dl)
-        }
-        if bwt > minw do fill_side(dl, {x0, y0}, {x1, y0 + bwt}, {x0, y0}, {x1, y1}, col_o(cols[0], eff), radius, flags)
-        if bwb > minw do fill_side(dl, {x0, y1 - bwb}, {x1, y1}, {x0, y0}, {x1, y1}, col_o(cols[2], eff), radius, flags)
-        if bwl > minw do fill_side(dl, {x0, y0}, {x0 + bwl, y1}, {x0, y0}, {x1, y1}, col_o(cols[3], eff), radius, flags)
-        if bwr > minw do fill_side(dl, {x1 - bwr, y0}, {x1, y1}, {x0, y0}, {x1, y1}, col_o(cols[1], eff), radius, flags)
-        return
-    }
-
-    // sem raio: cada lado como retângulo preenchido (cantos retos)
-    if bwt > 0 do im.DrawList_AddRectFilled(dl, {x0, y0}, {x1, y0 + bwt}, col_o(cols[0], eff), 0)
-    if bwb > 0 do im.DrawList_AddRectFilled(dl, {x0, y1 - bwb}, {x1, y1}, col_o(cols[2], eff), 0)
-    if bwl > 0 do im.DrawList_AddRectFilled(dl, {x0, y0}, {x0 + bwl, y1}, col_o(cols[3], eff), 0)
-    if bwr > 0 do im.DrawList_AddRectFilled(dl, {x1 - bwr, y0}, {x1, y1}, col_o(cols[1], eff), 0)
+    paint_border_ring(dl, screen, b, cols, eff, radius, flags)
 }
 
 // ox/oy: deslocamento acumulado de position:relative dos ancestrais.
@@ -8345,7 +8330,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // animation/@keyframes: avança o relógio e sobrepõe as props animadas.
     anim_col: u32; anim_col_on := false
     if b.anim.active {
-        b.anim_t += im.GetIO().DeltaTime
+        if !b.anim.paused do b.anim_t += im.GetIO().DeltaTime
         ev := eval_anim(&b.anim, b.anim_t)
         if ev.has_op    do eff = opa * ev.op
         if ev.has_bg    { eff_bg = ev.bg; eff_has_bg = true }
@@ -8469,7 +8454,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     if !b.invisible {
         // box-shadow externa: desenhada ATRÁS do fundo/borda do próprio box.
         // (as inset vêm depois do fundo, por cima — ver abaixo.)
-        for i in 0 ..< b.shadow_n {
+        for i := b.shadow_n - 1; i >= 0; i -= 1 {
             if b.shadows[i].inset do continue
             emit(pt, PC_Shadow{screen.x, screen.y, screen.x + b.w, screen.y + b.h, radius, b.shadows[i], eff, false})
         }
@@ -8524,7 +8509,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
             emit_bg_image(pt, op0, op1, cv0, cv1, b, eff, -1) // -1 = camada 0
         }
         // box-shadow inset: por cima do fundo, recortada à caixa, sob a borda.
-        for i in 0 ..< b.shadow_n {
+        for i := b.shadow_n - 1; i >= 0; i -= 1 {
             if !b.shadows[i].inset do continue
             emit(pt, PC_Shadow{screen.x, screen.y, screen.x + b.w, screen.y + b.h, radius, b.shadows[i], eff, true})
         }

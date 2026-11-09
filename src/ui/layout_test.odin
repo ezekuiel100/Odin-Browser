@@ -1744,7 +1744,7 @@ test_input_disabled_readonly :: proc(t: ^testing.T) {
     root := build_from_html("<html><body><input type='text' value='x' readonly></body></html>")
     defer free_layout(root)
     bb := find_inline_box_tag(root, "input")
-    testing.expect(t, bb != nil && bb.ctrl_disabled, "readonly marca o campo como nao editavel")
+    testing.expect(t, bb != nil && bb.ctrl_readonly && !bb.ctrl_disabled, "readonly impede edicao sem desabilitar o campo")
 }
 
 // Roda o pipeline completo com CSS externo (não só style="") e faz o layout.

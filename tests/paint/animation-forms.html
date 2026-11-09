@@ -1,0 +1,15 @@
+<!doctype html>
+<style>
+html,body{margin:0;background:white;color:#111;font:16px sans-serif}
+.sample{position:absolute;top:20px;width:60px;height:60px;background:red;animation:fade 2s -0.5s linear paused}
+#linear{left:20px} #reverse{left:100px;animation-direction:reverse}
+#steps{left:180px;animation-timing-function:steps(2, end)}
+#delay{left:260px;animation-delay:2s}
+@keyframes fade{from{background-color:black}to{background-color:white}}
+input,textarea{position:absolute;left:20px;top:110px;width:200px;height:36px;color:#111}
+textarea{top:170px} input:disabled{left:250px}
+</style>
+<div class="sample" id="linear"></div><div class="sample" id="reverse"></div>
+<div class="sample" id="steps"></div><div class="sample" id="delay"></div>
+<input readonly value="Somente leitura"><input disabled value="Desabilitado">
+<textarea readonly>Texto selecionavel</textarea>
