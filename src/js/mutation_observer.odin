@@ -330,12 +330,15 @@ mo_task_exit :: proc(vm: ^Interp) {
     vm.mo_task_depth -= 1
     if vm.mo_task_depth > 0 do return
     vm.mo_task_depth = 0 // defensivo: um enter/exit desbalanceado não trava a entrega
+    // Não entregar observers reentrantemente durante jobs ou outro observer.
+    if vm.draining || vm.mo_notifying do return
+    promise_checkpoint(vm)
     mo_notify(vm)
+    promise_checkpoint(vm) // jobs gerados pelos observers
 }
 
-// O checkpoint em si. É o análogo possível do "microtask checkpoint" da spec —
-// este motor não tem fila de microtasks separada (as reações de Promise drenam
-// ávidas no settle).
+// Ordering parcial: entrega de MO ainda ocorre em rodadas separadas, não como
+// um job na FIFO compartilhada; não implementa o ordering completo da spec.
 mo_notify :: proc(vm: ^Interp) {
     if !mo_active(vm) || vm.mo_notifying do return
     vm.mo_notifying = true

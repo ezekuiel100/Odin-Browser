@@ -1767,12 +1767,16 @@ num_value_of :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     return ok && x == x && math.trunc(x) == x && math.abs(x) <= 9007199254740991
 }
 
-// queueMicrotask(fn): React 19 agenda o processamento do root via microtask.
-// Enfileiramos como timer de delay 0 → dispara no PRÓXIMO pump, FORA da pilha
-// síncrona atual (semântica de microtask; melhor que rodar reentrante).
+// queueMicrotask compartilha a FIFO das reações de Promise.
 @(private = "file")
 global_queue_microtask :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
-    return add_timer(vm, a, false)
+    cb, ok := arg(a, 0).(^Function)
+    if !ok {
+        throw_type_error(vm, "queueMicrotask: callback must be callable")
+        return nil
+    }
+    append(&vm.reaction_queue, Reaction_Job{microtask = cb})
+    return nil
 }
 
 // ── percent-encoding (M61) — opera nos BYTES UTF-8, como manda a spec ────────

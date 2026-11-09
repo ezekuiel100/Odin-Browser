@@ -84,6 +84,7 @@ vm_pump_fetches :: proc(vm: ^Interp) -> bool {
         req := vm.pending_fetches[i]
         if intrinsics.atomic_load(&req.flag) != 1 do continue
         ordered_remove(&vm.pending_fetches, i)
+        mo_task_enter(vm) // cada conclusão é uma tarefa do hospedeiro
 
         if req.resp.ok {
             // Response COMPLETA (M137): antes era um objeto paralelo com só
@@ -120,7 +121,8 @@ vm_pump_fetches :: proc(vm: ^Interp) -> bool {
             promise_settle(vm, req.promise, PROMISE_REJECTED, e)
         }
         free_req(req)
-        vm_clear_uncaught(vm) // callbacks do then podem lançar
+        vm_clear_uncaught(vm)
+        mo_task_exit(vm) // checkpoint antes de consumir a próxima conclusão
         fired = true
     }
     return fired

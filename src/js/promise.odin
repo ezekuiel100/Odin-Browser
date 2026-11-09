@@ -6,11 +6,8 @@ package js
 //   _value:     Value
 //   _reactions: ^Array de reações {f, r, next} (next = promise derivada)
 //
-// SIMPLIFICAÇÃO consciente: as reações rodam SINCRONAMENTE no settle (sem fila
-// de microtasks). Um .then numa promise já resolvida roda o callback na hora.
-// Para o fetch (que resolve a partir do pump de frames) o efeito é idêntico ao
-// navegador; a diferença só aparece em códigos que dependem da ordem exata
-// síncrono-vs-microtask.
+// Reações e queueMicrotask compartilham uma FIFO, drenada no checkpoint de
+// fim de tarefa. O await bloqueante mantém um pump aninhado de compatibilidade.
 //
 // Encadeamento completo: then devolve promise derivada; callback que devolve
 // uma promise é ADOTADO (a derivada espera a interna — essencial p/ o padrão
@@ -25,6 +22,7 @@ PROMISE_REJECTED  :: 2.0
 // Uma reação de Promise ainda não executada (a "microtask"). O que run_reaction
 // precisa: os callbacks dos dois lados, a promise derivada, e o estado/valor.
 Reaction_Job :: struct {
+    microtask: ^Function, // não-nil: callback queueMicrotask, sem promise derivada
     onf, onr: Value,
     next:     ^Object,
     state:    f64,
@@ -38,11 +36,21 @@ Reaction_Job :: struct {
 // as microtasks de um navegador.
 @(private = "file")
 drain_reaction_queue :: proc(vm: ^Interp) {
+    // O await bloqueante pode entrar explicitamente neste drain enquanto o
+    // externo está suspenso. Checkpoints indiretos continuam bloqueados.
+    was_draining := vm.draining
+    vm.draining = true
+    defer vm.draining = was_draining
     processed := 0
     for len(vm.reaction_queue) > 0 {
         job := vm.reaction_queue[0]
         ordered_remove(&vm.reaction_queue, 0) // FIFO; a fila fica curta (cada reação enfileira ~1)
-        run_reaction(vm, job.onf, job.onr, job.next, job.state, job.val)
+        if job.microtask != nil {
+            call_function(vm, job.microtask, nil, nil)
+            vm_clear_uncaught(vm) // reporta e limpa; não rejeita uma Promise
+        } else {
+            run_reaction(vm, job.onf, job.onr, job.next, job.state, job.val)
+        }
         processed += 1
         // guarda contra loop de microtask infinito (ex.: Promise.resolve().then(loop)):
         // step_guard não vê isto (não é laço JS), então checamos o relógio da tarefa.
@@ -55,14 +63,18 @@ drain_reaction_queue :: proc(vm: ^Interp) {
     }
 }
 
-// Dispara o drain se ninguém está drenando (o drain é ÁVIDO: roda antes de
-// devolver o controle, então a observação continua "síncrona" p/ o código).
-@(private = "file")
-kick_drain :: proc(vm: ^Interp) {
-    if vm.draining do return // já há um loop drenando; ele pega as novas também
-    vm.draining = true
+// Fronteira pública de tarefa; nunca reentra por eventos/timers chamados
+// durante um callback. Só o await bloqueante chama o drain diretamente.
+promise_checkpoint :: proc(vm: ^Interp) {
+    if vm == nil || vm.draining do return
+    saved_throwing, saved_thrown := vm.throwing, vm.thrown
+    vm.throwing = false
+    vm.thrown = nil
+    defer {
+        vm.throwing = saved_throwing
+        vm.thrown = saved_thrown
+    }
     drain_reaction_queue(vm)
-    vm.draining = false
 }
 
 // Só enfileira (o chamador decide quando drenar — promise_settle enfileira
@@ -386,7 +398,6 @@ promise_settle :: proc(vm: ^Interp, p: ^Object, state: f64, val: Value) {
         schedule_reaction(vm, r.props["f"], r.props["r"], next, state, val) // microtask
     }
     clear(&reactions.items)
-    kick_drain(vm)
 }
 
 // Cumpre a promise com `v` — a menos que `v` seja outra promise (ADOTA: assenta
@@ -459,7 +470,7 @@ run_reaction :: proc(vm: ^Interp, onf, onr: Value, next: ^Object, state: f64, va
     }
 }
 
-// Núcleo do then/catch: registra (pendente) ou roda na hora (já assentada).
+// Núcleo do then/catch: registra (pendente) ou enfileira (já assentada).
 // Visível no pacote: a corrotina async (generator.odin) encadeia a retomada aqui.
 promise_then_impl :: proc(vm: ^Interp, p: ^Object, onf, onr: Value) -> Value {
     next := promise_new(vm)
@@ -475,7 +486,6 @@ promise_then_impl :: proc(vm: ^Interp, p: ^Object, onf, onr: Value) -> Value {
         }
     } else {
         schedule_reaction(vm, onf, onr, next, state, p.props["_value"]) // já assentada: microtask
-        kick_drain(vm)
     }
     return next
 }

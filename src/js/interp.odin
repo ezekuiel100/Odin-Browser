@@ -1440,11 +1440,11 @@ vm_console_clear :: proc(vm: ^Interp) {
 // dá pra inspecionar/mexer no estado vivo. Registra no console o eco da entrada e o
 // resultado (ou o erro). Não envenena o vm: reseta os sinais de exceção/controle.
 vm_repl_eval :: proc(vm: ^Interp, src: string) {
+    mo_task_enter(vm)
+    defer mo_task_exit(vm) // após reportar/limpar o resultado ou erro síncrono
     console_capture(vm, .Input, strings.clone(src))
 
     v := vm_exec(vm, src)          // escopo global (env=nil), devolve o valor de conclusão
-    // microtasks (Promise.then) já drenam no settle via kick_drain; timers de
-    // setTimeout disparam nos frames seguintes pelo vm_pump_timers normal.
     vm.returning = false; vm.breaking = false; vm.continuing = false
 
     if vm.throwing {
@@ -4500,12 +4500,10 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
 call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) -> Value {
     when JSPROF { g_prof.chamadas += 1; if fn.native != nil do g_prof.chamadas_nat += 1 }
     // async function (não-generator): roda como CORROTINA — cada await suspende.
-    // Precisa ser interceptado ANTES do corpo. A checagem de current_gen evita
-    // reentrar quando já estamos rodando o corpo dentro da thread da corrotina.
+    // O corpo é iniciado por run_generator_body; toda chamada JS, inclusive
+    // recursiva à mesma função, precisa criar sua própria corrotina/Promise.
     if fn.is_async && !fn.is_generator && fn.native == nil {
-        if vm.current_gen == nil || vm.current_gen.fn != fn {
-            return async_call(vm, fn, this, args)
-        }
+        return async_call(vm, fn, this, args)
     }
     // Guarda de recursão: converte um stack-overflow nativo (fatal, fecha o
     // navegador) em RangeError capturável. defer garante o decremento mesmo
