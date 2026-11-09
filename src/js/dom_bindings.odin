@@ -296,14 +296,13 @@ install_window :: proc(vm: ^Interp, doc: ^Object) {
                                 // `document.location.search/host`; era undefined → gap-report)
 
     nav := new_object(vm)
-    nav.props["userAgent"] = own_str(vm, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MiniBrowser/1.0")
-    // appVersion/vendor eram undefined → browser-sniff (`appVersion.indexOf(...)`,
-    // `vendor.indexOf('Apple')`) lançava "reading 'indexOf' of undefined" e matava
-    // o bundle. Strings sempre presentes: .indexOf funciona (retorna -1 = "não é").
-    nav.props["appVersion"] = own_str(vm, "5.0 (Windows NT 10.0; Win64; x64) MiniBrowser/1.0")
+    // Mesma identidade das requisições HTTP: evita que o servidor veja Chrome
+    // enquanto os scripts da página detectam MiniBrowser. A versão fica em net.
+    nav.props["userAgent"]  = own_str(vm, net.CHROME_UA)
+    nav.props["appVersion"] = own_str(vm, net.CHROME_UA[len("Mozilla/"):])
     nav.props["appName"]    = own_str(vm, "Netscape")
     nav.props["product"]    = own_str(vm, "Gecko")
-    nav.props["vendor"]     = own_str(vm, "")
+    nav.props["vendor"]     = own_str(vm, "Google Inc.")
     nav.props["language"]  = own_str(vm, "pt-BR")
     langs := new_array(vm) // navigator.languages: código faz [0] / forEach / indexOf
     append(&langs.items, own_str(vm, "pt-BR"), own_str(vm, "pt"), own_str(vm, "en"))
