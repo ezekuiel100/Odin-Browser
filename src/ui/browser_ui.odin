@@ -2053,8 +2053,8 @@ collect_scripts_rec :: proc(n: ^dompkg.Node, out: ^[dynamic]^dompkg.Node) {
 collect_page_css :: proc(dom: ^dompkg.Node, base_url: string) -> string {
     sb := strings.builder_make(context.temp_allocator)
     count := 0
-    seen := make(map[string]bool, MAX_SHEETS * 2, context.temp_allocator)
-    collect_css_rec(dom, base_url, &sb, &count, &seen)
+    imports := css_import_state(&count)
+    collect_css_rec(dom, base_url, &sb, &imports)
     return strings.to_string(sb)
 }
 
@@ -2090,56 +2090,37 @@ sheet_dedup_key :: proc(url, media: string, alloc := context.temp_allocator) -> 
 }
 
 @(private)
-collect_css_rec :: proc(n: ^dompkg.Node, base: string, sb: ^strings.Builder, count: ^int, seen: ^map[string]bool) {
+collect_css_rec :: proc(n: ^dompkg.Node, base: string, sb: ^strings.Builder, imports: ^CSS_Import_State) {
     if n.kind == .Element {
         if n.tag == "style" {
-            for c in n.children {
-                if c.kind == .Text do append_css_with_imports(c.text, base, sb, count, seen)
-            }
+            text := strings.builder_make(context.temp_allocator)
+            for c in n.children do if c.kind == .Text do strings.write_string(&text, c.text)
+            css_expand_imports(strings.to_string(text), base, sb, imports)
         } else if n.tag == "link" {
             rel := n.attrs["rel"] if "rel" in n.attrs else ""
             href, has_href := n.attrs["href"]
             if has_href && strings.contains(strings.to_lower(rel, context.temp_allocator), "stylesheet") {
                 url := net.resolve_url(base, href, context.temp_allocator)
-                if url_buscavel(url) {
-                    // O atributo `media` do <link> vale p/ a folha INTEIRA. Ele
-                    // era IGNORADO: uma folha `media="print"` entrava como se
-                    // fosse de tela (e folha de impressão costuma esconder
-                    // nav/sidebar e trocar cores). Envolver em @media deixa a
-                    // avaliação com a máquina que já existe — inclusive
-                    // reavaliada a cada passe de estilo, e `combine_media` já
-                    // compõe com os @media de dentro da folha (nesting).
+                body, ok := css_import_body(imports, url)
+                if ok {
                     media := strings.trim_space(n.attrs["media"])
                     wrap := media != "" && !strings.equal_fold(media, "all")
-                    key := sheet_dedup_key(url, media)
-                    if !(key in seen^) && count^ < MAX_SHEETS {
-                        seen^[key] = true
-                        count^ += 1
-                        r := net.fetch(url)
-                        if r.ok {
-                            if wrap {
-                                strings.write_string(sb, "@media ")
-                                strings.write_string(sb, media)
-                                strings.write_string(sb, " {\n")
-                            }
-                            append_css_with_imports(r.body, url, sb, count, seen)
-                            if wrap do strings.write_string(sb, "\n}\n")
-                            strings.write_byte(sb, '\n')
-                            delete(r.body)
-                        }
+                    if wrap {
+                        strings.write_string(sb, "\n@media ")
+                        strings.write_string(sb, media)
+                        strings.write_string(sb, " {\n")
                     }
+                    // Repetições mantêm sua posição na cascata; só o download é cacheado.
+                    css_expand_imports(body, url, sb, imports)
+                    if wrap do strings.write_string(sb, "\n}\n")
+                    strings.write_byte(sb, '\n')
                 }
             }
         }
     }
-    for c in n.children do collect_css_rec(c, base, sb, count, seen)
+    for c in n.children do collect_css_rec(c, base, sb, imports)
 }
 
-// Copia o CSS para sb inlinando os @import: baixa cada folha importada
-// (relativa à URL da folha que importa) e insere o conteúdo no lugar do
-// statement, recursivamente. Condição de media após a URL vira um bloco
-// @media em volta do conteúdo. O teto MAX_SHEETS e o mapa `seen` (ambos
-// compartilhados com os <link>) limitam downloads e cortam ciclos de import.
 @(private)
 // Marca, DENTRO do css concatenado, de que folha vem o trecho seguinte. Existe
 // porque `url(...)` relativa numa folha resolve contra a URL DA FOLHA, não da
@@ -2160,97 +2141,6 @@ write_sheet_mark :: proc(sb: ^strings.Builder, sheet_url: string) {
     strings.write_string(sb, CSS_SHEET_MARK)
     strings.write_string(sb, sheet_url)
     strings.write_string(sb, ">>*/\n")
-}
-
-append_css_with_imports :: proc(css: string, sheet_url: string, sb: ^strings.Builder, count: ^int, seen: ^map[string]bool) {
-    write_sheet_mark(sb, sheet_url)
-    if !strings.contains(css, "@import") && !strings.contains(css, "@IMPORT") {
-        strings.write_string(sb, css)
-        return
-    }
-    i, last := 0, 0
-    n := len(css)
-    for i < n {
-        // não procura @import dentro de comentários
-        if i + 1 < n && css[i] == '/' && css[i + 1] == '*' {
-            end := strings.index(css[i:], "*/")
-            i = end < 0 ? n : i + end + 2
-            continue
-        }
-        if css[i] != '@' || i + 7 > n || !strings.equal_fold(css[i:i + 7], "@import") {
-            i += 1
-            continue
-        }
-        semi := strings.index_byte(css[i:], ';')
-        if semi < 0 do break
-        url, cond := parse_import_stmt(css[i + 7 : i + semi])
-
-        strings.write_string(sb, css[last:i]) // trecho antes do statement
-        i += semi + 1
-        last = i
-
-        if url == "" || count^ >= MAX_SHEETS do continue
-        abs := net.resolve_url(sheet_url, url, context.temp_allocator)
-        if !url_buscavel(abs) do continue
-        mc := import_media_cond(cond)
-        // Mesma chave (URL, media) dos <link>: um @import repetido — direto ou
-        // por dois caminhos do grafo de folhas — não gasta slot nem download.
-        // É também o que corta CICLO de import (A importa B importa A).
-        key := sheet_dedup_key(abs, mc)
-        if key in seen^ do continue
-        seen^[key] = true
-        count^ += 1
-        r := net.fetch(abs)
-        if !r.ok do continue
-        if mc != "" {
-            strings.write_string(sb, "\n@media ")
-            strings.write_string(sb, mc)
-            strings.write_string(sb, " {\n")
-        }
-        append_css_with_imports(r.body, abs, sb, count, seen)
-        if mc != "" do strings.write_string(sb, "\n}\n")
-        strings.write_byte(sb, '\n')
-        delete(r.body)
-        // a folha importada trocou a marca; o RESTO deste arquivo volta a ser desta
-        write_sheet_mark(sb, sheet_url)
-    }
-    strings.write_string(sb, css[last:])
-}
-
-// Extrai (url, condição) de um statement @import: `url("x.css") screen` ou
-// `"x.css" (min-width: 600px)`.
-@(private)
-parse_import_stmt :: proc(stmt: string) -> (url, cond: string) {
-    s := strings.trim_space(stmt)
-    if len(s) >= 4 && strings.equal_fold(s[:4], "url(") {
-        close := strings.index_byte(s, ')')
-        if close < 0 do return "", ""
-        url = strings.trim(strings.trim_space(s[4:close]), "\"'")
-        cond = strings.trim_space(s[close + 1:])
-    } else if len(s) > 0 && (s[0] == '"' || s[0] == '\'') {
-        end := strings.index_byte(s[1:], s[0])
-        if end < 0 do return "", ""
-        url = s[1 : 1 + end]
-        cond = strings.trim_space(s[2 + end:])
-    }
-    return
-}
-
-// Só repassa a condição do @import quando o parser de @media a entende
-// (tipos/min-/max-width); layer()/supports() são descartadas — envolver o
-// conteúdo num @media que o parser marca como não suportado excluiria a
-// folha inteira.
-@(private)
-import_media_cond :: proc(cond: string) -> string {
-    c := strings.trim_space(cond)
-    if c == "" do return ""
-    lo := strings.to_lower(c, context.temp_allocator)
-    if strings.contains(lo, "layer") || strings.contains(lo, "supports") do return ""
-    if strings.contains(lo, "min-width") || strings.contains(lo, "max-width") ||
-       strings.contains(lo, "screen") || strings.contains(lo, "print") || strings.contains(lo, "all") {
-        return c
-    }
-    return ""
 }
 
 // Processa um clique registrado durante o paint: dispara os handlers "click" do

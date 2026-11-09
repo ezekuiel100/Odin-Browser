@@ -2548,6 +2548,14 @@ when CASCADEPROBE {
 collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates: []int, viewport_w: f32, want: csspkg.Pseudo_Kind = .None, state: csspkg.Element_State = .None, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil) -> map[string]string {
     Win :: struct { spec: Cascade_Priority, order: int, val: string }
     wins := make(map[string]Win, context.temp_allocator)
+    // Não reduzir antes do rollback: precisamos inclusive dos perdedores da camada.
+    originals := make(map[string][dynamic]Win, context.temp_allocator)
+    retain :: proc(all: ^map[string][dynamic]Win, prop: string, w: Win) {
+        list, ok := all[prop]
+        if !ok do list = make([dynamic]Win, context.temp_allocator)
+        append(&list, w)
+        all[prop] = list
+    }
 
     // Sonda de CASCATA: com `-define:CASCADEPROBE=true` imprime, para o nó cujo
     // id/classe casa CASCADE_ALVO, TODA regra que casou o seletor e TODA
@@ -2658,15 +2666,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             if prop == "display" && !exact do continue
             v, imp := csspkg.split_important(val)
             prio := Cascade_Priority{important = imp, layer = rule.layer_rank, specificity = best}
-            consider(&wins, prop, prio, rule.order, v)
-        }
-    }
-    when CASCADEPROBE {
-        if casc_alvo {
-            for prop, w in wins {
-                if CASCADE_PROP != "" && !strings.contains(prop, CASCADE_PROP) do continue
-                fmt.eprintfln("[casc]   >>> VENCEU %-16s = %-20s prio=%v ordem=%d", prop, w.val, w.spec, w.order)
-            }
+            retain(&originals, prop, Win{prio, rule.order, v})
         }
     }
 
@@ -2676,7 +2676,60 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         for prop, val in inline {
             v, imp := csspkg.split_important(val)
             prio := Cascade_Priority{important = imp, inline = true, layer = csspkg.LAYER_UNLAYERED}
-            consider(&wins, prop, prio, 1 << 30, v)
+            retain(&originals, prop, Win{prio, 1 << 30, v})
+        }
+    }
+
+    // Rollback ANTES dos aliases/lógicas/shorthands: o resto da pipeline continua
+    // usando Win/consider, mas só recebe vencedores sem o token revert-layer.
+    // Esta cascata representa uma única origem (autor); @property é fallback.
+    // Sem candidato restante, a ausência deixa herança/inicial ao apply_decls.
+    // Não expande all nem shorthands aqui: a arquitetura ainda os aplica depois
+    // da cascata; rollback entre shorthand e longhand não é completo.
+    for prop, list in originals {
+        removed := make([]bool, len(list), context.temp_allocator)
+        for {
+            best := -1
+            for w, i in list {
+                if removed[i] do continue
+                if best < 0 {
+                    best = i
+                } else {
+                    cmp := cascade_priority_compare(w.spec, list[best].spec)
+                    if cmp > 0 || (cmp == 0 && w.order >= list[best].order) do best = i
+                }
+            }
+            if best < 0 do break
+            w := list[best]
+            if !strings.equal_fold(strings.trim_space(w.val), "revert-layer") {
+                wins[prop] = w
+                break
+            }
+            // CSS Cascade 5 §7.3.5: remove a camada inteira, não apenas o
+            // vencedor. Important também remove as declarações ENTRE os níveis
+            // important/normal dessa camada, mas pode cair em outra important.
+            // Inline é categoria própria: important inline NÃO apaga important
+            // de folhas de autor; só remove as declarações inline desta prop.
+            for other, i in list {
+                p := other.spec
+                if p.layer == csspkg.LAYER_REGISTERED && w.spec.layer != csspkg.LAYER_REGISTERED do continue
+                if w.spec.inline {
+                    if p.inline do removed[i] = true
+                } else if w.spec.important && !p.important {
+                    if p.inline || csspkg.layer_compare(csspkg.Rule{layer_rank = p.layer}, csspkg.Rule{layer_rank = w.spec.layer}, false) >= 0 do removed[i] = true
+                } else if p.inline == w.spec.inline && p.layer == w.spec.layer {
+                    removed[i] = true
+                }
+            }
+            removed[best] = true // garante progresso inclusive para fallbacks
+        }
+    }
+    when CASCADEPROBE {
+        if casc_alvo {
+            for prop, w in wins {
+                if CASCADE_PROP != "" && !strings.contains(prop, CASCADE_PROP) do continue
+                fmt.eprintfln("[casc]   >>> VENCEU %-16s = %-20s prio=%v ordem=%d", prop, w.val, w.spec, w.order)
+            }
         }
     }
 

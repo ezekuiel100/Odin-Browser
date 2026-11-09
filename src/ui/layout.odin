@@ -8476,7 +8476,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
                 emit_grad_bg(pt, lay.grad, b, screen, ip0, ip1, cv0, cv1, is_canvas, lay.repeat, radius, eff, in_xform)
             } else if lay.img != "" {
                 op0, op1 := bg_origin_box(b, screen, bwl, bwt, bwr, bwb, in_xform)
-                emit(pt, PC_BgImage{op0, op1, cv0, cv1, b, eff, i}) // clip = canvas quando é a fonte
+                emit_bg_image(pt, op0, op1, cv0, cv1, b, eff, i) // clip = canvas quando é a fonte
             }
         }
         // `background-clip: text`: o gradiente NÃO pinta a caixa — ele colore os
@@ -8486,7 +8486,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         }
         if b.bg_img != "" {
             op0, op1 := bg_origin_box(b, screen, bwl, bwt, bwr, bwb, in_xform)
-            emit(pt, PC_BgImage{op0, op1, cv0, cv1, b, eff, -1}) // -1 = camada 0
+            emit_bg_image(pt, op0, op1, cv0, cv1, b, eff, -1) // -1 = camada 0
         }
         // box-shadow inset: por cima do fundo, recortada à caixa, sob a borda.
         for i in 0 ..< b.shadow_n {
@@ -9816,6 +9816,68 @@ paint_gradient_rounded :: proc(dl: ^im.DrawList, p_min, p_max: im.Vec2, g: csspk
         im.DrawList_PrimWriteIdx(dl, im.DrawIdx(a1 + 1)) // B_{k+1}
         im.DrawList_PrimWriteIdx(dl, im.DrawIdx(a0 + 1)) // B_k
     }
+}
+
+// SVGs do cache ficam Ready sem textura. Expande-os no RECORD, onde o
+// renderer vetorial pode emitir sua geometria; raster continua no PC_BgImage.
+// Usa a mesma geometria/limites do painter raster (inclusive o teto de tiles).
+@(private)
+emit_bg_image :: proc(pt: ^Painter, o_min, o_max, c_min, c_max: im.Vec2, b: ^Box, opa: f32 = 1.0, layer := -1) {
+    url, size, repeat := b.bg_img, b.bg_size, b.bg_repeat
+    pos_x, pos_y := b.bg_pos_x, b.bg_pos_y
+    if layer >= 0 {
+        if layer >= len(b.bg_extra) do return
+        lay := b.bg_extra[layer]
+        url, size, repeat = lay.img, lay.size, lay.repeat
+        pos_x, pos_y = lay.pos_x, lay.pos_y
+    }
+    if url == "" do return
+    img := image_get(url)
+    if !img.is_svg {
+        emit(pt, PC_BgImage{o_min, o_max, c_min, c_max, b, opa, layer})
+        return
+    }
+    if img.state != .Ready || img.svg_root == nil || img.w <= 0 || img.h <= 0 do return
+    W, H := o_max.x - o_min.x, o_max.y - o_min.y
+    if W <= 0 || H <= 0 || c_max.x <= c_min.x || c_max.y <= c_min.y do return
+    iw, ih := f32(img.w), f32(img.h)
+    dw, dh := iw, ih
+    switch size {
+    case .Cover:   s := max(W / iw, H / ih); dw, dh = iw * s, ih * s
+    case .Contain: s := min(W / iw, H / ih); dw, dh = iw * s, ih * s
+    case .Auto:
+    }
+    if dw < 0.5 || dh < 0.5 do return
+    if repeat && size == .Auto {
+        startx := o_min.x - dw * math.ceil((o_min.x - c_min.x) / dw)
+        starty := o_min.y - dh * math.ceil((o_min.y - c_min.y) / dh)
+        y := starty
+        for rows := 0; y < c_max.y && rows < 512; rows += 1 {
+            x := startx
+            for cols := 0; x < c_max.x && cols < 512; cols += 1 {
+                emit_bg_svg_tile(pt, img, {x, y}, dw, dh, c_min, c_max, opa)
+                x += dw
+            }
+            y += dh
+        }
+    } else {
+        origin := im.Vec2{o_min.x + (W - dw) * pos_x, o_min.y + (H - dh) * pos_y}
+        emit_bg_svg_tile(pt, img, origin, dw, dh, c_min, c_max, opa)
+    }
+}
+
+// Recorta também ao viewport de CADA tile: paths/traços fora do SVG não
+// podem invadir o tile vizinho. PC_PushClip intersecta com o clip do ancestral
+// no replay, inclusive quando a geometria pertence a uma layer offscreen.
+@(private="file")
+emit_bg_svg_tile :: proc(pt: ^Painter, img: ^Img, origin: im.Vec2, dw, dh: f32, c_min, c_max: im.Vec2, opa: f32) {
+    lo := im.Vec2{max(c_min.x, origin.x), max(c_min.y, origin.y)}
+    hi := im.Vec2{min(c_max.x, origin.x + dw), min(c_max.y, origin.y + dh)}
+    if hi.x <= lo.x || hi.y <= lo.y do return
+    emit(pt, PC_PushClip{lo, hi})
+    // Documento externo: currentColor inicial é preto, não a cor do elemento host.
+    paint_svg_node(pt, img.svg_root, 0x000000, origin, dw, dh, opa)
+    emit(pt, PC_PopClip{})
 }
 
 // Pinta background-image: url(). Recorta ao retângulo da caixa (PushClipRect).
