@@ -74,12 +74,12 @@ test_supports_custom_property :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_supports_sintaxe_desconhecida_e_permissiva :: proc(t: ^testing.T) {
-    // A decisão de projeto: "não sei avaliar" NÃO pode virar "some com o CSS".
-    testing.expect(t, sup("bananas(x)"), "função desconhecida no topo ⇒ permissivo")
-    testing.expect(t, sup("(sem-dois-pontos)"), "parêntese que não é declaração ⇒ permissivo")
-    testing.expect(t, sup("(color: red) and bananas(x)"), "true and não-sei ⇒ permissivo")
-    testing.expect(t, sup("bananas(x) or (nao-existe: 1)"), "não-sei or false ⇒ permissivo")
+test_supports_sintaxe_desconhecida_nao_afirma_suporte :: proc(t: ^testing.T) {
+    // Unknown general-enclosed features evaluate to false (Conditional Rules).
+    testing.expect(t, !sup("bananas(x)"), "função desconhecida no topo ⇒ false")
+    testing.expect(t, !sup("(sem-dois-pontos)"), "parêntese que não é declaração ⇒ false")
+    testing.expect(t, !sup("(color: red) and bananas(x)"), "true and não-sei ⇒ false")
+    testing.expect(t, !sup("bananas(x) or (nao-existe: 1)"), "não-sei or false ⇒ false")
     // ...mas um lado que decide sozinho DECIDE.
     testing.expect(t, !sup("(nao-existe: 1) and bananas(x)"), "false and não-sei = false")
     testing.expect(t, sup("(margin: 0) or bananas(x)"), "true or não-sei = true")

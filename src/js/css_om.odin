@@ -1,31 +1,7 @@
 package js
 
-// CSS (M153) — o namespace `CSS` do CSSOM: CSS.escape() e CSS.supports().
-//
-// Entrou porque o M150 fez identificador livre lançar ReferenceError, e aí
-// `CSS is not defined` apareceu no gap-report (airbnb e cia. fazem
-// `CSS.supports('display','grid')` p/ decidir entre layout moderno e fallback,
-// e `CSS.escape(id)` p/ montar seletores). Sem o namespace, o feature-detect
-// morre e o site desmonta a árvore.
-//
-// ── O QUE ISTO É E O QUE NÃO É ───────────────────────────────────────────────
-// • CSS.escape() é o algoritmo "serialize an identifier" do CSSOM — puro, sobre
-//   code points, SEM tabela externa. Implementado por completo e exato.
-// • CSS.supports() responde a partir da MESMA fonte de verdade do motor de
-//   estilo: `css_prop_is_known` (ui/style.odin), injetada como hook (o js não
-//   pode importar ui — ciclo, igual ao querySelector). A checagem é da
-//   PROPRIEDADE; NÃO validamos a gramática do VALOR (`supports('display','xyz')`
-//   devolve true porque `display` é conhecida). É over-claim consciente: o uso
-//   real é detectar grid/flex/sticky/gap — que suportamos — e devolver false aí
-//   faria o site cair no layout legado que também renderizamos diferente. A
-//   alternativa honesta seria um validador de valor por propriedade, que não
-//   temos. Documentado, não esquecido.
-//
-// ⚠️ Sem o pacote ui (ex.: `odin test src/js`, headless puro) o hook é nil e
-// caímos numa HEURÍSTICA sintática (identificador CSS plausível + valor não
-// vazio). Isso só roda FORA de uma página real — em render de verdade o ui
-// sempre instala o hook e a resposta é exata. O over-claim da heurística nunca
-// chega a um site.
+// CSS.escape() and CSS.supports(). The UI installs shared declaration and
+// condition hooks; standalone interpreter tests use a syntactic fallback.
 
 import "core:fmt"
 import "core:strings"
@@ -36,6 +12,11 @@ import "core:strings"
 // e o valor cru; devolve se o motor RECONHECE a propriedade. nil => heurística.
 Css_Supports_Fn :: proc(prop: string, value: string) -> bool
 g_css_supports: Css_Supports_Fn
+
+// Syntax validation for CSSStyleDeclaration setters; independent of whether a
+// feature is rendered. Nil keeps the standalone interpreter usable.
+g_css_value_valid: Css_Supports_Fn
+g_css_condition_supports: proc(condition: string) -> bool
 
 // ToString (spec, via ToPrimitive) para os argumentos — resultado no
 // temp_allocator (vale só até o fim da chamada nativa, que é tudo que precisamos).
@@ -169,6 +150,10 @@ css_ident_plausible :: proc(p: string) -> bool {
 css_supports_cond :: proc(s0: string) -> bool {
     s := strings.trim_space(s0)
     if s == "" do return false
+    if g_css_condition_supports != nil {
+        if g_css_condition_supports(s) do return true
+        return css_supports_bare_decl(s)
+    }
     if css_supports_or(s) do return true // passo 1
     return css_supports_bare_decl(s)     // passo 2
 }

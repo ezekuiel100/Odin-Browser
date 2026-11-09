@@ -1948,7 +1948,20 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
             }
         }
     }
+    if g_value_valid != nil {
+        body, _ := split_important(val)
+        if !g_value_valid(prop, body) {
+            delete(prop, allocator); delete(val, allocator)
+            return
+        }
+    }
     if old, ok := decls[prop]; ok {
+        _, old_important := split_important(old)
+        _, new_important := split_important(val)
+        if old_important && !new_important {
+            delete(prop, allocator); delete(val, allocator)
+            return
+        }
         // CADEIA DE FALLBACK (`width: 100px; width: -webkit-fill-available`): o
         // autor escreve a mesma propriedade DUAS vezes justamente porque o
         // suporte varia — a última que o motor entende é a que deve valer. Antes
@@ -1983,6 +1996,9 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
 // palavras-chave estão implementadas. Consultado SÓ para decidir um duplicado
 // dentro do MESMO bloco de declarações (ver add_decl).
 g_value_usable: proc(prop, old_val, new_val: string) -> bool = nil
+
+// Syntax hook owned by the style engine, applied even to a first declaration.
+g_value_valid: proc(prop, value: string) -> bool
 
 // Separa o sufixo "!important" do valor ("red !important" → "red", true).
 // Case-insensitive; aceita espaços em volta do '!' ("red ! important").

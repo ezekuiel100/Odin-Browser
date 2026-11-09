@@ -1,48 +1,8 @@
 package css
 
-// Avaliação da <supports-condition> do `@supports` (CSS Conditional Rules 3 §2).
-//
-// ANTES (até 2026-07-29) as duas pontas estavam erradas, e em silêncio:
-//   - `parse_block` tratava `@supports` como TRANSPARENTE (junto de `@layer`):
-//     o conteúdo entrava SEMPRE, condição ignorada. Ou seja, o fallback de
-//     `@supports not (display:grid){…}` era aplicado POR CIMA do caminho
-//     moderno — o padrão de progressive enhancement virava sobrescrita.
-//   - `parse_rule_body` (o `@supports` ANINHADO por CSS nesting) nem tinha
-//     ramo: caía no `skip_at_rule` e o bloco inteiro era DESCARTADO.
-//
-// Gramática (a mesma do `CSS.supports()` em js/css_om.odin, que delega aqui):
-//   condition := or
-//   or        := and ( 'or'  and )*
-//   and       := not ( 'and' not )*
-//   not       := 'not' primary | primary
-//   primary   := '(' ( declaration | condition ) ')' | general-enclosed
-//
-// ── A decisão de projeto que importa: LÓGICA DE TRÊS VALORES ────────────────
-// Cada nó devolve `(val, ok)`. `ok=false` significa "não sei avaliar esta
-// SINTAXE" — que é diferente de "avaliei e deu falso". No TOPO, não-sei ⇒
-// **true**, preservando o comportamento antigo: sintaxe que não modelamos
-// nunca faz CSS SUMIR (a spec manda false; aqui false seria pior que inútil,
-// porque a nossa ignorância viraria remoção de conteúdo do site).
-// `and`/`or` só propagam o não-sei quando o outro lado não decide sozinho:
-// `false and ?` = false, `true or ?` = true.
-//
-// ⚠️ LIMITE CONHECIDO: o hook julga a declaração inteira, mas a checagem de
-// VALOR do lado do ui é parcial (ver css_supports_decl em ui/style.odin) —
-// prop conhecida + valor que não sabemos julgar ⇒ true. `@supports (foo: bar)`
-// com `foo` desconhecida é o caso 100% confiável.
-//
-// ⚠️ IRMÃ DESTE ARQUIVO: `js/css_om.odin` tem a MESMA gramática para o
-// `CSS.supports()` do JS. Não foi unificada de propósito — o default de
-// "não sei" é OPOSTO nas duas: aqui permissivo (não sumir com CSS), lá
-// ESTRITO (feature-detect que responde true manda o site pelo caminho
-// moderno que não sabemos renderizar). O que É compartilhado, e é o que
-// importa, é a POLÍTICA: os dois chamam a mesma `css_supports_decl` do ui.
-// Ao mexer na gramática de um, olhe o outro.
-// ⚠️ E uma diferença que NÃO é acidente: o `CSS.supports(texto)` do JS tem um 2º
-// passo do CSSOM — texto que não parseia como condição é tentado como
-// <declaration> nua, e por isso `CSS.supports('color: red')` (sem parênteses) é
-// true. A at-rule NÃO tem esse passo: `@supports color: red {…}` é inválida, o
-// prelúdio dela é uma <supports-condition> e ponto. Não copie o fallback p/ cá.
+// Feature queries share the engine declaration validator with CSS.supports().
+// Unknown general-enclosed features are false; malformed conditions are false.
+// The standalone css package keeps an optional declaration hook.
 
 import "core:strings"
 
@@ -64,7 +24,7 @@ supports_condition :: proc(cond: string) -> bool {
 // receita de flake que já mordeu este projeto (M192/M216/M217).
 supports_condition_with :: proc(cond: string, fn: Prop_Supported_Fn) -> bool {
     val, ok := sup_or(cond, fn)
-    return ok ? val : true // não-sei no topo ⇒ permissivo
+    return ok && val // malformed conditions do not enable a feature
 }
 
 // Uma declaração `(prop: value)` da condição.
@@ -72,6 +32,7 @@ supports_declaration :: proc(prop, value: string, fn: Prop_Supported_Fn) -> bool
     p := strings.to_lower(strings.trim_space(prop), context.temp_allocator)
     v := strings.trim_space(value)
     if p == "" || v == "" do return false
+    if g_value_valid != nil && !g_value_valid(p, v) do return false
     // `!important` dentro de @supports é inválido por spec.
     if strings.contains(strings.to_lower(v, context.temp_allocator), "!important") do return false
     // Custom property: quem PARSEIA a declaração a suporta — e nós parseamos
@@ -108,40 +69,29 @@ supports_selector :: proc(sel: string) -> bool {
 @(private = "file")
 sup_or :: proc(s0: string, fn: Prop_Supported_Fn) -> (val: bool, ok: bool) {
     s := strings.trim_space(s0)
-    if i := sup_find_top_kw(s, "or"); i >= 0 {
-        lv, lok := sup_and(s[:i], fn)
-        rv, rok := sup_or(s[i + 2:], fn)
-        if lok && lv do return true, true
-        if rok && rv do return true, true
-        if lok && rok do return false, true
-        return false, false
-    }
-    return sup_and(s, fn)
-}
-
-@(private = "file")
-sup_and :: proc(s0: string, fn: Prop_Supported_Fn) -> (val: bool, ok: bool) {
-    s := strings.trim_space(s0)
-    if i := sup_find_top_kw(s, "and"); i >= 0 {
-        lv, lok := sup_not(s[:i], fn)
-        rv, rok := sup_and(s[i + 3:], fn)
-        if lok && !lv do return false, true
-        if rok && !rv do return false, true
-        if lok && rok do return true, true
-        return false, false
-    }
-    return sup_not(s, fn)
-}
-
-@(private = "file")
-sup_not :: proc(s0: string, fn: Prop_Supported_Fn) -> (val: bool, ok: bool) {
-    s := strings.trim_space(s0)
+    ai := sup_find_top_kw(s, "and")
+    oi := sup_find_top_kw(s, "or")
+    if ai >= 0 && oi >= 0 do return false, false
     if len(s) >= 3 && strings.equal_fold(s[:3], "not") &&
        (len(s) == 3 || is_space(s[3]) || s[3] == '(') {
-        v, k := sup_not(strings.trim_space(s[3:]), fn)
-        return !v, k // não-sei negado continua não-sei
+        if ai >= 0 || oi >= 0 do return false, false
+        v, k := sup_primary(strings.trim_space(s[3:]), fn)
+        return !v, k
     }
-    return sup_primary(s, fn)
+    if ai < 0 && oi < 0 do return sup_primary(s, fn)
+    kw := oi >= 0 ? "or" : "and"
+    result := kw == "and"
+    rest := s
+    for {
+        i := sup_find_top_kw(rest, kw)
+        part := i < 0 ? rest : rest[:i]
+        v, k := sup_primary(part, fn)
+        if !k do return false, false
+        if kw == "and" { result = result && v } else { result = result || v }
+        if i < 0 do break
+        rest = rest[i+len(kw):]
+    }
+    return result, true
 }
 
 @(private = "file")
@@ -174,7 +124,7 @@ sup_general_enclosed :: proc(s: string, fn: Prop_Supported_Fn) -> (val: bool, ok
         // uma resposta que sabemos dar (ok=true, não "não sei").
         return false, true
     }
-    return false, false
+    return false, true // general-enclosed: valid syntax, unsupported feature
 }
 
 @(private = "file")
@@ -189,7 +139,7 @@ sup_paren_inner :: proc(inner0: string, fn: Prop_Supported_Fn) -> (val: bool, ok
         return sup_or(inner, fn)
     }
     ci := sup_index_top(inner, ':')
-    if ci < 0 do return false, false // `(lixo)` sem ':' = general-enclosed
+    if ci < 0 do return false, true // general-enclosed is unsupported
     return supports_declaration(inner[:ci], inner[ci + 1:], fn), true
 }
 

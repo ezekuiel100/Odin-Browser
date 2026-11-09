@@ -3531,7 +3531,10 @@ style_prop_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> boo
     defer strings.builder_destroy(&vb)
     to_text(&vb, val)
 
-    inline_style_set(vm, node, strings.to_string(kb), strings.trim_space(strings.to_string(vb)))
+    prop := strings.to_string(kb)
+    text := strings.trim_space(strings.to_string(vb))
+    if text != "" && g_css_value_valid != nil && !g_css_value_valid(prop, text) do return true
+    inline_style_set(vm, node, prop, text)
     return true
 }
 
@@ -3546,7 +3549,9 @@ style_set_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     strings.builder_init(&vb)
     defer strings.builder_destroy(&vb)
     to_text(&vb, arg(args, 1))
-    inline_style_set(vm, node, prop, strings.trim_space(strings.to_string(vb)))
+    text := strings.trim_space(strings.to_string(vb))
+    if text != "" && g_css_value_valid != nil && !g_css_value_valid(prop, text) do return nil
+    inline_style_set(vm, node, prop, text)
     return nil
 }
 

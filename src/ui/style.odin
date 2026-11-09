@@ -3319,6 +3319,7 @@ usable_always := []string{
 }
 
 value_usable :: proc(prop, old_val, val: string) -> bool {
+    if valid, checked := css_value_valid(prop, val); checked do return valid
     v := strings.to_lower(strings.trim_space(val), context.temp_allocator)
     if v == "" do return false
     // var()/env()/attr(): só dá p/ julgar depois de resolver — o attr() inclusive
@@ -3384,7 +3385,22 @@ computed_initial :: proc() -> Computed {
                     grid_col_span = 1, grid_row_span = 1}
 }
 
-apply_decls :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]string, vw: f32 = 1280, vh: f32 = 720, node: ^dompkg.Node = nil) {
+apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[string]string, vw: f32 = 1280, vh: f32 = 720, node: ^dompkg.Node = nil) {
+    decls := raw_decls
+    // Validate substitution results atomically, including shorthands. Invalid
+    // var() results do not resurrect an earlier cascade candidate.
+    filtered: map[string]string
+    for prop, val in decls {
+        if !strings.contains(val, "var(") do continue
+        if !css_declaration_valid(prop, resolve_var(val, vars)) {
+            if filtered == nil {
+                filtered = make(map[string]string, len(decls), context.temp_allocator)
+                for k, v in decls do filtered[k] = v
+            }
+            delete_key(&filtered, prop)
+        }
+    }
+    if filtered != nil do decls = filtered
     // Base da unidade `lh` p/ este elemento. Começa pelos valores HERDADOS (comp já
     // chega como cópia do pai) e é reescrita quando font-size e line-height próprios
     // forem aplicados, ambos ANTES do bloco de métricas de caixa (margin/padding/
@@ -6587,7 +6603,6 @@ first_track :: proc(s: string) -> string {
 
 // Separa por espaços apenas no nível superior (ignora espaços dentro de
 // parênteses, ex.: minmax(200px, 1fr)). Usa o temp allocator do frame.
-@(private="file")
 split_top_level :: proc(s: string) -> []string {
     out := make([dynamic]string, context.temp_allocator)
     depth := 0
@@ -8029,44 +8044,27 @@ install_js_query_hook :: proc "contextless" () {
 // `@supports` (avaliado no parse, css/supports.odin) quanto ao `CSS.supports()`
 // do JS. Recebe a propriedade JÁ em minúsculas.
 //
-// Três camadas, da mais confiável p/ a menos:
-//  1. propriedade DESCONHECIDA ⇒ false (a resposta 100% confiável);
-//  2. valor com unidade/função que o motor não parseia ⇒ false — a declaração
-//     cairia de qualquer jeito, então dizer "suporto" faria o site pular o
-//     fallback e ficar SEM a propriedade (é o caso de `100dvh`, `1cqw`, `env()`);
-//  3. propriedade de palavra-chave fechada (display/position) ⇒ o valor tem de
-//     estar na lista que o apply_decls realmente trata.
-// Fora disso ⇒ true. ⚠️ É aqui que mora o falso-positivo residual: não temos
-// gramática de valor por propriedade, então `(aspect-ratio: 1/1)` é aceito sem
-// ser verificado. Ver o cabeçalho de css/supports.odin.
-css_supports_decl :: proc(prop: string, value: string) -> bool {
+// Shared value grammar first, then implementation capability checks. Grammars
+// not yet covered retain the legacy parser policy; see docs/CSS-VALUES.md.
+css_supports_decl :: proc(raw_prop: string, value: string) -> bool {
+    prop := strings.to_lower(strings.trim_space(raw_prop), context.temp_allocator)
+    if valid, _ := css_value_valid(prop, value); !valid do return false
     if strings.has_prefix(prop, "--") do return true // custom property: nós parseamos
     if !css_prop_is_known(prop) do return false
     v := strings.to_lower(strings.trim_space(value), context.temp_allocator)
     if v == "" do return false
     if value_has_unsupported_unit(v) do return false
     if value_has_unsupported_fn(v) do return false
+    // Recognizing a property for diagnostics is not implementation support.
     switch prop {
-    case "font-kerning":
-        return v == "auto" || v == "normal" || v == "none" || v == "inherit" || v == "initial" || v == "unset"
-    case "display":
-        // Espelha o switch de `display` em apply_decls: o que não está lá NÃO
-        // gera o modo de caixa (list-item, ruby, math, `inline flow-root`…).
-        switch v {
-        case "none", "flex", "inline-flex", "grid", "inline-grid", "inline-block",
-             "block", "flow-root", "inline", "table", "inline-table", "table-row",
-             "table-cell", "table-row-group", "table-header-group", "table-footer-group",
-             "contents":
-            return true
-        }
+    case "touch-action", "hyphens", "-webkit-hyphens", "font-variation-settings",
+         "font-feature-settings", "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop",
+         "perspective", "perspective-origin", "transform-style":
         return false
-    case "position":
-        switch v {
-        case "static", "relative", "absolute", "fixed", "sticky", "-webkit-sticky":
-            return true
-        }
-        return false
+    case "writing-mode": return v == "horizontal-tb"
     }
+    if valid, checked := css_value_valid(prop, value); checked do return valid
+
     return true
 }
 

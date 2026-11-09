@@ -126,7 +126,6 @@ test_supports_e2e_unidade_nao_convertida_cai_no_fallback :: proc(t: ^testing.T) 
 // `nao-existe-mesmo: 1` seria TRUE (é um identificador plausível), então cada
 // `false` abaixo prova que a declaração NUA (passo 2 do CSSOM, o que faltava) foi
 // parar no `css_supports_decl` — e não numa aproximação.
-@(private = "file")
 sup_js :: proc(t: ^testing.T, expr: string) -> bool {
     vm := jspkg.vm_create()
     defer jspkg.vm_free(vm)
