@@ -1028,6 +1028,38 @@ try {
     Assert "animation sem backwards preserva fundo durante delay" ($delay.R -gt 245 -and $delay.G -lt 5) ("pixel="+$delay)
 } finally { $animBmp.Dispose() }
 
+# Transforms 3D achatados + backface-visibility. O mouse fica em (550,50): so o
+# cartao #h esta em :hover. A segunda rodada, com o mouse fora, e o controle dele.
+function Px3d($bmp, $x, $y, $r, $g, $b) {
+    $p = $bmp.GetPixel($x, $y)
+    return ([Math]::Abs($p.R - $r) -le 6 -and [Math]::Abs($p.G - $g) -le 6 -and [Math]::Abs($p.B - $b) -le 6)
+}
+$x3dPng = Join-Path $outDir "transform-3d.png"
+$x3dOff = Join-Path $outDir "transform-3d-off.png"
+foreach ($f in @($x3dPng, $x3dOff)) { if (Test-Path $f) { Remove-Item -LiteralPath $f -Force } }
+& $Browser --render (Join-Path $PSScriptRoot "tests\paint\transform-3d.html") $x3dPng 640 320 550 50 3 | Out-Null
+& $Browser --render (Join-Path $PSScriptRoot "tests\paint\transform-3d.html") $x3dOff 640 320 0 0 3 | Out-Null
+if (-not (Test-Path $x3dPng) -or -not (Test-Path $x3dOff)) { throw "transform-3d: sem PNG" }
+$x3d = New-Object System.Drawing.Bitmap $x3dPng
+$x3o = New-Object System.Drawing.Bitmap $x3dOff
+try {
+    Assert "translate3d desloca (e sai da origem)" ((Px3d $x3d 150 50 255 0 0) -and (Px3d $x3d 50 50 255 255 255)) ("pixel="+$x3d.GetPixel(150,50))
+    Assert "matrix3d: a 4a coluna e a translacao" ((Px3d $x3d 310 250 255 0 0) -and (Px3d $x3d 225 250 255 255 255)) ("pixel="+$x3d.GetPixel(310,250))
+    Assert "rotateX(60deg) encolhe a altura pela metade" ((Px3d $x3d 50 150 255 0 0) -and (Px3d $x3d 50 125 255 255 255)) ("pixel="+$x3d.GetPixel(50,125))
+    Assert "X90 . X-90 e a identidade (projeta o PRODUTO)" (Px3d $x3d 50 225 255 0 0) ("pixel="+$x3d.GetPixel(50,225))
+    Assert "Y180 . Z90 troca os eixos: o canto marcado fica no lugar" ((Px3d $x3d 130 230 0 0 0) -and (Px3d $x3d 170 230 255 0 0) -and (Px3d $x3d 170 270 255 0 0)) ("pixel="+$x3d.GetPixel(130,230))
+    Assert "flip-card parado: o verso (rotateY 180) fica escondido" (Px3d $x3d 250 50 0 0 255) ("pixel="+$x3d.GetPixel(250,50))
+    Assert "flip-card virado com preserve-3d: frente some, verso desespelhado" ((Px3d $x3d 325 50 255 255 255) -and (Px3d $x3d 350 50 0 0 0) -and (Px3d $x3d 370 50 255 165 0)) ("pixel="+$x3d.GetPixel(325,50))
+    Assert "virado SEM preserve-3d: achata, e a frente sai espelhada" ((Px3d $x3d 470 50 0 0 0) -and (Px3d $x3d 430 50 0 0 255)) ("pixel="+$x3d.GetPixel(470,50))
+    Assert "flip no :hover mostra o verso" ((Px3d $x3d 525 50 255 255 255) -and (Px3d $x3d 550 50 0 0 0) -and (Px3d $x3d 570 50 255 165 0)) ("pixel="+$x3d.GetPixel(550,50))
+    Assert "o mesmo cartao SEM hover mostra a frente" ((Px3d $x3o 525 50 0 0 255) -and (Px3d $x3o 570 50 0 0 255)) ("pixel="+$x3o.GetPixel(525,50))
+    Assert "backface hidden esconde o elemento virado (transform)" (Px3d $x3d 250 150 0 128 0) ("pixel="+$x3d.GetPixel(250,150))
+    Assert "backface hidden esconde o elemento virado (prop rotate: y)" (Px3d $x3d 350 150 0 128 0) ("pixel="+$x3d.GetPixel(350,150))
+    Assert "controle: scaleX(-1) espelha sem virar a face" (Px3d $x3d 150 150 0 128 0) ("pixel="+$x3d.GetPixel(150,150))
+    Assert "translateZ(0) cria stacking context" (Px3d $x3d 450 150 0 128 0) ("pixel="+$x3d.GetPixel(450,150))
+    Assert "controle: translate(0) cria o mesmo contexto" (Px3d $x3d 550 150 0 128 0) ("pixel="+$x3d.GetPixel(550,150))
+} finally { $x3d.Dispose(); $x3o.Dispose() }
+
 # Contextos: a mesma fixture roda sozinha para comparacao antes/depois.
 & (Join-Path $PSScriptRoot "tools/check-stacking.ps1") -Browser $Browser
 Assert "24 casos de contexto de empilhamento" ($LASTEXITCODE -eq 0) "ver casos acima"

@@ -390,6 +390,8 @@ css_prop_is_known :: proc(p: string) -> bool {
          "mask-repeat","-webkit-mask-repeat","mask-mode","mask-clip","-webkit-mask-clip",
          "mask-origin","-webkit-mask-origin","mask-composite","-webkit-mask-composite","mask-type",
          "translate","rotate","scale",
+         // 3D achatado: o lado (frente × verso) é honrado; a profundidade não.
+         "backface-visibility","transform-style",
          "counter-set","accent-color",
          "all",
          "contain","will-change","offset-path","offset-distance","offset-rotate",
@@ -408,7 +410,7 @@ css_prop_is_known :: proc(p: string) -> bool {
          "text-size-adjust","-webkit-text-size-adjust","color-scheme",
          "print-color-adjust","-webkit-print-color-adjust","forced-color-adjust",
          "text-rendering","-webkit-font-smoothing","-moz-osx-font-smoothing",
-         "backface-visibility","perspective","perspective-origin","transform-style",
+         "perspective","perspective-origin",
          "scroll-snap-type","scroll-snap-align","scroll-snap-stop",
          "overflow-anchor","tab-size","-moz-tab-size","hanging-punctuation",
          "text-emphasis","text-emphasis-color","text-emphasis-style","text-emphasis-position",
@@ -939,6 +941,7 @@ Hover_Style :: struct {
     tx, ty:        f32, tx_pct, ty_pct: bool,
     rot:           f32,
     sx, sy:        f32,
+    back:          bool, // xf_back do estado :hover
 }
 
 // @keyframes resolvido p/ um elemento: stops com as props de pintura animáveis
@@ -1303,6 +1306,14 @@ Computed :: struct {
     xf_a, xf_b, xf_c, xf_d:             f32, // parte linear 2×2 [a b; c d] (identidade = 1,0,0,1)
     has_xform_matrix:                   bool, // usa xf_* (skew/matrix) em vez de rot/scale
     has_transform:                      bool,
+    // 3D ACHATADO (ver parse_transform): as funções 3D compõem numa matriz 3×3 e
+    // só a projeção ortográfica (o bloco 2×2) chega à pintura. O que a projeção
+    // perde é o LADO: `rotateY(180deg)` e `scaleX(-1)` dão o mesmo 2×2, mas só o
+    // primeiro mostra o VERSO. `xf_back` guarda esse bit.
+    xf_back:         bool, // o transform próprio deixa a face de TRÁS voltada p/ o observador
+    backface_hidden: bool, // backface-visibility:hidden (não herda)
+    preserve_3d:     bool, // transform-style:preserve-3d (não herda)
+    in_p3d:          bool, // o PAI tem preserve-3d: o lado do pai compõe com o nosso
 
     // offset-path (CSS Motion Path): posiciona a caixa ao longo de um caminho.
     // Só path(...) com segmentos retos (M/L/H/V/Z). offset_distance em fração da
@@ -1863,14 +1874,13 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.blend_mode = .Normal
     comp.n_filters = 0
     comp.n_backdrop = 0 // backdrop-filter não herda
-    comp.has_transform  = false
-    comp.transform_tx   = 0; comp.transform_ty   = 0
-    comp.transform_tx_pct = false; comp.transform_ty_pct = false
-    comp.transform_rot  = 0
-    comp.transform_sx   = 1; comp.transform_sy   = 1
+    transform_reset(&comp)
     comp.transform_ox   = 0.5; comp.transform_oy = 0.5
-    comp.xf_a = 1; comp.xf_b = 0; comp.xf_c = 0; comp.xf_d = 1
-    comp.has_xform_matrix = false
+    // `comp` ainda é a cópia do PAI neste ponto: lê o preserve-3d dele antes de
+    // zerar o nosso (transform-style não herda; o que desce é só "meu pai tem").
+    comp.in_p3d = comp.preserve_3d
+    comp.preserve_3d = false
+    comp.backface_hidden = false
     comp.has_offset_path = false; comp.offset_path = ""
     comp.offset_distance = 0; comp.offset_distance_pct = false
     comp.offset_rotate_auto = true; comp.offset_rotate_angle = 0
@@ -2167,6 +2177,23 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         defer delete(hov)
         if len(hov) > 0 {
             hc := comp
+            // O transform do :hover SUBSTITUI o da base, não compõe com ele. Como
+            // `hc` nasce da cópia já transformada e o apply_decls ACUMULA (rot +=,
+            // sx *=), `.x{transform:rotate(45deg)} .x:hover{transform:rotate(45deg)
+            // scale(1.2)}` girava 90° no hover, e `:hover{transform:none}` não
+            // desfazia nada. Zera os campos e reaplica o grupo inteiro: do :hover
+            // o que ele declarou, da base o que ele não tocou (as quatro props
+            // caem nos mesmos campos, então são resolvidas juntas).
+            XF_PROPS :: [?]string{"transform", "translate", "rotate", "scale"}
+            hov_xf := false
+            for p in XF_PROPS do if p in hov { hov_xf = true; break }
+            if hov_xf {
+                for p in XF_PROPS {
+                    if p in hov do continue
+                    if v, ok := merged[p]; ok do hov[p] = v
+                }
+                transform_reset(&hc)
+            }
             apply_decls(&hc, hov, elem_vars, viewport_w, viewport_h, n)
             comp.hover.active = true
             if hc.color != comp.color            { comp.hover.has_color    = true; comp.hover.color    = hc.color }
@@ -2189,6 +2216,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
                 comp.hover.tx_pct = hc.transform_tx_pct; comp.hover.ty_pct = hc.transform_ty_pct
                 comp.hover.rot = hc.transform_rot
                 comp.hover.sx = hc.transform_sx; comp.hover.sy = hc.transform_sy
+                comp.hover.back = hc.xf_back
             }
         }
     }
@@ -3845,6 +3873,12 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     if v, ok := decls["isolation"]; ok {
         comp.isolate = strings.equal_fold(strings.trim_space(resolve_var(v, vars)), "isolate")
     }
+    if v, ok := decls["backface-visibility"]; ok {
+        comp.backface_hidden = strings.equal_fold(strings.trim_space(resolve_var(v, vars)), "hidden")
+    }
+    if v, ok := decls["transform-style"]; ok {
+        comp.preserve_3d = strings.equal_fold(strings.trim_space(resolve_var(v, vars)), "preserve-3d")
+    }
     if v, ok := decls["mix-blend-mode"]; ok {
         switch strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator) {
         case "multiply":  comp.blend_mode = .Multiply
@@ -3923,22 +3957,57 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
                     comp.transform_ty = py; comp.transform_ty_pct = pct; comp.has_transform = true
                 }
             }
-            // toks[2] (Z) ignorado — sem 3D.
+            // toks[2] (Z) não desloca nada na projeção ortográfica (sem `perspective`).
         }
     }
     if v, ok := decls["rotate"]; ok {
         lo := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
         if lo != "" && lo != "none" {
-            // rotate: <angle> | [x|y|z|<x> <y> <z>] <angle>. Só 2D (eixo z): pega
-            // o ÚLTIMO token como ângulo (o eixo x/y/z ou vetor vem antes).
+            // rotate: <angle> | [x|y|z|<x> <y> <z>] && <angle>.
             // split_top_level pelo mesmo motivo do `translate` acima (`calc()`).
             toks := split_top_level(lo)
             if len(toks) >= 1 {
+                // Eixo: `x`/`y`/`z` ou um vetor de 3 números; o ângulo é o token
+                // que sobra (a spec aceita o eixo antes OU depois do ângulo).
+                // Grafia que não é nenhuma das três formas deixa o eixo nulo e
+                // não gira nada (antes desta mudança também era ignorada).
+                ax, ay, az: f32 = 0, 0, 0
                 ang := toks[len(toks) - 1]
-                // rotação sobre x/y não gira no plano 2D → ignora
-                axis2d := len(toks) == 1 || toks[0] == "z"
-                if axis2d {
-                    comp.transform_rot += parse_angle(ang); comp.has_transform = true
+                switch len(toks) {
+                case 1:
+                    az = 1
+                case 2:
+                    eixo := toks[0]
+                    if toks[1] == "x" || toks[1] == "y" || toks[1] == "z" { eixo = toks[1]; ang = toks[0] }
+                    switch eixo {
+                    case "x": ax = 1
+                    case "y": ay = 1
+                    case "z": az = 1
+                    }
+                case 4:
+                    v0, k0 := strconv.parse_f64(toks[0]); v1, k1 := strconv.parse_f64(toks[1]); v2, k2 := strconv.parse_f64(toks[2])
+                    if k0 && k1 && k2 { ax, ay, az = f32(v0), f32(v1), f32(v2) }
+                    else {
+                        ang = toks[0]
+                        w1, j1 := strconv.parse_f64(toks[1]); w2, j2 := strconv.parse_f64(toks[2]); w3, j3 := strconv.parse_f64(toks[3])
+                        if j1 && j2 && j3 { ax, ay, az = f32(w1), f32(w2), f32(w3) }
+                    }
+                }
+                // Mesmo achatamento do parse_transform, pelos campos escalares
+                // (é o que a transition anima): girar sobre x/y ENCOLHE o eixo
+                // oposto por cos θ, e passa a mostrar o verso quando cos θ < 0.
+                // Eixo oblíquo não tem forma escalar e fica de fora.
+                a := parse_angle(ang)
+                cs := f32(math.cos(f64(a)))
+                switch {
+                case ax == 0 && ay == 0 && az != 0:
+                    comp.transform_rot += az < 0 ? -a : a; comp.has_transform = true
+                case ay == 0 && az == 0 && ax != 0:
+                    comp.transform_sy *= cs; comp.has_transform = true
+                    if cs < 0 do comp.xf_back = !comp.xf_back
+                case ax == 0 && az == 0 && ay != 0:
+                    comp.transform_sx *= cs; comp.has_transform = true
+                    if cs < 0 do comp.xf_back = !comp.xf_back
                 }
             }
         }
@@ -7441,19 +7510,64 @@ parse_transform_origin :: proc(value: string) -> (ox: f32, oy: f32) {
     return
 }
 
+// Estado inicial dos campos que `translate`/`rotate`/`scale`/`transform`
+// alimentam. `transform-origin` fica de fora: é outra propriedade.
+@(private="file")
+transform_reset :: proc(comp: ^Computed) {
+    comp.has_transform  = false
+    comp.transform_tx   = 0; comp.transform_ty   = 0
+    comp.transform_tx_pct = false; comp.transform_ty_pct = false
+    comp.transform_rot  = 0
+    comp.transform_sx   = 1; comp.transform_sy   = 1
+    comp.xf_a = 1; comp.xf_b = 0; comp.xf_c = 0; comp.xf_d = 1
+    comp.has_xform_matrix = false
+    comp.xf_back = false
+}
+
 @(private="file")
 parse_transform :: proc(comp: ^Computed, value: string, fs: f32, vw: f32, vh: f32) {
     s := strings.trim_space(value)
     if s == "" || strings.equal_fold(s, "none") do return
 
-    // Matriz linear 2×2 acumulada (identidade). CSS compõe da esquerda p/ a direita
+    // Matriz linear acumulada (identidade). CSS compõe da esquerda p/ a direita
     // (a 1ª função é a mais externa): m := m × Mi, na ordem de parse. Rotate/scale
     // ALSO preenchem os campos próprios (p/ a transition animar); skew/matrix marcam
     // has_xform_matrix p/ a pintura usar `m` em vez de rot/scale.
-    ma, mb, mc, md: f32 = 1, 0, 0, 1
-    mul :: proc(a, b, c, d, na, nb, nc, nd: f32) -> (f32, f32, f32, f32) {
-        return a*na + b*nc, a*nb + b*nd, c*na + d*nc, c*nb + d*nd
+    //
+    // A matriz é 3×3 e não 2×2 por causa das funções 3D: sem `perspective` a
+    // projeção é ORTOGRÁFICA, e o que aparece na tela é exatamente o bloco 2×2
+    // superior-esquerdo do PRODUTO 3D. Projetar função a função daria errado —
+    // `rotateX(90deg) rotateX(-90deg)` é a identidade, mas o produto das duas
+    // projeções é uma escala por zero. Para uma lista só de funções 2D o bloco
+    // 2×2 sai idêntico ao que a conta 2×2 antiga dava (os termos novos somam 0).
+    //
+    // ⚠️ DEGRADAÇÕES, todas com teste dizendo qual é (style_xform3d_test.odin):
+    //  • `perspective()` (e a prop `perspective`) não tem efeito: o resultado é o
+    //    da mesma lista SEM ela, ou seja, sem encurtamento em profundidade.
+    //  • o deslocamento em Z (translateZ, 3º arg de translate3d, 15º de matrix3d)
+    //    some. Sozinho isso é exato; depois de um rotateX/rotateY ele deveria
+    //    virar deslocamento em tela (carrossel/cubo) e não vira — a translação
+    //    deste motor não passa pela matriz, nem em 2D.
+    M: matrix[3, 3]f32 = 1
+    lin2 :: proc(a, b, c, d: f32) -> matrix[3, 3]f32 {
+        return {a, b, 0,  c, d, 0,  0, 0, 1}
     }
+    // Rotação de `a` radianos sobre o eixo (x,y,z) — Rodrigues, na convenção da
+    // spec (CSS Transforms 2, rotate3d). Eixo nulo = sem rotação.
+    rot3 :: proc(x, y, z, a: f32) -> matrix[3, 3]f32 {
+        l := math.sqrt(x*x + y*y + z*z)
+        if l == 0 do return 1
+        x, y, z := x/l, y/l, z/l
+        c, s := f32(math.cos(f64(a))), f32(math.sin(f64(a)))
+        t := 1 - c
+        return {
+            t*x*x + c,   t*x*y - s*z, t*x*z + s*y,
+            t*x*y + s*z, t*y*y + c,   t*y*z - s*x,
+            t*x*z - s*y, t*y*z + s*x, t*z*z + c,
+        }
+    }
+    saw3d := false // alguma função saiu do plano: confere os campos escalares no fim
+    rot0, sx0, sy0 := comp.transform_rot, comp.transform_sx, comp.transform_sy
 
     i := 0
     n := len(s)
@@ -7513,7 +7627,7 @@ parse_transform :: proc(comp: ^Computed, value: string, fs: f32, vw: f32, vh: f3
             a := parse_angle(args)
             comp.transform_rot += a
             cs, sn := f32(math.cos(a)), f32(math.sin(a))
-            ma, mb, mc, md = mul(ma, mb, mc, md, cs, -sn, sn, cs)
+            M = M * lin2(cs, -sn, sn, cs)
             comp.has_transform = true
         case strings.equal_fold(fn, "scale"):
             comma := strings.index_byte(args, ',')
@@ -7525,30 +7639,30 @@ parse_transform :: proc(comp: ^Computed, value: string, fs: f32, vw: f32, vh: f3
                 if vy, ky := strconv.parse_f64(strings.trim_space(args[comma+1:])); ky do sy = f32(vy)
             }
             comp.transform_sx *= sx; comp.transform_sy *= sy; comp.has_transform = true
-            ma, mb, mc, md = mul(ma, mb, mc, md, sx, 0, 0, sy)
+            M = M * lin2(sx, 0, 0, sy)
         case strings.equal_fold(fn, "scaleX"):
             if v, ok := strconv.parse_f64(strings.trim_space(args)); ok {
                 comp.transform_sx *= f32(v); comp.has_transform = true
-                ma, mb, mc, md = mul(ma, mb, mc, md, f32(v), 0, 0, 1)
+                M = M * lin2(f32(v), 0, 0, 1)
             }
         case strings.equal_fold(fn, "scaleY"):
             if v, ok := strconv.parse_f64(strings.trim_space(args)); ok {
                 comp.transform_sy *= f32(v); comp.has_transform = true
-                ma, mb, mc, md = mul(ma, mb, mc, md, 1, 0, 0, f32(v))
+                M = M * lin2(1, 0, 0, f32(v))
             }
         case strings.equal_fold(fn, "skewX"):
             t := f32(math.tan(parse_angle(args)))
-            ma, mb, mc, md = mul(ma, mb, mc, md, 1, t, 0, 1)
+            M = M * lin2(1, t, 0, 1)
             comp.has_transform = true; comp.has_xform_matrix = true
         case strings.equal_fold(fn, "skewY"):
             t := f32(math.tan(parse_angle(args)))
-            ma, mb, mc, md = mul(ma, mb, mc, md, 1, 0, t, 1)
+            M = M * lin2(1, 0, t, 1)
             comp.has_transform = true; comp.has_xform_matrix = true
         case strings.equal_fold(fn, "skew"):
             comma := strings.index_byte(args, ',')
             ax := parse_angle(comma < 0 ? args : args[:comma])
             ay := comma < 0 ? f32(0) : parse_angle(args[comma+1:])
-            ma, mb, mc, md = mul(ma, mb, mc, md, 1, f32(math.tan(ax)), f32(math.tan(ay)), 1)
+            M = M * lin2(1, f32(math.tan(ax)), f32(math.tan(ay)), 1)
             comp.has_transform = true; comp.has_xform_matrix = true
         case strings.equal_fold(fn, "matrix"):
             // matrix(a,b,c,d,e,f) — coluna-maior: linear [a c; b d], translate (e,f)
@@ -7558,15 +7672,139 @@ parse_transform :: proc(comp: ^Computed, value: string, fs: f32, vw: f32, vh: f3
                 allok := true
                 for k in 0 ..< 6 { if v, ok := strconv.parse_f64(strings.trim_space(f[k])); ok do p[k] = f32(v); else do allok = false }
                 if allok {
-                    ma, mb, mc, md = mul(ma, mb, mc, md, p[0], p[2], p[1], p[3])
+                    M = M * lin2(p[0], p[2], p[1], p[3])
                     comp.transform_tx += p[4]; comp.transform_ty += p[5]
                     comp.has_transform = true; comp.has_xform_matrix = true
                 }
             }
-        // translate3d/matrix3d/perspective: ignorados (3D não suportado)
+        // ── 3D, achatado por projeção ortográfica (ver o comentário do topo) ──
+        case strings.equal_fold(fn, "translate3d"):
+            f := split_commas_top(args)
+            if len(f) == 3 {
+                if px, pct, k := parse_len(f[0], fs, vw, vh); k {
+                    comp.transform_tx = px; comp.transform_tx_pct = pct; comp.has_transform = true
+                }
+                if py, pct, k := parse_len(f[1], fs, vw, vh); k {
+                    comp.transform_ty = py; comp.transform_ty_pct = pct; comp.has_transform = true
+                }
+            }
+        case strings.equal_fold(fn, "translateZ"), strings.equal_fold(fn, "perspective"):
+            // Nada a desenhar, mas o elemento TEM transform: `translateZ(0)` é o
+            // idioma de "promover a layer" e cria stacking context e containing
+            // block como qualquer outro.
+            comp.has_transform = true
+        case strings.equal_fold(fn, "scale3d"):
+            f := split_commas_top(args)
+            if len(f) == 3 {
+                vx, kx := strconv.parse_f64(f[0]); vy, ky := strconv.parse_f64(f[1]); vz, kz := strconv.parse_f64(f[2])
+                if kx && ky && kz {
+                    comp.transform_sx *= f32(vx); comp.transform_sy *= f32(vy); comp.has_transform = true
+                    M = M * matrix[3, 3]f32{f32(vx), 0, 0,  0, f32(vy), 0,  0, 0, f32(vz)}
+                    saw3d = true // z negativo vira a face (ver o cálculo do lado, no fim)
+                }
+            }
+        case strings.equal_fold(fn, "scaleZ"):
+            if v, ok := strconv.parse_f64(args); ok {
+                comp.has_transform = true
+                M = M * matrix[3, 3]f32{1, 0, 0,  0, 1, 0,  0, 0, f32(v)}
+                saw3d = true
+            }
+        case strings.equal_fold(fn, "rotateX"):
+            // No plano: encolhe Y por cos θ. O campo escalar recebe o mesmo fator
+            // p/ a transition poder animar o giro (aproximado por um "achatar").
+            a := parse_angle(args)
+            comp.transform_sy *= f32(math.cos(f64(a))); comp.has_transform = true
+            M = M * rot3(1, 0, 0, a); saw3d = true
+        case strings.equal_fold(fn, "rotateY"):
+            a := parse_angle(args)
+            comp.transform_sx *= f32(math.cos(f64(a))); comp.has_transform = true
+            M = M * rot3(0, 1, 0, a); saw3d = true
+        case strings.equal_fold(fn, "rotate3d"):
+            f := split_commas_top(args)
+            if len(f) == 4 {
+                vx, kx := strconv.parse_f64(f[0]); vy, ky := strconv.parse_f64(f[1]); vz, kz := strconv.parse_f64(f[2])
+                if kx && ky && kz {
+                    x, y, z := f32(vx), f32(vy), f32(vz)
+                    a := parse_angle(f[3])
+                    cs := f32(math.cos(f64(a)))
+                    // eixo puro → os mesmos campos de rotateX/Y/Z; eixo oblíquo
+                    // não tem forma escalar (a conferência do fim liga a matriz).
+                    switch {
+                    case x == 0 && y == 0 && z != 0: comp.transform_rot += z < 0 ? -a : a
+                    case y == 0 && z == 0 && x != 0: comp.transform_sy *= cs
+                    case x == 0 && z == 0 && y != 0: comp.transform_sx *= cs
+                    }
+                    comp.has_transform = true
+                    M = M * rot3(x, y, z, a); saw3d = true
+                }
+            }
+        case strings.equal_fold(fn, "matrix3d"):
+            // 16 valores em coluna-maior: a coluna j é (v[4j], v[4j+1], v[4j+2]);
+            // a 4ª coluna é a translação. A 4ª LINHA (v3,v7,v11) é a perspectiva,
+            // descartada; v15 é o divisor homogêneo.
+            f := split_commas_top(args)
+            if len(f) == 16 {
+                p: [16]f32
+                allok := true
+                for k in 0 ..< 16 { if v, ok := strconv.parse_f64(f[k]); ok do p[k] = f32(v); else do allok = false }
+                if allok && p[15] != 0 {
+                    w := 1 / p[15]
+                    M = M * matrix[3, 3]f32{
+                        p[0]*w, p[4]*w, p[8]*w,
+                        p[1]*w, p[5]*w, p[9]*w,
+                        p[2]*w, p[6]*w, p[10]*w,
+                    }
+                    comp.transform_tx += p[12]*w; comp.transform_ty += p[13]*w
+                    comp.has_transform = true; comp.has_xform_matrix = true; saw3d = true
+                }
+            }
         }
     }
-    comp.xf_a = ma; comp.xf_b = mb; comp.xf_c = mc; comp.xf_d = md
+    comp.xf_a = M[0, 0]; comp.xf_b = M[0, 1]; comp.xf_c = M[1, 0]; comp.xf_d = M[1, 1]
+    if saw3d {
+        // LADO: a normal (0,0,1) transformada tem z = cofator(3,3)/det. Negativo =
+        // a face de trás está voltada p/ o observador. É o bit que a projeção
+        // perde (`rotateY(180deg)` × `scaleX(-1)`) e que backface-visibility lê.
+        // XOR, e não atribuição: a prop individual `rotate` pode já ter virado.
+        det := M[0, 0]*(M[1, 1]*M[2, 2] - M[1, 2]*M[2, 1]) -
+               M[0, 1]*(M[1, 0]*M[2, 2] - M[1, 2]*M[2, 0]) +
+               M[0, 2]*(M[1, 0]*M[2, 1] - M[1, 1]*M[2, 0])
+        cof := M[0, 0]*M[1, 1] - M[0, 1]*M[1, 0]
+        if det != 0 && (cof < 0) != (det < 0) do comp.xf_back = !comp.xf_back
+        // Os campos escalares (R·S) só valem enquanto reproduzem a matriz. Uma
+        // lista como `rotateY(180deg) rotate(30deg)` ou dois giros 3D seguidos
+        // não cabe neles: aí a pintura passa a usar `xf_*`. Só para listas com
+        // 3D — as puramente 2D ficam como sempre foram.
+        if !comp.has_xform_matrix {
+            dr := comp.transform_rot - rot0
+            fx := sx0 != 0 ? comp.transform_sx / sx0 : comp.transform_sx
+            fy := sy0 != 0 ? comp.transform_sy / sy0 : comp.transform_sy
+            cs, sn := f32(math.cos(f64(dr))), f32(math.sin(f64(dr)))
+            EPS :: 1e-4
+            if abs(cs*fx - comp.xf_a) > EPS || abs(-sn*fy - comp.xf_b) > EPS ||
+               abs(sn*fx - comp.xf_c) > EPS || abs(cs*fy - comp.xf_d) > EPS {
+                comp.has_xform_matrix = true
+            }
+        }
+    }
+}
+
+// Fatia os argumentos de uma função nas vírgulas de NÍVEL SUPERIOR (as de dentro
+// de `calc()`/`var()` não contam), já sem espaços nas pontas.
+@(private="file")
+split_commas_top :: proc(args: string) -> []string {
+    out := make([dynamic]string, context.temp_allocator)
+    d, start := 0, 0
+    for i in 0 ..< len(args) {
+        switch args[i] {
+        case '(': d += 1
+        case ')': d -= 1
+        case ',':
+            if d == 0 { append(&out, strings.trim_space(args[start:i])); start = i + 1 }
+        }
+    }
+    append(&out, strings.trim_space(args[start:]))
+    return out[:]
 }
 
 // Converte um ângulo CSS (Ndeg/Nrad/Nturn/Ngrad; nº puro = graus) em radianos.

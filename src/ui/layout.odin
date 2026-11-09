@@ -367,6 +367,9 @@ Box :: struct {
     transform_ox, transform_oy:         f32, // transform-origin (fração 0..1)
     xf_a, xf_b, xf_c, xf_d:             f32, // parte linear 2×2 (skew/matrix)
     has_xform_matrix:                   bool,
+    // 3D achatado (ver Computed): lado que o transform próprio mostra, e as duas
+    // props que decidem se a caixa some quando o lado é o de trás.
+    xf_back, backface_hidden, preserve_3d, in_p3d: bool,
     has_transform:                      bool,
     // offset-path (CSS Motion Path) — ver Computed
     has_offset_path:      bool,
@@ -2320,6 +2323,8 @@ apply_box :: proc(b: ^Box, comp: Computed) {
     b.xf_a = comp.xf_a; b.xf_b = comp.xf_b; b.xf_c = comp.xf_c; b.xf_d = comp.xf_d
     b.has_xform_matrix = comp.has_xform_matrix
     b.has_transform = comp.has_transform
+    b.xf_back = comp.xf_back; b.backface_hidden = comp.backface_hidden
+    b.preserve_3d = comp.preserve_3d; b.in_p3d = comp.in_p3d
     // offset_path e DONO (clone no heap), diferente do resto que vem do Computed.
     // O Computed guarda uma fatia da arena TEMP (apply_decls faz
     // strings.clone(inner, context.temp_allocator)), e layout_box le b.offset_path
@@ -8486,6 +8491,20 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         if ev.has_scale { eff_sx = ev.sx; eff_sy = ev.sy }
     }
 
+    // backface-visibility. O lado é decidido AQUI, depois de transition/animação,
+    // porque um giro animado troca de lado no meio do caminho — e antes de
+    // qualquer `emit`, para a caixa escondida não deixar comando pela metade.
+    // A saída antecipada também pula o registro de clique/link do fim da função:
+    // face escondida não recebe evento, como manda a spec.
+    back := box_face_back(b, hovering, eff_sx * eff_sy, tgt_sx * tgt_sy)
+    if b.in_p3d do back = back != g_p3d_back
+    if back && b.backface_hidden do return
+    // preserve-3d: os filhos compõem o lado deles com o nosso. Sem ele o
+    // conteúdo é ACHATADO no nosso plano e cada filho responde só por si.
+    p3d_salvo := g_p3d_back
+    g_p3d_back = b.preserve_3d && back
+    defer g_p3d_back = p3d_salvo
+
     // group-opacity: se a opacidade PRÓPRIA (own_a = eff/opa) < 1 e o box tem
     // filhos (onde o double-darken de sobreposição apareceria), embrulha a
     // subárvore numa LAYER — o conteúdo é desenhado OPACO (eff←opa) e o dimming
@@ -8916,6 +8935,24 @@ overflow_escapes :: proc(b, child: ^Box) -> bool {
     case .Fixed:    return !b.cb_fixed
     }
     return false
+}
+
+// Lado do pai `preserve-3d` que está pintando agora (true = de trás). Só o filho
+// DIRETO o lê (`in_p3d`, resolvido no estilo): um descendente adiado para o
+// stacking context de um ancestral mais distante não herda o lado por engano.
+g_p3d_back: bool
+
+// O transform PRÓPRIO desta caixa está mostrando a face de trás?
+//
+// A matriz é estática (`xf_back` basta). Nos campos escalares o :hover troca o
+// alvo e a transition atravessa o zero no meio do giro: o lado é o do ALVO
+// enquanto o sinal da escala efetiva bate com o dele, e o do outro estado antes
+// disso. O sinal sozinho não serve — `scaleX(-1)` inverte o sinal sem virar a face.
+box_face_back :: proc(b: ^Box, hovering: bool, eff_s, tgt_s: f32) -> bool {
+    if b.has_xform_matrix || !b.hover.has_transform do return b.xf_back
+    alvo, outro := b.xf_back, b.hover.back
+    if hovering do alvo, outro = outro, alvo
+    return (eff_s < 0) == (tgt_s < 0) ? alvo : outro
 }
 
 // Pinta um filho na sua posição de empilhamento. absolute/fixed já têm coords

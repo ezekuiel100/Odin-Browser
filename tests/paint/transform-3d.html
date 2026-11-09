@@ -1,0 +1,57 @@
+<!doctype html>
+<!-- Transforms 3D achatados (projecao ortografica) + backface-visibility.
+     Renderizado pelo paint-check com o mouse em (550,50): so o cartao #h esta
+     em :hover. Cada caso 3D tem um controle 2D na mesma fixture. -->
+<style>
+html,body{margin:0;background:white}
+.b{position:absolute;width:60px;height:60px}
+.face{position:absolute;left:0;top:0;width:60px;height:60px;backface-visibility:hidden}
+.front{background:rgb(0,0,255)}
+.back{background:rgb(255,165,0);transform:rotateY(180deg)}
+/* verso mais estreito que o cartao: se a FRENTE nao for escondida ela aparece ao
+   lado, e o duplo espelho (pai + proprio) desloca o verso de 0..40 para 20..60 */
+.narrow{width:40px}
+.mark{position:absolute;left:0;top:0;width:20px;height:60px;background:black}
+.under{background:rgb(0,128,0)}
+.red{background:rgb(255,0,0)}
+
+/* linha 1 */
+#a{left:20px;top:20px;transform:translate3d(100px,0,0)}
+#bcard{left:220px;top:20px}
+#c{left:320px;top:20px;transform:rotateY(180deg);transform-style:preserve-3d}
+#d{left:420px;top:20px;transform:rotateY(180deg)}
+#h{left:520px;top:20px;transform-style:preserve-3d}
+#h:hover{transform:rotateY(180deg)}
+
+/* linha 2 */
+#e{left:20px;top:120px;transform:rotateX(60deg)}
+#f{left:120px;top:120px;transform:scaleX(-1);backface-visibility:hidden;background:rgb(0,128,0)}
+#gu{left:220px;top:120px}
+#g{left:220px;top:120px;transform:rotateY(180deg);backface-visibility:hidden}
+#iu{left:320px;top:120px}
+#i{left:320px;top:120px;rotate:y 180deg;backface-visibility:hidden}
+#j{left:420px;top:120px;transform:translateZ(0)}
+#k{left:520px;top:120px;transform:translate(0)}
+.neg{position:absolute;left:0;top:0;width:60px;height:60px;z-index:-1;background:rgb(0,128,0)}
+
+/* linha 3: a lista e projetada no FIM (X90 . X-90 = identidade) e a ordem conta */
+#l{left:20px;top:220px;transform:rotateX(90deg) rotateX(-90deg)}
+#m{left:120px;top:220px;transform:rotateY(180deg) rotate(90deg)}
+#n{left:220px;top:220px;transform:matrix3d(1,0,0,0, 0,1,0,0, 0,0,1,0, 40,0,0,1)}
+</style>
+<div id="a" class="b red"></div>
+<div id="bcard" class="b"><div class="face front"></div><div class="face back"></div></div>
+<div id="c" class="b"><div class="face front"></div><div class="face back narrow"><div class="mark"></div></div></div>
+<div id="d" class="b"><div class="face front"><div class="mark"></div></div><div class="face back"></div></div>
+<div id="h" class="b"><div class="face front"></div><div class="face back narrow"><div class="mark"></div></div></div>
+
+<div id="e" class="b red"></div>
+<div id="f" class="b"></div>
+<div id="gu" class="b under"></div><div id="g" class="b red"></div>
+<div id="iu" class="b under"></div><div id="i" class="b red"></div>
+<div id="j" class="b red"><div class="neg"></div></div>
+<div id="k" class="b red"><div class="neg"></div></div>
+
+<div id="l" class="b red"></div>
+<div id="m" class="b red"><div class="mark" style="height:20px"></div></div>
+<div id="n" class="b red"></div>
