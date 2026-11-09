@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Whitespace modes and character wrapping</title>
+<style>
+body { margin:0; font-family:monospace; font-size:20px; line-height:1; }
+.case { width:60px; margin-bottom:10px; }
+</style>
+<div id="normal" class="case">AA   BB</div>
+<div id="nowrap" class="case" style="white-space:nowrap;width:30px">AA   BB</div>
+<div id="pre" class="case" style="white-space:pre;width:30px">AA <b>BB</b></div>
+<div id="pre-wrap" class="case" style="white-space:pre-wrap">AA   BB</div>
+<div id="pre-line" class="case" style="white-space:pre-line">AA
+
+  BB
+</div>
+<div id="break-spaces" class="case" style="white-space:break-spaces;width:36px">AA   </div>
+<div id="break-all" class="case" style="word-break:break-all;width:72px">AA ABCDEF</div>
+<div id="emergency" class="case" style="overflow-wrap:break-word;width:72px">AA ABCDEFGH</div>
+<div id="anywhere-min" class="case" style="overflow-wrap:anywhere;width:min-content">ABCDEFGH</div>
+<div id="break-word-min" class="case" style="overflow-wrap:break-word;width:min-content">ABCDEFGH</div>
+<div id="pre-wrap-max" class="case" style="white-space:pre-wrap;width:max-content">AA   </div>
+<div id="break-spaces-max" class="case" style="white-space:break-spaces;width:max-content">AA   </div>

@@ -216,16 +216,16 @@ if (-not $Keep) { Remove-Item -Recurse -Force $outDir -ErrorAction SilentlyConti
 Write-Host "`n=== Resumo por categoria ===" -ForegroundColor Cyan
 $cats = $results | Group-Object { $_.Cat } | Sort-Object Name
 foreach ($g in $cats) {
-    $p = ($g.Group | Where-Object { $_.Status -eq "PASS" }).Count
-    $f = ($g.Group | Where-Object { $_.Status -eq "FAIL" }).Count
-    $e = ($g.Group | Where-Object { $_.Status -eq "ERROR" }).Count
+    $p = @($g.Group | Where-Object { $_.Status -eq "PASS" }).Count
+    $f = @($g.Group | Where-Object { $_.Status -eq "FAIL" }).Count
+    $e = @($g.Group | Where-Object { $_.Status -eq "ERROR" }).Count
     $tot = $g.Count
     $col = if ($p -eq $tot) { "Green" } elseif ($p -eq 0) { "Red" } else { "Yellow" }
     Write-Host ("  {0,-16} {1,2}/{2,-2} PASS   ({3} fail, {4} error)" -f $g.Name, $p, $tot, $f, $e) -ForegroundColor $col
 }
 
-$P = ($results | Where-Object { $_.Status -eq "PASS" }).Count
-$F = ($results | Where-Object { $_.Status -eq "FAIL" }).Count
-$E = ($results | Where-Object { $_.Status -eq "ERROR" }).Count
+$P = @($results | Where-Object { $_.Status -eq "PASS" }).Count
+$F = @($results | Where-Object { $_.Status -eq "FAIL" }).Count
+$E = @($results | Where-Object { $_.Status -eq "ERROR" }).Count
 Write-Host ("`nTOTAL: {0} PASS / {1} FAIL / {2} ERROR  (de {3})" -f $P, $F, $E, $results.Count) -ForegroundColor Cyan
 if ($F -gt 0 -or $E -gt 0) { exit 1 } else { exit 0 }

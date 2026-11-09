@@ -92,6 +92,15 @@ data_uri_decodifica_para_png :: proc(t: ^testing.T) {
 // (4) Guarda: uma URL http comum NÃO pode ser confundida com data:.
 @(test)
 url_http_segue_normal :: proc(t: ^testing.T) {
+    // This layout inserts an image into the cache. Keep it local to this test:
+    // a cache created by another test can retain that test's tracking allocator.
+    saved_images, saved_hosts := g_images, g_host_next_ns
+    g_images = {}; g_host_next_ns = {}
+    defer {
+        images_free_all()
+        delete(g_images); delete(g_host_next_ns)
+        g_images = saved_images; g_host_next_ns = saved_hosts
+    }
     root := monta(`<div><img src="https://exemplo.com/a.png" width="8" height="2" style="display:block"><div>irmao</div></div>`)
     f := acha_img_box(root)
     if !testing.expect(t, f != nil, "achou o img") do return

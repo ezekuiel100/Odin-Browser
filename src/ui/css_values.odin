@@ -35,6 +35,10 @@ css_value_valid :: proc(prop, value: string) -> (valid, checked: bool) {
     case "font-kerning": keywords = "auto normal none"
     case "font-style": keywords = "normal italic oblique"
     case "direction": keywords = "ltr rtl"
+    case "white-space": keywords = "normal nowrap pre pre-wrap pre-line break-spaces"
+    case "overflow-wrap", "word-wrap": keywords = "normal break-word anywhere"
+    case "word-break": keywords = "normal break-all break-word"
+    case "text-transform": keywords = "none uppercase lowercase capitalize"
     case "scroll-behavior": keywords = "auto smooth"
     case "all": return false, true // only CSS-wide keywords, handled above
     }

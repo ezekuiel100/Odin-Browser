@@ -502,6 +502,9 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
         case .Normal: return "normal"
         case .Nowrap: return "nowrap"
         case .Pre:    return "pre"
+        case .Pre_Wrap: return "pre-wrap"
+        case .Pre_Line: return "pre-line"
+        case .Break_Spaces: return "break-spaces"
         }
         return "normal"
     case "direction": return c.direction == .Rtl ? "rtl" : "ltr"

@@ -1836,8 +1836,8 @@ test_list_style_none_pipeline :: proc(t: ^testing.T) {
 test_white_space_valores :: proc(t: ^testing.T) {
     testing.expect(t, test_apply("white-space: nowrap").white_space == .Nowrap, "nowrap")
     testing.expect(t, test_apply("white-space: pre").white_space == .Pre, "pre")
-    testing.expect(t, test_apply("white-space: pre-wrap").white_space == .Pre, "pre-wrap ≈ Pre")
-    testing.expect(t, test_apply("white-space: pre-line").white_space == .Normal, "pre-line ≈ Normal")
+    testing.expect(t, test_apply("white-space: pre-wrap").white_space == .Pre_Wrap, "pre-wrap")
+    testing.expect(t, test_apply("white-space: pre-line").white_space == .Pre_Line, "pre-line")
     testing.expect(t, test_apply("color: red").white_space == .Normal, "padrão Normal")
 }
 

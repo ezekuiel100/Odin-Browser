@@ -873,8 +873,8 @@ Font_Family :: enum u8 { Sans, Serif, Mono }
 // text-transform: None é o zero-value (padrão, herda).
 Text_Transform :: enum u8 { None, Upper, Lower, Capitalize }
 // white-space (herda). Normal = zero-value; Nowrap não quebra linha;
-// Pre preserva espaços/\n (pre-wrap ≈ Pre; pre-line ≈ Normal).
-White_Space :: enum u8 { Normal, Nowrap, Pre }
+// Preserve and collapse modes retain distinct wrapping/segment-break behavior.
+White_Space :: enum u8 { Normal, Nowrap, Pre, Pre_Wrap, Pre_Line, Break_Spaces }
 // list-style-type (herda). Auto = zero-value → usa o padrão da tag (ol=decimal,
 // ul=disc). None suprime o marcador; demais forçam o tipo.
 List_Style :: enum u8 { Auto, None, Disc, Circle, Square, Decimal, Decimal_Zero,
@@ -1039,7 +1039,8 @@ Computed :: struct {
     text_indent_pct: bool, // text-indent é % (do content-width do bloco, resolvido no layout)
     white_space:    White_Space, // nowrap/pre (herda; padrão Normal)
     break_word:     bool, // overflow-wrap:break-word/anywhere (herda)
-    break_all:      bool, // word-break:break-all (herda; no layout ≈ break_word)
+    break_all:      bool, // word-break:break-all (inherited)
+    wrap_anywhere:  bool, // overflow-wrap:anywhere also reduces min-content
     ellipsis:       bool, // text-overflow:ellipsis (NÃO herda; exige overflow hidden)
     line_clamp:     int,  // -webkit-line-clamp: N — trunca em N linhas + "…" (0 = sem)
     list_style:     List_Style,  // list-style-type (herda; Auto = padrão da tag)
@@ -2055,6 +2056,9 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
             if _, x := kw(merged, "font-kerning"); x do comp.font_kerning = ini.font_kerning
             if _, x := kw(merged, "word-spacing");   x do comp.word_spacing   = ini.word_spacing
             if _, x := kw(merged, "white-space");    x do comp.white_space    = ini.white_space
+            if _, x := kw(merged, "overflow-wrap"); x { comp.break_word = false; comp.wrap_anywhere = false }
+            if _, x := kw(merged, "word-wrap"); x { comp.break_word = false; comp.wrap_anywhere = false }
+            if _, x := kw(merged, "word-break"); x do comp.break_all = false
             if _, x := kw(merged, "visibility");     x do comp.invisible      = ini.invisible
             if _, x := kw(merged, "text-transform"); x do comp.text_transform = ini.text_transform
             if _, x := kw(merged, "list-style-type"); x do comp.list_style    = ini.list_style
@@ -4057,15 +4061,16 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         if !ok do v, ok = decls["word-wrap"]
         if ok {
             switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
-            case "break-word", "anywhere": comp.break_word = true
-            case "normal":                 comp.break_word = false
+            case "break-word": comp.break_word = true; comp.wrap_anywhere = false
+            case "anywhere":   comp.break_word = true; comp.wrap_anywhere = true
+            case "normal":     comp.break_word = false; comp.wrap_anywhere = false
             }
         }
     }
     if v, ok := decls["word-break"]; ok {
         switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
         case "break-all":  comp.break_all = true
-        case "break-word": comp.break_word = true // alias de overflow-wrap:break-word
+        case "break-word": comp.break_all = false; comp.break_word = true; comp.wrap_anywhere = true
         case "normal":     comp.break_all = false
         }
     }
@@ -4363,8 +4368,11 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     if v, ok := decls["white-space"]; ok {
         switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
         case "nowrap":                       comp.white_space = .Nowrap
-        case "pre", "pre-wrap", "break-spaces": comp.white_space = .Pre
-        case "normal", "pre-line":           comp.white_space = .Normal // pre-line ≈ normal
+        case "pre":          comp.white_space = .Pre
+        case "pre-wrap":     comp.white_space = .Pre_Wrap
+        case "pre-line":     comp.white_space = .Pre_Line
+        case "break-spaces": comp.white_space = .Break_Spaces
+        case "normal":       comp.white_space = .Normal
         }
     }
     if v, ok := decls["visibility"]; ok {
