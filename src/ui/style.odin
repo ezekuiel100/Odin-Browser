@@ -1277,7 +1277,9 @@ Computed :: struct {
     clear:  Clear_Side,    // clear:left/right/both (não herda)
 
     // stacking
-    z_index: int,  // 0 = auto (padrão)
+    z_index: int,
+    z_index_set: bool, // auto e zero têm contextos distintos
+    stacking_hint: bool, // will-change e contain
 
     // visual
     opacity: f32,  // 1.0 = opaco (padrão)
@@ -1850,6 +1852,8 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.float = .None
     comp.clear = .None
     comp.z_index   = 0
+    comp.z_index_set = false
+    comp.stacking_hint = false
     comp.opacity   = 1.0
     comp.isolate   = false // isolation não herda
     comp.clip_path = {}    // clip-path não herda
@@ -1971,6 +1975,10 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         }
 
         apply_decls(&comp, merged, elem_vars, viewport_w, viewport_h, n)
+        if v, ok := merged["z-index"]; ok && strings.equal_fold(strings.trim_space(resolve_var(v, elem_vars)), "inherit") {
+            comp.z_index = inherit.z_index
+            comp.z_index_set = inherit.z_index_set
+        }
         // A fonte do elemento RAIZ define o `rem` do resto da página. Gravado aqui:
         // as declarações da raiz já foram aplicadas e a recursão nos filhos só vem
         // depois — então todo descendente já enxerga a base certa.
@@ -3799,9 +3807,11 @@ apply_decls :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]
         // fill transparent sem clip: mantém a cor normal p/ o texto não sumir
     }
     if v, ok := decls["z-index"]; ok {
-        lv := strings.trim_space(resolve_var(v, vars))
-        if lv != "auto" {
-            if n, k := strconv.parse_int(lv); k do comp.z_index = n
+        lv := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
+        if lv == "auto" || lv == "initial" || lv == "unset" || lv == "revert" {
+            comp.z_index = 0; comp.z_index_set = false
+        } else if n, k := strconv.parse_int(lv); k {
+            comp.z_index = n; comp.z_index_set = true
         }
     }
     if v, ok := decls["opacity"]; ok {
@@ -4219,11 +4229,14 @@ apply_decls :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]
         for tok in strings.split(lo, ",", context.temp_allocator) {
             t := strings.trim_space(tok)
             switch t {
+            case "opacity":
+                comp.stacking_hint = true
             case "position":
                 comp.cb_abs = true
             case "transform", "perspective", "filter", "backdrop-filter",
                  "contain", "offset-path", "translate", "rotate", "scale":
                 comp.cb_abs = true; comp.cb_fixed = true
+                comp.stacking_hint = true
             }
         }
     }
@@ -4234,6 +4247,9 @@ apply_decls :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]
     if v, ok := decls["contain"]; ok {
         lo := strings.trim_space(strings.to_lower(resolve_var(v, vars), context.temp_allocator))
         comp.contained = lo != "" && lo != "none" && lo != "initial"
+        for tok in strings.split(lo, " ", context.temp_allocator) {
+            if tok == "paint" || tok == "layout" || tok == "strict" || tok == "content" do comp.stacking_hint = true
+        }
     }
     // content-visibility: `hidden` PULA a renderização do conteúdo (a caixa
     // permanece, ao contrário de display:none). `auto` = renderiza (a versão

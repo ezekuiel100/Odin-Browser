@@ -424,7 +424,7 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
         return "static"
     case "visibility": return c.invisible ? "hidden" : "visible"
     case "opacity":    return num_str(c.opacity)
-    case "z-index":    return c.z_index == 0 ? "auto" : fmt.tprintf("%d", c.z_index)
+    case "z-index":    return !c.z_index_set ? "auto" : fmt.tprintf("%d", c.z_index)
     case "float":
         switch c.float {
         case .None:        return "none"

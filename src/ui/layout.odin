@@ -318,6 +318,7 @@ Box :: struct {
     // posicionamento
     pos: Position,
     z_index: int,
+    z_index_set, stacking_hint, stacking_item: bool,
     inset: [4]f32, inset_pct: [4]bool, inset_has: [4]bool,
     inset_off: [4]f32, // px somado após a fração: top:calc(50% - 10px)
     rel_dx, rel_dy: f32, // deslocamento de position:relative + transform (px)
@@ -1314,7 +1315,10 @@ build_item_children :: proc(node: ^dompkg.Node, b: ^Box, styles: map[^dompkg.Nod
             cc := styles[c]
             if l_is_skip(c.tag) || cc.display_none do continue
             flush(b, &run, styles, base, size, weight, italic, color, align, deco, family, fam_id, ls, ttx, ws)
-            if cb := build_layout(c, styles, base); cb != nil do append(&b.children, cb)
+            if cb := build_layout(c, styles, base); cb != nil {
+                cb.stacking_item = (b.is_flex || b.is_grid) && cb.pos != .Absolute && cb.pos != .Fixed
+                append(&b.children, cb)
+            }
         }
     }
     flush(b, &run, styles, base, size, weight, italic, color, align, deco, family, fam_id, ls, ttx, ws)
@@ -2282,6 +2286,7 @@ apply_box :: proc(b: ^Box, comp: Computed) {
 
     b.pos = comp.position
     b.z_index = comp.z_index
+    b.z_index_set = comp.z_index_set; b.stacking_hint = comp.stacking_hint
     b.inset = comp.inset; b.inset_pct = comp.inset_pct; b.inset_has = comp.inset_has; b.inset_off = comp.inset_off
     b.opacity = comp.opacity
     b.blend_mode = comp.blend_mode
@@ -3536,7 +3541,7 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
             acc: f32 = 0
             for i < n {
                 c := kids[i]
-                outer := bases[i] + c.margin[3] + c.margin[1]
+                outer := clamp_main(bases[i], mins[i], maxs[i]) + c.margin[3] + c.margin[1]
                 add := i == ls ? outer : outer + gap
                 if i > ls && acc + add > cw do break
                 acc += add
@@ -4074,16 +4079,9 @@ grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspa
         }
     }
 
-    // distribui fr com a altura livre do container (só se height explícita)
+    // Definite rows use the same frozen-base fraction calculation as columns.
     if has_h && fr_total > 0 {
-        used := row_gap * f32(max(0, nrows - 1))
-        for r in 0 ..< nrows do used += row_h[r]
-        leftover := ch - used
-        if leftover > 0 {
-            for r in 0 ..< nrows do if is_fr[r] {
-                row_h[r] += leftover * trk[r].value / fr_total
-            }
-        }
+        grid_resolve_fr(trk, row_h, ch - row_gap * f32(max(0, nrows - 1)))
     }
 
     // §11.8 "Stretch auto Tracks": com altura DEFINIDA e align-content normal/stretch,
@@ -4263,6 +4261,10 @@ grid_col_widths :: proc(tracks: []Grid_Track, cw, col_gap: f32, items: []^Box, c
             }
         }
     }
+    // Recompute the flex fraction after non-flex tracks have settled. Floors
+    // freeze tracks before distributing the remainder, rather than adding overflow.
+    for t, i in tracks do if t.kind == .Fr do widths[i] = track_min(t, cw)
+    grid_resolve_fr(tracks, widths, cw - col_gap * f32(nc - 1))
     when GRID_DEBUG {
         if nc >= 4 {
             fmt.eprintf("[grid] cw=%.0f nc=%d gap=%.0f leftover=%.0f tracks=[", cw, nc, col_gap, leftover)
@@ -4274,6 +4276,34 @@ grid_col_widths :: proc(tracks: []Grid_Track, cw, col_gap: f32, items: []^Box, c
     }
     return widths
 }
+// Grid §12.7.1: find an fr size, freezing tracks whose base exceeds their share.
+// widths contains the resolved bases/non-flex sizes. Gaps are already excluded.
+@(private="file")
+grid_resolve_fr :: proc(tracks: []Grid_Track, widths: []f32, available: f32) {
+    frozen := make([]bool, len(tracks), context.temp_allocator)
+    for t, i in tracks do frozen[i] = t.kind != .Fr || t.value <= 0
+    for pass in 0 ..= len(tracks) {
+        remaining := available
+        factors: f32 = 0
+        for t, i in tracks {
+            if frozen[i] { remaining -= widths[i] } else { factors += t.value }
+        }
+        fraction := max(0, remaining) / max(1, factors)
+        changed := false
+        for t, i in tracks {
+            if frozen[i] do continue
+            floor := widths[i]
+            if floor > fraction * t.value {
+                frozen[i] = true
+                changed = true
+            }
+        }
+        if changed do continue
+        for t, i in tracks do if !frozen[i] do widths[i] = fraction * t.value
+        break
+    }
+}
+
 GRID_DEBUG :: #config(GRID_DEBUG, false)
 // Sonda da posição ESTÁTICA de absolutos (-define:ABS_DEBUG=true). Custo zero off.
 ABS_DEBUG :: #config(ABS_DEBUG, false)
@@ -4849,6 +4879,9 @@ resolve_flex_lengths :: proc(bases, grows, shrinks, mins, maxs: []f32, avail: f3
         if !growing && bases[i] < finals[i] do frozen[i] = true      // limitado p/ cima (min)
     }
 
+    initial_free := avail
+    for i in 0 ..< n do initial_free -= frozen[i] ? finals[i] : bases[i]
+
     for iter := 0; iter < n + 1; iter += 1 {
         any := false
         for f in frozen do if !f { any = true; break }
@@ -4857,6 +4890,14 @@ resolve_flex_lengths :: proc(bases, grows, shrinks, mins, maxs: []f32, avail: f3
         used: f32 = 0
         for i in 0 ..< n do used += frozen[i] ? finals[i] : bases[i]
         remaining := avail - used
+        // Factors below one request only that fraction of the INITIAL free space.
+        // Shrink uses unscaled factors here; distribution still uses scaled bases.
+        factor_sum: f32 = 0
+        for i in 0 ..< n do if !frozen[i] do factor_sum += growing ? grows[i] : shrinks[i]
+        if factor_sum < 1 {
+            partial := initial_free * factor_sum
+            if abs(partial) < abs(remaining) do remaining = partial
+        }
 
         if growing {
             sumf: f32 = 0; for i in 0 ..< n do if !frozen[i] do sumf += grows[i]
@@ -4903,10 +4944,6 @@ flex_base_main :: proc(c: ^Box, cw: f32) -> (base, grow, shrink: f32) {
     if c.has_width {
         w := c.width_pct ? pct_resolve(c.width, c.width_pct_off, cw, c.width_bd) : c.width
         base = c.box_sizing == .Border ? w : w + extra
-        return
-    }
-    if grow > 0 {
-        base = extra // basis 0; cresce a partir daí
         return
     }
     base = measure_intrinsic_w(c)
@@ -5014,11 +5051,13 @@ measure_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
     } else if b.is_flex && b.flex_dir == .Row {
         // linha flex: max-content é a SOMA dos itens (+ gaps), não o máximo — senão
         // uma navbar flex aninhada é medida como um item só e encolhe/sobrepõe.
+        visible := 0
         for c in b.children {
             if c.pos == .Absolute || c.pos == .Fixed do continue
             content += measure_intrinsic_w(c) + c.margin[3] + c.margin[1]
+            visible += 1
         }
-        if len(b.children) > 1 do content += b.gap * f32(len(b.children) - 1)
+        if visible > 1 do content += b.gap * f32(visible - 1)
     } else if b.kind == .Image {
         iw, _ := image_dims(b)
         content = iw
@@ -5122,6 +5161,23 @@ grid_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
             c0 := col_of[i]
             if c0 < 0 || c0 + s > ncols do continue
             need := measure_intrinsic_w(it, min_content) + it.margin[3] + it.margin[1] - col_gap * f32(s - 1)
+            if !min_content {
+                span_tracks := make([]Grid_Track, s, context.temp_allocator)
+                span_widths := make([]f32, s, context.temp_allocator)
+                has_fr := false
+                for k in 0 ..< s {
+                    t := grid_track_at(b, c0 + k)
+                    span_tracks[k] = t
+                    span_widths[k] = max(colw[c0+k], t.min_px)
+                    if t.kind == .Fixed do span_widths[k] = max(t.value, t.min_px)
+                    has_fr = has_fr || t.kind == .Fr
+                }
+                if has_fr {
+                    grid_resolve_fr(span_tracks, span_widths, need)
+                    for k in 0 ..< s do if span_tracks[k].kind == .Fr do colw[c0+k] = max(colw[c0+k], span_widths[k])
+                    continue
+                }
+            }
             have: f32 = 0
             n_flex := 0
             for c in c0 ..< c0 + s {
@@ -5143,6 +5199,20 @@ grid_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
                 if min_content && t.kind == .Fr do continue
                 colw[c] += extra
             }
+        }
+    }
+
+    // In an indefinite axis, all flexible tracks share one fraction. A wide
+    // item in a 1fr track therefore also enlarges its 2fr neighbour.
+    if !min_content {
+        fraction: f32 = 0
+        for c in 0 ..< ncols {
+            t := grid_track_at(b, c)
+            if t.kind == .Fr && t.value > 0 do fraction = max(fraction, max(colw[c], t.min_px) / max(t.value, 1))
+        }
+        for c in 0 ..< ncols {
+            t := grid_track_at(b, c)
+            if t.kind == .Fr do colw[c] = max(colw[c], fraction * t.value)
         }
     }
 
@@ -5350,7 +5420,7 @@ Reparent :: struct { child, from, to, anchor: ^Box }
 // grupo (ex.: abspos sob opacity:0.5 recebe a opacidade), então não içamos.
 @(private="file")
 forms_group :: proc(b: ^Box) -> bool {
-    return b.opacity < 0.996 || b.n_filters > 0 || b.blend_mode != .Normal || b.has_transform || b.has_xform_matrix
+    return creates_stacking_context(b) || b.hover.has_opacity || b.hover.has_transform || b.trans[.Opacity].on || b.trans[.Transform].on
 }
 
 // ── BBOX DE SUBÁRVORE ────────────────────────────────────────────────────────
@@ -5546,7 +5616,7 @@ compute_subtree_bbox :: proc(b: ^Box) {
 
 layout_absolutes :: proc(b: ^Box, cb, page: Rect) {
     rep := make([dynamic]Reparent, context.temp_allocator)
-    layout_absolutes_rec(b, cb, page, b, b, false, b, b, &rep)
+    layout_absolutes_rec(b, cb, page, b, b, false, false, b, b, &rep)
     // IÇAMENTO DE EMPILHAMENTO: um abspos cujo bloco contenedor é um ancestral
     // NÃO-pai (ex.: abspos dentro de um flex/bloco estático, mas contido por um
     // `position:relative` acima) pinta, no nosso modelo por-caixa, DENTRO da subárvore
@@ -5594,7 +5664,7 @@ mark_hoisted :: proc(child, anchor: ^Box) {
 // invisível. Só o `--render` mostrava; o `--dumplayout` faz um passe só e acertava
 // (mesma assinatura do M196).
 @(private="file")
-layout_absolutes_rec :: proc(b: ^Box, cb, page: Rect, cb_box, page_box: ^Box, grouped: bool, anchor, anchor_fix: ^Box, rep: ^[dynamic]Reparent) {
+layout_absolutes_rec :: proc(b: ^Box, cb, page: Rect, cb_box, page_box: ^Box, grouped, grouped_fixed: bool, anchor, anchor_fix: ^Box, rep: ^[dynamic]Reparent) {
     my := Rect{b.x, b.y, b.w, b.h}
     // bloco contenedor p/ ABSOLUTE: ancestral posicionado (position!=static) OU que
     // estabelece CB via will-change (position/transform/filter/…). Para FIXED: só os
@@ -5606,6 +5676,9 @@ layout_absolutes_rec :: proc(b: ^Box, cb, page: Rect, cb_box, page_box: ^Box, gr
     cfx_box := b.cb_fixed ? b : page_box
     // grupo de pintura no caminho CB→este box (reseta quando este box VIRA o CB).
     cgroup := est_abs ? false : (grouped || forms_group(b))
+    // Fixed has a different containing block: a positioned ancestor can still
+    // be a stacking barrier between it and the viewport.
+    cgroup_fixed := b.cb_fixed ? false : (grouped_fixed || forms_group(b))
     for child in b.children {
         // âncora do içamento = o filho DIRETO do box-CB na cadeia até este filho.
         // Uma por eixo de contenção (ver o cabeçalho): `ccb_box` p/ absolute,
@@ -5614,21 +5687,21 @@ layout_absolutes_rec :: proc(b: ^Box, cb, page: Rect, cb_box, page_box: ^Box, gr
         canchor_fix := (b == cfx_box) ? child : anchor_fix
         switch child.pos {
         case .Static, .Relative, .Sticky: // sticky fica no fluxo (desloca só na pintura)
-            layout_absolutes_rec(child, child_cb, child_fix, ccb_box, cfx_box, cgroup, canchor, canchor_fix, rep)
+            layout_absolutes_rec(child, child_cb, child_fix, ccb_box, cfx_box, cgroup, cgroup_fixed, canchor, canchor_fix, rep)
         case .Absolute:
             place_absolute(child, child_cb)
             if ccb_box != b && ccb_box != nil && !cgroup {
                 mark_hoisted(child, canchor)
                 append(rep, Reparent{child, b, ccb_box, canchor})
             }
-            layout_absolutes_rec(child, Rect{child.x, child.y, child.w, child.h}, child_fix, child, cfx_box, false, child, canchor_fix, rep)
+            layout_absolutes_rec(child, Rect{child.x, child.y, child.w, child.h}, child_fix, child, cfx_box, false, cgroup_fixed, child, canchor_fix, rep)
         case .Fixed:
             place_absolute(child, child_fix)
-            if cfx_box != b && cfx_box != nil && !cgroup {
+            if cfx_box != b && cfx_box != nil && !cgroup_fixed {
                 mark_hoisted(child, canchor_fix)
                 append(rep, Reparent{child, b, cfx_box, canchor_fix})
             }
-            layout_absolutes_rec(child, Rect{child.x, child.y, child.w, child.h}, child_fix, child, cfx_box, false, child, child, rep)
+            layout_absolutes_rec(child, Rect{child.x, child.y, child.w, child.h}, child_fix, child, cfx_box, false, cgroup_fixed, child, child, rep)
         }
     }
 }
@@ -8181,8 +8254,20 @@ paint_resize_grip :: proc(pt: ^Painter, b: ^Box, screen: im.Vec2, eff: f32) {
     }
 }
 
-@(private="file")
-paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, in_xform := false) {
+paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, in_xform := false, scope: ^Stacking_Scope = nil, stacked := false, abs_origin: im.Vec2 = {}) {
+    if scope != nil && !stacked && b in scope.deferred do return
+    local_scope: Stacking_Scope
+    active_scope := scope
+    owns_scope := scope == nil || stacking_context_at(b, ox, oy)
+    if owns_scope {
+        local_scope.deferred = make(map[^Box]bool, context.temp_allocator)
+        local_scope.entries = make([dynamic]Stacking_Entry, context.temp_allocator)
+        local_scope.clips = make([dynamic]Stacking_Clip, context.temp_allocator)
+        active_scope = &local_scope
+    }
+    defer if owns_scope {
+        delete(local_scope.deferred); delete(local_scope.entries); delete(local_scope.clips)
+    }
     // opacidade efetiva = herdada × própria
     eff := opa * b.opacity
     // Totalmente transparente: não pinta — EXCETO se há transition (o alvo pode
@@ -8355,7 +8440,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // da página. Só faz sentido com filhos (senão o grupo é vazio).
     // clip-path exige layer: o clip do ImGui é RETANGULAR, então a forma é aplicada
     // como máscara alpha na CPU sobre a textura da layer (mesmo caminho dos filtros).
-    want_layer := (own_a < 0.996 && len(b.children) > 0) || b.blend_mode != .Normal || b.n_filters > 0 || (b.isolate && len(b.children) > 0) || b.clip_path.kind != .None || b.mask_grad.active
+    want_layer := (own_a < 1 && (len(b.children) > 0 || len(b.inlines) > 0)) || b.blend_mode != .Normal || b.n_filters > 0 || (b.isolate && (len(b.children) > 0 || len(b.inlines) > 0)) || b.clip_path.kind != .None || b.mask_grad.active
     do_layer := want_layer && g_renderer != nil && g_layer_count < LAYER_BUDGET
     if do_layer {
         g_layer_count += 1
@@ -8607,6 +8692,13 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     }
     // scroll de elemento: desloca o conteúdo pra cima por scroll_y (clipado acima)
     child_oy := b.overflow_scroll ? oy2 - b.scroll_y : oy2
+    if owns_scope {
+        if b.overflow_hidden do emit(pt, PC_PopClip{})
+        collect_stacking(active_scope, b, ox2, oy2, -1, abs_origin)
+        sort_stacking(active_scope.entries[:])
+        paint_stacking(pt, s, active_scope, true, screen.x - b.x - ox2, screen.y - b.y - oy2, eff, in_xform || b.has_transform || b.has_xform_matrix)
+        if b.overflow_hidden do emit(pt, PC_PushClip{{cx0, cy0}, {cx1, cy1}})
+    }
     if b.is_inline {
         // recolore o texto: animação (se ativa) tem prioridade sobre :hover
         oc := anim_col_on ? anim_col : b.hover.color
@@ -8617,7 +8709,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         // mesma degradação do `:hover{color}`, que também não desce por caixas.
         hdeco := b.hover.deco
         if b.href != "" && !b.hover.deco_set do hdeco.underline = true // default de link do UA
-        if !b.invisible do paint_inline(pt, s, b, ox2, child_oy, eff, oc, ot, in_xform || b.has_transform || b.has_xform_matrix, hdeco, b.hover.has_deco && hovering) // visibility:hidden esconde o texto
+        if !b.invisible do paint_inline(pt, s, b, ox2, child_oy, eff, oc, ot, in_xform || b.has_transform || b.has_xform_matrix, hdeco, b.hover.has_deco && hovering, active_scope) // visibility:hidden esconde o texto
         if b.overflow_hidden do emit(pt, PC_PopClip{})
     } else {
         switch b.kind {
@@ -8638,35 +8730,22 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
             }
             if b.overflow_hidden do emit(pt, PC_PopClip{})
         case .Block:
-            // ORDEM DE EMPILHAMENTO (CSS 2.1 Apêndice E, aproximada) numa ÚNICA
-            // ordenação estável sobre b.children, no lugar das 3 passadas antigas
-            // (neg-z / fluxo / positioned):
-            //   nível 0 = posicionados com z-index < 0   (atrás,  por z crescente)
-            //   nível 1 = em fluxo                        (ordem de DOM)
-            //   nível 2 = posicionados com z-index >= 0   (à frente, por z crescente)
-            // Níveis 0 e 1 ficam DENTRO do clip de overflow; o nível 2 escapa dele
-            // (posicionados vazam o overflow), então o PopClip vai ENTRE os dois.
-            // A ordem de VISITA dos filhos (0→1→2) é idêntica à das 3 passadas, o
-            // que preserva o first-wins do click_target gravado no traversal.
-            order := make([dynamic]^Box, 0, len(b.children), context.temp_allocator)
-            for child in b.children do append(&order, child)
-            stack_sort(order[:])
-            // O overflow deste box recorta os filhos EM FLUXO e os POSICIONADOS cujo
-            // bloco contenedor É este box; um posicionado cujo CB é um ANCESTRAL escapa
-            // (pinta FORA do clip). Percorre em ordem de empilhamento alternando o clip
-            // por filho (antes: TODO posicionado z>=0 escapava — vazava abspos de um
-            // pai position:relative;overflow:hidden, que na verdade DEVE ser recortado).
+            // Contextos e posicionados são pintados pelo contexto ancestral.
             clip_on := b.overflow_hidden
-            for child in order {
+            for child in stacking_children(b) {
                 if b.overflow_hidden {
                     esc := overflow_escapes(b, child)
                     if      esc && clip_on  { emit(pt, PC_PopClip{});  clip_on = false }
                     else if !esc && !clip_on { emit(pt, PC_PushClip{{cx0, cy0}, {cx1, cy1}}); clip_on = true }
                 }
-                emit_stacked(pt, s, child, ox2, child_oy, eff, in_xform || b.has_transform || b.has_xform_matrix)
+                emit_stacked(pt, s, child, ox2, child_oy, eff, in_xform || b.has_transform || b.has_xform_matrix, active_scope)
             }
             if clip_on do emit(pt, PC_PopClip{})
         }
+    }
+
+    if owns_scope {
+        paint_stacking(pt, s, active_scope, false, screen.x - b.x - ox2, screen.y - b.y - oy2, eff, in_xform || b.has_transform || b.has_xform_matrix)
     }
 
     // overflow:hidden + raio: o clip do ImGui é retangular, então os filhos que
@@ -8763,23 +8842,12 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     }
 }
 
-// Nível de empilhamento CSS de um filho no contexto do pai (Apêndice E, aprox.):
-// 0 = posicionado com z-index<0 (atrás), 2 = posicionado com z-index>=0 (à
-// frente), 1 = em fluxo (no meio). z-index só tem efeito em posicionados.
-@(private="file")
-stack_level :: proc(b: ^Box) -> int {
-    if b.pos != .Static && b.z_index < 0 do return 0
-    if b.pos == .Absolute || b.pos == .Fixed || b.pos == .Sticky do return 2
-    return 1
-}
-
 // Um filho posicionado ESCAPA do overflow:hidden deste box quando o box NÃO é o
 // bloco contenedor dele (o CB é um ancestral) — o abspos "fura" as caixas entre
 // ele e seu CB. Se o box É o CB (position!=static, ou cb_abs/cb_fixed do M120), o
 // overflow dele RECORTA o filho. Filhos em fluxo (static/relative/sticky) nunca
 // escapam. Regra espelha layout_absolutes: abs → CB é o ancestral posicionado ou
 // cb_abs; fixed → CB é cb_fixed (position não fixa fixed).
-@(private="file")
 overflow_escapes :: proc(b, child: ^Box) -> bool {
     #partial switch child.pos {
     case .Absolute: return !(b.pos != .Static || b.cb_abs)
@@ -8788,40 +8856,15 @@ overflow_escapes :: proc(b, child: ^Box) -> bool {
     return false
 }
 
-// Chave secundária: z-index dos níveis 0/2; o nível 1 usa 0 p/ a ordenação
-// estável preservar a ordem de DOM (o fluxo não reordena por z-index).
-@(private="file")
-stack_z :: proc(b: ^Box) -> int {
-    return stack_level(b) == 1 ? 0 : b.z_index
-}
-
-// Insertion sort ESTÁVEL de b.children por (nível, z) — poucos elementos, e a
-// estabilidade garante a ordem de DOM em empates (essencial para o fluxo).
-@(private="file")
-stack_sort :: proc(items: []^Box) {
-    for i in 1 ..< len(items) {
-        key := items[i]
-        kl, kz := stack_level(key), stack_z(key)
-        j := i - 1
-        for j >= 0 {
-            jl, jz := stack_level(items[j]), stack_z(items[j])
-            if jl < kl || (jl == kl && jz <= kz) do break
-            items[j + 1] = items[j]
-            j -= 1
-        }
-        items[j + 1] = key
-    }
-}
-
 // Pinta um filho na sua posição de empilhamento. absolute/fixed já têm coords
 // absolutas (translate_box) → offset 0; o resto (static/relative/sticky) carrega
 // os offsets acumulados dos ancestrais.
 @(private="file")
-emit_stacked :: proc(pt: ^Painter, s: ^State, child: ^Box, ox, oy, eff: f32, in_xform := false) {
+emit_stacked :: proc(pt: ^Painter, s: ^State, child: ^Box, ox, oy, eff: f32, in_xform := false, scope: ^Stacking_Scope = nil) {
     if child.pos == .Absolute || child.pos == .Fixed {
-        paint_box(pt, s, child, 0, 0, eff, in_xform)
+        paint_box(pt, s, child, 0, 0, eff, in_xform, scope)
     } else {
-        paint_box(pt, s, child, ox, oy, eff, in_xform)
+        paint_box(pt, s, child, ox, oy, eff, in_xform, scope)
     }
 }
 
@@ -8856,7 +8899,7 @@ draw_spaced_text :: proc(dl: ^im.DrawList, font: ^im.Font, size: f32, pos: im.Ve
 }
 
 @(private="file")
-paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, over_color: u32 = 0, over_t: f32 = 0, in_xform := false, box_deco: Deco = {}, box_deco_on := false) {
+paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, over_color: u32 = 0, over_t: f32 = 0, in_xform := false, box_deco: Deco = {}, box_deco_on := false, scope: ^Stacking_Scope = nil) {
     im.SetCursorPos({b.content_x + ox, b.content_y + oy})
     cs := im.GetCursorScreenPos()
 
@@ -9023,7 +9066,7 @@ paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1
             // a caixa foi disposta a partir de (0,0); desloca-a p/ a posição do
             // item na linha (origem do conteúdo + it.x/it.y, no espaço do pai).
             if it.box != nil {
-                paint_box(pt, s, it.box, b.content_x + ox + it.x, b.content_y + oy + it.y, opa, in_xform || b.has_transform || b.has_xform_matrix)
+                paint_box(pt, s, it.box, b.content_x + ox + it.x, b.content_y + oy + it.y, opa, in_xform || b.has_transform || b.has_xform_matrix, scope)
             }
         }
     }

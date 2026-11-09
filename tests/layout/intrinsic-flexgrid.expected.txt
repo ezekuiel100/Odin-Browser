@@ -1,0 +1,84 @@
+<anon# .> block x=0 y=0 w=800 h=1480
+  <html# .> block x=0 y=0 w=800 h=1480
+    <body# .> block x=0 y=0 w=800 h=1480
+      <div#flex_auto_basis_grow .> block x=0 y=0 w=800 h=10
+        <div# .> flex x=0 y=0 w=400 h=10 dir=Row gap=0
+          <div#flex_auto_basis_grow-a .> block x=0 y=0 w=150 h=10
+            <div# .> inline x=0 y=0 w=100 h=10
+          <div#flex_auto_basis_grow-b .> block x=150 y=0 w=250 h=10
+            <div# .> inline x=150 y=0 w=200 h=10
+      <div#flex_fractional_grow .> block x=0 y=20 w=800 h=10
+        <div# .> flex x=0 y=20 w=400 h=10 dir=Row gap=0
+          <div#flex_fractional_grow-a .> inline x=225 y=20 w=175 h=10
+      <div#flex_fractional_shrink .> block x=0 y=40 w=800 h=10
+        <div# .> flex x=0 y=40 w=100 h=10 dir=Row gap=0
+          <div#flex_fractional_shrink-a .> inline x=0 y=40 w=175 h=10
+      <div#flex_wrap_hypothetical_min .> block x=0 y=60 w=800 h=20
+        <div# .> flex x=0 y=60 w=150 h=20 dir=Row gap=0
+          <div#flex_wrap_hypothetical_min-a .> inline x=0 y=60 w=150 h=10
+          <div#flex_wrap_hypothetical_min-b .> inline x=0 y=70 w=150 h=10
+      <div#flex_wrap_hypothetical_max .> block x=0 y=90 w=800 h=10
+        <div# .> flex x=0 y=90 w=150 h=10 dir=Row gap=0
+          <div#flex_wrap_hypothetical_max-a .> inline x=0 y=90 w=60 h=10
+          <div#flex_wrap_hypothetical_max-b .> inline x=60 y=90 w=60 h=10
+      <div#grid_fr_floor_redistributes .> block x=0 y=110 w=800 h=10
+        <div# .> grid x=0 y=110 w=300 h=10 cols=2 rows=0 gap=0
+          <div#grid_fr_floor_redistributes-a .> inline x=0 y=110 w=200 h=10
+          <div#grid_fr_floor_redistributes-b .> inline x=200 y=110 w=100 h=10
+      <div#grid_fractional_fr .> block x=0 y=130 w=800 h=10
+        <div# .> grid x=0 y=130 w=400 h=10 cols=2 rows=0 gap=0
+          <div#grid_fractional_fr-a .> inline x=0 y=130 w=100 h=10
+          <div#grid_fractional_fr-b .> inline x=100 y=130 w=100 h=10
+      <div#grid_intrinsic_fr_ratio .> block x=0 y=150 w=800 h=10
+        <div#grid_intrinsic_fr_ratio-g .> grid x=0 y=150 w=310 h=10 cols=2 rows=0 gap=10
+          <div#grid_intrinsic_fr_ratio-a .> block x=0 y=150 w=100 h=10
+            <div# .> inline x=0 y=150 w=100 h=10
+          <div#grid_intrinsic_fr_ratio-b .> block x=110 y=150 w=200 h=10
+            <div# .> inline x=110 y=150 w=100 h=10
+      <div#grid_intrinsic_fr_span .> block x=0 y=170 w=800 h=10
+        <div#grid_intrinsic_fr_span-g .> grid x=0 y=170 w=310 h=10 cols=2 rows=0 gap=10
+          <div#grid_intrinsic_fr_span-a .> block x=0 y=170 w=310 h=10
+            <div# .> inline x=0 y=170 w=310 h=10
+      <div#grid_fr_floor_with_gap .> block x=0 y=190 w=800 h=10
+        <div# .> grid x=0 y=190 w=300 h=10 cols=2 rows=0 gap=20
+          <div#grid_fr_floor_with_gap-a .> inline x=0 y=190 w=200 h=10
+          <div#grid_fr_floor_with_gap-b .> inline x=220 y=190 w=80 h=10
+      <div#flex_explicit_zero_basis_control .> block x=0 y=210 w=800 h=10
+        <div# .> flex x=0 y=210 w=400 h=10 dir=Row gap=0
+          <div#flex_explicit_zero_basis_control-a .> block x=0 y=210 w=200 h=10
+            <div# .> inline x=0 y=210 w=100 h=10
+          <div#flex_explicit_zero_basis_control-b .> block x=200 y=210 w=200 h=10
+            <div# .> inline x=200 y=210 w=200 h=10
+      <div#grid_fixed_overflow_control .> block x=0 y=230 w=800 h=10
+        <div# .> grid x=0 y=230 w=100 h=10 cols=2 rows=0 gap=0
+          <div#grid_fixed_overflow_control-a .> inline x=0 y=230 w=200 h=10
+          <div#grid_fixed_overflow_control-b .> inline x=200 y=230 w=0 h=10
+      <div#grid_row_fr_floor .> block x=0 y=250 w=800 h=300
+        <div# .> grid x=0 y=250 w=100 h=300 cols=0 rows=2 gap=0
+          <div#grid_row_fr_floor-a .> inline x=0 y=250 w=100 h=200
+          <div#grid_row_fr_floor-b .> inline x=0 y=450 w=100 h=100
+      <div#grid_row_fractional_fr .> block x=0 y=560 w=800 h=400
+        <div# .> grid x=0 y=560 w=100 h=400 cols=0 rows=2 gap=0
+          <div#grid_row_fractional_fr-a .> inline x=0 y=560 w=100 h=100
+          <div#grid_row_fractional_fr-b .> inline x=0 y=660 w=100 h=100
+      <div#grid_fr_percent_floor .> block x=0 y=970 w=800 h=10
+        <div# .> grid x=0 y=970 w=400 h=10 cols=2 rows=0 gap=20
+          <div#grid_fr_percent_floor-a .> inline x=0 y=970 w=300 h=10
+          <div#grid_fr_percent_floor-b .> inline x=320 y=970 w=80 h=10
+      <div#flex_fractional_freeze .> block x=0 y=990 w=800 h=10
+        <div# .> flex x=0 y=990 w=400 h=10 dir=Row gap=0
+          <div#flex_fractional_freeze-a .> inline x=0 y=990 w=50 h=10
+          <div#flex_fractional_freeze-b .> inline x=50 y=990 w=100 h=10
+      <div#flex_column_fractional_grow .> block x=0 y=1010 w=800 h=400
+        <div# .> flex x=0 y=1010 w=100 h=400 dir=Column gap=0
+          <div#flex_column_fractional_grow-a .> inline x=0 y=1010 w=100 h=175
+      <div#flex_intrinsic_out_of_flow_gap .> block x=0 y=1420 w=800 h=10
+        <div#flex_intrinsic_out_of_flow_gap-g .> flex x=0 y=1420 w=100 h=10 dir=Row gap=10
+          <div# .> inline x=0 y=1420 w=30 h=10
+      <div#grid_intrinsic_span_with_base .> block x=0 y=1440 w=800 h=30
+        <div#grid_intrinsic_span_with_base-g .> grid x=0 y=1440 w=310 h=30 cols=2 rows=0 gap=10
+          <div# .> block x=0 y=1440 w=100 h=10
+            <div# .> inline x=0 y=1440 w=100 h=10
+          <div#grid_intrinsic_span_with_base-a .> block x=0 y=1460 w=310 h=10
+            <div# .> inline x=0 y=1460 w=310 h=10
+  <div# .> inline x=0 y=1420 w=200 h=10 ABS

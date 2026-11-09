@@ -1,0 +1,81 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Intrinsic sizing and flex/grid edge cases</title>
+<body style="margin:0">
+<!-- flex_auto_basis_grow -->
+<div id="flex_auto_basis_grow" style="margin-bottom:10px">
+<div style="display:flex;width:400px"><div id="flex_auto_basis_grow-a" style="flex-grow:1"><div style="width:100px;height:10px"></div></div><div id="flex_auto_basis_grow-b" style="flex-grow:1"><div style="width:200px;height:10px"></div></div></div>
+</div>
+<!-- flex_fractional_grow -->
+<div id="flex_fractional_grow" style="margin-bottom:10px">
+<div style="display:flex;width:400px;justify-content:flex-end"><div id="flex_fractional_grow-a" style="flex:0.25 1 100px;min-width:0;height:10px"></div></div>
+</div>
+<!-- flex_fractional_shrink -->
+<div id="flex_fractional_shrink" style="margin-bottom:10px">
+<div style="display:flex;width:100px"><div id="flex_fractional_shrink-a" style="flex:0 0.25 200px;min-width:0;height:10px"></div></div>
+</div>
+<!-- flex_wrap_hypothetical_min -->
+<div id="flex_wrap_hypothetical_min" style="margin-bottom:10px">
+<div style="display:flex;flex-wrap:wrap;width:150px;align-content:flex-start"><div id="flex_wrap_hypothetical_min-a" style="flex:1 1 0px;min-width:100px;height:10px"></div><div id="flex_wrap_hypothetical_min-b" style="flex:1 1 0px;min-width:100px;height:10px"></div></div>
+</div>
+<!-- flex_wrap_hypothetical_max -->
+<div id="flex_wrap_hypothetical_max" style="margin-bottom:10px">
+<div style="display:flex;flex-wrap:wrap;width:150px"><div id="flex_wrap_hypothetical_max-a" style="flex:0 1 200px;max-width:60px;height:10px"></div><div id="flex_wrap_hypothetical_max-b" style="flex:0 1 200px;max-width:60px;height:10px"></div></div>
+</div>
+<!-- grid_fr_floor_redistributes -->
+<div id="grid_fr_floor_redistributes" style="margin-bottom:10px">
+<div style="display:grid;width:300px;grid-template-columns:minmax(200px,1fr) 1fr"><div id="grid_fr_floor_redistributes-a" style="height:10px"></div><div id="grid_fr_floor_redistributes-b"></div></div>
+</div>
+<!-- grid_fractional_fr -->
+<div id="grid_fractional_fr" style="margin-bottom:10px">
+<div style="display:grid;width:400px;grid-template-columns:minmax(0,0.25fr) minmax(0,0.25fr)"><div id="grid_fractional_fr-a" style="height:10px"></div><div id="grid_fractional_fr-b"></div></div>
+</div>
+<!-- grid_intrinsic_fr_ratio -->
+<div id="grid_intrinsic_fr_ratio" style="margin-bottom:10px">
+<div id="grid_intrinsic_fr_ratio-g" style="display:grid;width:max-content;grid-template-columns:1fr 2fr;gap:10px"><div id="grid_intrinsic_fr_ratio-a"><div style="width:100px;height:10px"></div></div><div id="grid_intrinsic_fr_ratio-b"><div style="width:100px;height:10px"></div></div></div>
+</div>
+<!-- grid_intrinsic_fr_span -->
+<div id="grid_intrinsic_fr_span" style="margin-bottom:10px">
+<div id="grid_intrinsic_fr_span-g" style="display:grid;width:max-content;grid-template-columns:1fr 2fr;gap:10px"><div id="grid_intrinsic_fr_span-a" style="grid-column:span 2"><div style="width:310px;height:10px"></div></div></div>
+</div>
+<!-- grid_fr_floor_with_gap -->
+<div id="grid_fr_floor_with_gap" style="margin-bottom:10px">
+<div style="display:grid;width:300px;gap:20px;grid-template-columns:minmax(200px,1fr) 2fr"><div id="grid_fr_floor_with_gap-a" style="height:10px"></div><div id="grid_fr_floor_with_gap-b"></div></div>
+</div>
+<!-- flex_explicit_zero_basis_control -->
+<div id="flex_explicit_zero_basis_control" style="margin-bottom:10px">
+<div style="display:flex;width:400px"><div id="flex_explicit_zero_basis_control-a" style="flex:1;min-width:0"><div style="width:100px;height:10px"></div></div><div id="flex_explicit_zero_basis_control-b" style="flex:1;min-width:0"><div style="width:200px;height:10px"></div></div></div>
+</div>
+<!-- grid_fixed_overflow_control -->
+<div id="grid_fixed_overflow_control" style="margin-bottom:10px">
+<div style="display:grid;width:100px;grid-template-columns:200px minmax(0,1fr)"><div id="grid_fixed_overflow_control-a" style="height:10px"></div><div id="grid_fixed_overflow_control-b"></div></div>
+</div>
+<!-- grid_row_fr_floor -->
+<div id="grid_row_fr_floor" style="margin-bottom:10px">
+<div style="display:grid;width:100px;height:300px;grid-template-rows:minmax(200px,1fr) 1fr"><div id="grid_row_fr_floor-a"></div><div id="grid_row_fr_floor-b"></div></div>
+</div>
+<!-- grid_row_fractional_fr -->
+<div id="grid_row_fractional_fr" style="margin-bottom:10px">
+<div style="display:grid;width:100px;height:400px;grid-template-rows:minmax(0,0.25fr) minmax(0,0.25fr)"><div id="grid_row_fractional_fr-a"></div><div id="grid_row_fractional_fr-b"></div></div>
+</div>
+<!-- grid_fr_percent_floor -->
+<div id="grid_fr_percent_floor" style="margin-bottom:10px">
+<div style="display:grid;width:400px;gap:20px;grid-template-columns:minmax(75%,1fr) 1fr"><div id="grid_fr_percent_floor-a" style="height:10px"></div><div id="grid_fr_percent_floor-b"></div></div>
+</div>
+<!-- flex_fractional_freeze -->
+<div id="flex_fractional_freeze" style="margin-bottom:10px">
+<div style="display:flex;width:400px"><div id="flex_fractional_freeze-a" style="flex:0.25 1 0px;max-width:50px;height:10px"></div><div id="flex_fractional_freeze-b" style="flex:0.25 1 0px;height:10px"></div></div>
+</div>
+<!-- flex_column_fractional_grow -->
+<div id="flex_column_fractional_grow" style="margin-bottom:10px">
+<div style="display:flex;flex-direction:column;width:100px;height:400px"><div id="flex_column_fractional_grow-a" style="flex:0.25 1 100px;min-height:0"></div></div>
+</div>
+<!-- flex_intrinsic_out_of_flow_gap -->
+<div id="flex_intrinsic_out_of_flow_gap" style="margin-bottom:10px">
+<div id="flex_intrinsic_out_of_flow_gap-g" style="display:flex;width:max-content;gap:10px"><div style="width:100px;height:10px"></div><div style="position:absolute;width:200px;height:10px"></div></div>
+</div>
+<!-- grid_intrinsic_span_with_base -->
+<div id="grid_intrinsic_span_with_base" style="margin-bottom:10px">
+<div id="grid_intrinsic_span_with_base-g" style="display:grid;width:max-content;grid-template-columns:1fr 2fr;gap:10px"><div style="grid-column:1"><div style="width:100px;height:10px"></div></div><div id="grid_intrinsic_span_with_base-a" style="grid-column:span 2"><div style="width:310px;height:10px"></div></div></div>
+</div>
+</body>

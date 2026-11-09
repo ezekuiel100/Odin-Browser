@@ -1,0 +1,58 @@
+<!doctype html>
+<style>
+html,body{margin:0;background:white}
+.case{position:absolute;width:100px;height:100px;isolation:isolate}
+.red,.green{width:80px;height:80px}
+.red{background:#ff0000}
+.green{background:#00ff00}
+.abs{position:absolute;left:0;top:0}
+</style>
+
+<!-- relative-z -->
+<div class="case" style="left:20px;top:20px"><div class="green" style="position:relative;z-index:2"></div><div class="red" style="position:relative;z-index:1;margin-top:-80px"></div></div>
+<!-- auto-escape -->
+<div class="case" style="left:140px;top:20px"><div style="position:relative"><div class="green abs" style="z-index:10"></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- zero-confines -->
+<div class="case" style="left:260px;top:20px"><div style="position:relative;z-index:0"><div class="green abs" style="z-index:10"></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- negative-behind-flow -->
+<div class="case" style="left:380px;top:20px"><div class="red" style="position:relative"><div class="green abs" style="z-index:-1"></div></div></div>
+<!-- flex-z -->
+<div class="case" style="left:20px;top:140px"><div style="display:flex"><div class="green" style="z-index:2;flex-shrink:0"></div><div class="red" style="z-index:1;margin-left:-80px;flex-shrink:0"></div></div></div>
+<!-- transform-zero -->
+<div class="case" style="left:140px;top:140px"><div class="green" style="transform:translate(0px,0px)"></div><div class="red" style="margin-top:-80px"></div></div>
+<!-- opacity-zero -->
+<div class="case" style="left:260px;top:140px"><div class="green" style="opacity:.5"></div><div class="red" style="margin-top:-80px"></div></div>
+<!-- negative-in-context -->
+<div class="case" style="left:380px;top:140px"><div class="red" style="position:relative;z-index:0"><div class="green abs" style="z-index:-1"></div></div></div>
+<!-- isolation-barrier -->
+<div class="case" style="left:20px;top:260px"><div style="isolation:isolate"><div><div class="green abs" style="z-index:100"></div></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- grid-z -->
+<div class="case" style="left:140px;top:260px"><div style="display:grid;grid-template-columns:80px"><div class="green" style="grid-area:1/1;z-index:2"></div><div class="red" style="grid-area:1/1;z-index:1"></div></div></div>
+<!-- clip-retained -->
+<div class="case" style="left:260px;top:260px"><div style="position:relative;overflow:hidden;width:30px;height:80px"><div style="position:relative"><div class="green abs" style="z-index:5"></div></div></div></div>
+<!-- equal-tree-order -->
+<div class="case" style="left:380px;top:260px"><div style="position:relative"><div class="red abs" style="z-index:1"></div></div><div class="green abs" style="z-index:1"></div></div>
+<!-- static-z-ignored -->
+<div class="case" style="left:20px;top:380px"><div class="green" style="z-index:20"></div><div class="red" style="margin-top:-80px"></div></div>
+<!-- filter-barrier -->
+<div class="case" style="left:140px;top:380px"><div style="filter:brightness(1)"><div><div class="green abs" style="z-index:100"></div></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- will-change-barrier -->
+<div class="case" style="left:260px;top:380px"><div style="will-change:opacity"><div><div class="green abs" style="z-index:100"></div></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- contain-barrier -->
+<div class="case" style="left:380px;top:380px"><div style="contain:layout"><div><div class="green abs" style="z-index:100"></div></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- inline-context-escape -->
+<div class="case" style="left:20px;top:500px"><div style="display:inline-block;position:relative;width:80px;height:80px"><div class="green" style="position:relative;z-index:10"></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- clip-path-barrier -->
+<div class="case" style="left:140px;top:500px"><div style="clip-path:inset(0);width:80px;height:80px"><div class="green abs" style="z-index:100"></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- opacity-group-overlap -->
+<div class="case" style="left:260px;top:500px"><div class="green" style="opacity:.5"><div class="green abs"></div></div><div class="red" style="margin-top:-80px"></div></div>
+<!-- negative-z-order -->
+<div class="case" style="left:380px;top:500px"><div class="red abs" style="z-index:-1"></div><div class="green abs" style="z-index:-2"></div></div>
+<!-- fixed-context-barrier -->
+<div class="case" style="left:20px;top:620px"><div style="position:relative;z-index:0"><div class="green" style="position:fixed;left:20px;top:620px;z-index:100"></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- sticky-context-barrier -->
+<div class="case" style="left:140px;top:620px"><div style="position:sticky;top:0;width:80px;height:80px"><div class="green abs" style="z-index:100"></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- transform-context-barrier -->
+<div class="case" style="left:260px;top:620px"><div style="transform:scale(1);width:80px;height:80px"><div class="green abs" style="z-index:100"></div></div><div class="red abs" style="z-index:1"></div></div>
+<!-- flex-order-tie -->
+<div class="case" style="left:380px;top:620px"><div style="display:flex"><div class="green" style="order:2;z-index:0;flex-shrink:0;margin-left:-80px"></div><div class="red" style="order:1;z-index:0;flex-shrink:0"></div></div></div>

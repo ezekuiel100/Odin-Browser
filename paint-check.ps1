@@ -1028,6 +1028,10 @@ try {
     Assert "animation sem backwards preserva fundo durante delay" ($delay.R -gt 245 -and $delay.G -lt 5) ("pixel="+$delay)
 } finally { $animBmp.Dispose() }
 
+# Contextos: a mesma fixture roda sozinha para comparacao antes/depois.
+& (Join-Path $PSScriptRoot "tools/check-stacking.ps1") -Browser $Browser
+Assert "24 casos de contexto de empilhamento" ($LASTEXITCODE -eq 0) "ver casos acima"
+
 if (-not $Keep) { Remove-Item -Recurse -Force $outDir -ErrorAction SilentlyContinue }
 
 Write-Host ""
