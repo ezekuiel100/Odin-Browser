@@ -4,12 +4,9 @@ package ui
 // Era o maior gap do gap-report por nº de SITES (fill: 57 sites / 31659 ocorr.):
 // o painter de SVG só lia o ATRIBUTO de apresentação e o `style=""` do elemento,
 // então `.icon path { fill: currentColor }` — o padrão de todo icon-set moderno —
-// não pintava nada. A cascata agora é gravada em g_svg_css na resolução de estilo.
-//
-// ⚠️ TUDO num ÚNICO @(test) DE PROPÓSITO: g_svg_css é GLOBAL e o runner do Odin
-// roda os testes em PARALELO — em procs separados o svg_css_clear() de um thread
-// apagava as entradas do outro e, com ponteiros de nó reciclados entre documentos,
-// um teste lia a entrada do outro (falha intermitente só na suíte cheia).
+// não pintava nada. A cascata agora é gravada em Computed.svg_css na resolução
+// de estilo (M246: saiu do mapa global g_svg_css, que corrompia com o tracking
+// allocator do runner — len=1, iteração vazia).
 
 import "core:testing"
 import htmlp "../html"
@@ -22,11 +19,10 @@ svg_css_of :: proc(html, css: string, tag: string) -> (Svg_Css, bool) {
     dom := htmlp.parse(html)
     rules, _ := csspkg.parse(css)
     styles, _ := compute_styles(dom, &rules, 800, 600)
-    _ = styles
+    defer free_styles(styles) // copia o Svg_Css abaixo; o ^ é do mapa
     n := dompkg.find_first(dom, tag)
     if n == nil do return {}, false
-    e, ok := g_svg_css[n]
-    return e, ok
+    return svg_css_get(n)
 }
 
 @(test)
@@ -130,4 +126,44 @@ test_svg_css_paint :: proc(t: ^testing.T) {
     // …e < 1 é ERRO per-spec (a declaração cai; o herdado continua valendo)
     e18, ok18 := svg_css_of(`<svg><path d="M0 0"/></svg>`, `path{stroke-miterlimit:0.5}`, "path")
     testing.expect(t, !ok18 || !e18.mlim_set, "miterlimit < 1 é inválido per-spec")
+}
+
+// M246 — dono de Svg_Css é o Computed, não um mapa global.
+// Sabotagem: duas passadas sequenciais (como o runner faz entre testes) NÃO
+// podem vazar fill do documento A para o B; free_styles num pai+filho com
+// svg_css só no pai não double-free (o ponteiro NÃO herda).
+@(test)
+test_svg_css_dono_e_o_computed :: proc(t: ^testing.T) {
+    // 50×: o flake antigo aparecia em rajadas; uma passada verde não prova nada.
+    for i in 0 ..< 50 {
+        e, ok := svg_css_of(`<svg><path d="M0 0"/></svg>`, `path{fill:#ff0000}`, "path")
+        testing.expectf(t, ok && e.fill_set && e.fill == 0xff0000,
+            "passada %d: fill vermelho tem de gravar (ok=%v col=%x)", i, ok, e.fill)
+        e2, ok2 := svg_css_of(`<svg><path d="M0 0"/></svg>`, `path{opacity:.5}`, "path")
+        testing.expectf(t, !ok2 && !e2.fill_set,
+            "passada %d: o 2º documento NÃO herda o fill do 1º (ok=%v set=%v col=%x)",
+            i, ok2, e2.fill_set, e2.fill)
+    }
+
+    // pai declara fill, filho não: o ^Svg_Css é do PAI. Se o inherit vazasse o
+    // ponteiro, free_styles liberaria duas vezes e isto crasharia.
+    html := `<svg class="i"><g><path d="M0 0"/></g></svg>`
+    css  := `.i{fill:#00ff00}`
+    dom := htmlp.parse(html)
+    rules, _ := csspkg.parse(css)
+    styles, _ := compute_styles(dom, &rules, 800, 600)
+    svg := dompkg.find_first(dom, "svg")
+    g   := dompkg.find_first(dom, "g")
+    p   := dompkg.find_first(dom, "path")
+    testing.expect(t, svg != nil && g != nil && p != nil, "árvore svg>g>path")
+    if svg != nil {
+        testing.expect(t, styles[svg].svg_css != nil, "o seletor .i grava no <svg>")
+    }
+    if g != nil {
+        testing.expect(t, styles[g].svg_css == nil, "filho <g> NÃO herda o ponteiro")
+    }
+    if p != nil {
+        testing.expect(t, styles[p].svg_css == nil, "neto <path> NÃO herda o ponteiro")
+    }
+    free_styles(styles) // crash aqui = ponteiro aliased (a lição do before/after)
 }

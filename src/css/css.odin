@@ -69,6 +69,7 @@ Compound :: struct {
     tag:     string,            // "" ou "*" = qualquer
     classes: [dynamic]string,
     id:      string,
+    specificity: [3]int,       // (IDs, classes/attrs/pseudos, types/pseudo-elements)
     attrs:   [dynamic]Attr_Sel, // seletores de atributo ([type="text"]…)
     nth_kind:    Nth_Kind,      // pseudo-classe estrutural (:first-child/:nth-child…)
     nth_a, nth_b: int,          // An+B de :nth-child()/:nth-of-type()
@@ -111,39 +112,40 @@ Compound :: struct {
 Selector :: struct {
     parts:   [dynamic]Compound,
     combs:   [dynamic]Combinator,
-    spec:    int,               // especificidade (id*100 + classe*10 + tag)
+    spec:    int,               // projeção legada, apenas para sondas/testes
+    specificity: [3]int,        // comparar lexicograficamente, sem carry entre colunas
     loose:   bool,              // usou aproximação (combinador de irmão + ~)
 }
 
 // Argumento de :has(): seletor relativo com o combinador que liga o escopo
 // (o elemento sob teste) ao 1º composto. lead Descendant = ":has(.x)"; Child =
 // ":has(> .x)"; Adjacent/Sibling = ":has(+ .x)"/":has(~ .x)".
-Has_Arg :: struct { lead: Combinator, sel: Selector }
+Has_Arg :: struct {
+    lead: Combinator,
+    sel: Selector,
+    group_end: bool, // alternativas OR até este ponto; grupos :has separados são AND
+}
 
 // Esquema de cor exigido por `@media (prefers-color-scheme: …)`. Any = a regra
 // não depende do esquema; Light/Dark = só aplica no esquema correspondente
 // (avaliado contra g_prefers_dark no motor de estilo).
 Color_Scheme :: enum u8 { Any, Light, Dark }
 
-// Cascade layers (@layer): regras SEM layer têm prioridade MAIOR que as EM layer
-// (independente de ordem/especificidade). Aproximação: unlayered = LAYER_UNLAYERED
-// (alto), qualquer conteúdo de @layer = 0 (entre layers, desempata por ordem de
-// fonte, já existente). Cobre o caso comum (Tailwind v4 põe utilitários em @layer;
-// os estilos do componente ficam sem layer e devem vencer).
-LAYER_UNLAYERED :: 1000
+// Ranks finais de cascade layers: normal maior vence; important inverte.
+// Reservado acima dos ranks densos produzidos pelo registro (layers.odin).
+LAYER_UNLAYERED :: 0x3fff_ffff // acima dos ranks densos, sem multiplicação de prioridade
 
 // Prioridade das regras SINTETIZADAS a partir de `@property` (o valor inicial de
-// uma custom property registrada). Negativa de propósito: como o desempate é
-// `layer_rank * LAYER_MULT + especificidade`, qualquer regra REAL — com ou sem
-// @layer — ganha dela. É o que aproxima "initial-value": vale só onde ninguém
-// declarou. Não é a cascata da spec (lá o valor inicial nem participa dela).
+// uma custom property registrada). layer_compare mantém esse rank como fallback
+// abaixo de qualquer regra REAL, inclusive ao inverter layers por !important.
+// Aproxima initial-value: só vale onde ninguém declarou.
 LAYER_REGISTERED :: -1
 
 Rule :: struct {
     selectors: [dynamic]Selector,
     decls:     map[string]string, // propriedade -> valor
     order:     int,               // ordem de origem (desempate)
-    layer_rank: int,              // LAYER_UNLAYERED (sem @layer) ou 0 (em @layer)
+    layer_rank: int,              // LAYER_UNLAYERED ou rank hierárquico final (normal maior vence)
     // condição @media (px). min/max < 0 = sem limite; excluded = não aplicar.
     media_min:      f32,
     media_max:      f32,
@@ -218,14 +220,17 @@ parse :: proc(input: string) -> (rules: [dynamic]Rule, keyframes: [dynamic]Keyfr
 parse_with_faces :: proc(input: string) -> (rules: [dynamic]Rule, keyframes: [dynamic]Keyframe_Set, faces: [dynamic]Font_Face) {
     src := strip_comments(input, context.temp_allocator)
     order := 0
-    parse_block(src, &rules, &keyframes, &faces, &order, media_any(), LAYER_UNLAYERED)
+    layers: Layer_Registry
+    defer delete(layers.nodes)
+    parse_block(src, &rules, &keyframes, &faces, &order, media_any(), LAYER_UNLAYERED, &layers)
+    layer_finalize(&layers, rules[:])
     return
 }
 
-// Parseia uma sequência de regras (e blocos @media, recursivamente). layer_rank =
-// prioridade de cascade layer do bloco (LAYER_UNLAYERED fora de @layer; 0 dentro).
+// Parseia regras recursivamente. layer_rank é a identidade transitória do
+// layer atual; só parse_with_faces a converte para rank final.
 @(private)
-parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Keyframe_Set, faces: ^[dynamic]Font_Face, order: ^int, media: Media, layer_rank: int, cq := Container_Q{}) {
+parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Keyframe_Set, faces: ^[dynamic]Font_Face, order: ^int, media: Media, layer_rank: int, layers: ^Layer_Registry, cq := Container_Q{}) {
     i := 0
     n := len(src)
 
@@ -259,7 +264,7 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
                     j += 1
                 }
                 blk_end := depth == 0 ? j - 1 : n
-                parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, combine_media(media, cond), layer_rank, cq)
+                parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, combine_media(media, cond), layer_rank, layers, cq)
                 i = j
                 continue
             }
@@ -284,7 +289,7 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
                     j += 1
                 }
                 blk_end := depth == 0 ? j - 1 : n
-                parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, layer_rank, inner)
+                parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, layer_rank, layers, inner)
                 i = j
                 continue
             }
@@ -330,21 +335,25 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
                 }
                 blk_end := depth == 0 ? j - 1 : n
                 if supports_condition(cond) {
-                    parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, layer_rank, cq)
+                    parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, layer_rank, layers, cq)
                 }
                 i = j
                 continue
             }
 
-            // @layer e variantes -webkit-/-moz-: transparentes — processa o
-            // conteúdo interno sem mudar media. @layer: o conteúdo recebe
-            // layer_rank=0 (prioridade menor que sem-layer). Nota:
-            // `@layer a, b;` (declaração só de ordem, termina em ';') é ignorado.
+            // @layer: statements registram ordem; blocos reabrem identidades.
+            // Wrappers vendor continuam transparentes, sem criar layers.
             if kw == "layer" ||
                strings.has_prefix(kw, "-webkit-") || strings.has_prefix(kw, "-moz-") {
-                for j < n && src[j] != '{' && src[j] != ';' do j += 1
-                if j >= n || src[j] == ';' { i = j + 1; continue }
-                j += 1 // '{'
+                pre_start := j
+                j = layer_prelude_end(src, j)
+                if j >= n do break
+                inner_layer := layer_rank
+                if kw == "layer" {
+                    inner_layer = layer_prelude(layers, layer_rank, src[pre_start:j], src[j] == '{')
+                }
+                if src[j] == ';' { i = j + 1; continue }
+                j += 1
                 depth := 1
                 blk_start := j
                 for j < n && depth > 0 {
@@ -353,8 +362,9 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
                     j += 1
                 }
                 blk_end := depth == 0 ? j - 1 : n
-                inner_layer := kw == "layer" ? 0 : layer_rank
-                parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, inner_layer, cq)
+                if inner_layer != -1 {
+                    parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, inner_layer, layers, cq)
+                }
                 i = j
                 continue
             }
@@ -411,7 +421,7 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
         if i >= n do break
         sel_text := strings.trim_space(src[sel_start:i])
         i += 1
-        i = parse_rule_body(src, i, sel_text, rules, keyframes, order, media, layer_rank, cq)
+        i = parse_rule_body(src, i, sel_text, rules, keyframes, order, media, layer_rank, layers, cq)
     }
 }
 
@@ -421,7 +431,7 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
 // declarações) com a ordem reservada ANTES das aninhadas — na cascata, as
 // declarações do pai vêm antes das regras aninhadas, como na spec.
 @(private)
-parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Keyframe_Set, order: ^int, media: Media, layer_rank: int, cq := Container_Q{}) -> int {
+parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Keyframe_Set, order: ^int, media: Media, layer_rank: int, layers: ^Layer_Registry, cq := Container_Q{}) -> int {
     n := len(src)
     i := start
     decls_sb := strings.builder_make(context.temp_allocator)
@@ -438,6 +448,28 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
             j := kw_start
             for j < n && !is_space(src[j]) && src[j] != '{' && src[j] != ';' && src[j] != '(' do j += 1
             kw := strings.to_lower(src[kw_start:j], context.temp_allocator)
+            // @layer em CSS nesting mantém o seletor e muda somente o layer.
+            if kw == "layer" {
+                pre_start := j
+                j = layer_prelude_end(src, j)
+                if j >= n { i = n; break }
+                inner_layer := layer_prelude(layers, layer_rank, src[pre_start:j], src[j] == '{')
+                if src[j] == ';' { i = j + 1; continue }
+                j += 1
+                depth := 1
+                blk_start := j
+                for j < n && depth > 0 {
+                    if src[j] == '{' do depth += 1
+                    else if src[j] == '}' do depth -= 1
+                    j += 1
+                }
+                blk_end := depth == 0 ? j - 1 : n
+                if inner_layer != -1 {
+                    parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, media, inner_layer, layers, cq)
+                }
+                i = j
+                continue
+            }
             // @media aninhado: o bloco contém declarações/aninhadas do MESMO
             // seletor, com a condição combinada.
             if kw == "media" {
@@ -454,7 +486,7 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
                     j += 1
                 }
                 blk_end := depth == 0 ? j - 1 : n
-                parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, combine_media(media, cond), layer_rank, cq)
+                parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, combine_media(media, cond), layer_rank, layers, cq)
                 i = j
                 continue
             }
@@ -477,7 +509,7 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
                 }
                 blk_end := depth == 0 ? j - 1 : n
                 if supports_condition(cond) {
-                    parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, media, layer_rank, cq)
+                    parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, media, layer_rank, layers, cq)
                 }
                 i = j
                 continue
@@ -497,7 +529,7 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
                     j += 1
                 }
                 blk_end := depth == 0 ? j - 1 : n
-                parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, combine_media(media, cond), layer_rank, cq)
+                parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, combine_media(media, cond), layer_rank, layers, cq)
                 i = j
                 continue
             }
@@ -525,7 +557,7 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
             nested_sel := strings.trim_space(src[seg_start:i])
             i += 1
             combined := combine_nested_selector(sel_text, nested_sel)
-            i = parse_rule_body(src, i, combined, rules, keyframes, order, media, layer_rank, cq)
+            i = parse_rule_body(src, i, combined, rules, keyframes, order, media, layer_rank, layers, cq)
             continue
         }
         seg := strings.trim_space(src[seg_start:i])
@@ -1311,6 +1343,7 @@ parse_complex :: proc(sel: string) -> (Selector, bool) {
         }
         append(&out.parts, comp)
         out.spec += compound_spec(comp)
+        out.specificity = specificity_add(out.specificity, comp.specificity)
         next_comb = .Descendant
         pending = false
     }
@@ -1365,6 +1398,7 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
     for i < n && key[i] != '.' && key[i] != '#' && key[i] != ':' && key[i] != '[' do i += 1
     // OWNED (ver nota de posse em free_compound): antes era fatia do `src` temp.
     if i > tag_start do out.tag = strings.clone(key[tag_start:i])
+    if out.tag != "" && out.tag != "*" do out.specificity[2] += 1
 
     pseudo := "" // nome do 1º pseudo solto (sem tag/classe/id antes)
     for i < n {
@@ -1381,17 +1415,29 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
             name := key[name_start:i]
             // classe: guarda DESESCAPADA (owned) p/ casar com a classe literal do
             // DOM e virar chave do índice; `lg\:grid-cols-4` → `lg:grid-cols-4`.
-            if c == '.' do append(&out.classes, css_unescape(name))
-            else        do out.id = strings.clone(name) // OWNED (ver free_compound)
+            if c == '.' {
+                append(&out.classes, css_unescape(name))
+                out.specificity[1] += 1
+            } else {
+                out.specificity[0] += 1
+                // Um elemento não pode ter dois IDs distintos. Repetir o mesmo
+                // ID é válido e cada ocorrência contribui especificidade.
+                if out.id != "" && out.id != name do out.never = true
+                delete(out.id)
+                out.id = strings.clone(name)
+            }
         } else if c == '[' {
             i += 1
             close := i
             for close < n && key[close] != ']' do close += 1
+            before := len(out.attrs)
             parse_attr_sel(key[i:close], &out)
+            out.specificity[1] += len(out.attrs) - before
             i = close < n ? close + 1 : n
         } else if c == ':' {
             p := i
             for p < n && key[p] == ':' do p += 1 // pula ':' ou '::'
+            double_colon := p - i >= 2
             ns := p
             for p < n && key[p] != '.' && key[p] != '#' && key[p] != ':' && key[p] != '(' && key[p] != '[' do p += 1
             name := key[ns:p]
@@ -1406,6 +1452,77 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                 }
                 arg = key[p + 1 : depth == 0 ? q - 1 : q]
                 p = q
+            }
+            // Um único parse por argumento: matching e especificidade compartilham
+            // o Selector. Leia a tupla ANTES de liberar argumentos não avaliáveis.
+            is_not := strings.equal_fold(name, "not")
+            is_has := strings.equal_fold(name, "has")
+            is_where := strings.equal_fold(name, "where")
+            is_or := is_where || strings.equal_fold(name, "is") ||
+                     strings.equal_fold(name, "matches") || strings.equal_fold(name, "-webkit-any")
+            if is_not || is_has || is_or {
+                best: [3]int
+                group: [dynamic]Selector
+                group_ok := true
+                keep_or := is_or && len(out.ors) == 0
+                group_start := len(out.has)
+                for part in split_commas_top(arg) {
+                    pt := strings.trim_space(part)
+                    lead := Combinator.Descendant
+                    if is_has { lead, pt = split_leading_combinator(pt) }
+                    if pt == "" do continue
+                    sel, ok := parse_complex(pt)
+                    if !ok { group_ok = false; continue }
+                    if specificity_compare(sel.specificity, best) > 0 do best = sel.specificity
+                    if is_has {
+                        append(&out.has, Has_Arg{lead = lead, sel = sel})
+                        continue
+                    }
+                    tgt := sel.parts[len(sel.parts) - 1]
+                    safe := len(sel.parts) > 1 || tgt.tag != "" || tgt.id != "" ||
+                            len(tgt.classes) > 0 || len(tgt.attrs) > 0 ||
+                            tgt.nth_kind != .None || tgt.empty_req || tgt.never ||
+                            tgt.ui_states != {} || len(tgt.nots) > 0 || tgt.dir_req != .None
+                    if is_not && safe {
+                        append(&out.nots, sel)
+                    } else if keep_or && safe {
+                        append(&group, sel)
+                    } else {
+                        free_selector(&sel)
+                    }
+                    // Não interrompa: args posteriores ainda disputam o máximo,
+                    // inclusive quando o grupo inteiro será rejeitado no matching.
+                    if !safe do group_ok = false
+                }
+                if !is_where {
+                    out.specificity = specificity_add(out.specificity, best)
+                    legacy := specificity_legacy(best)
+                    if is_not do out.nots_spec += legacy
+                    else if is_has do out.has_spec += legacy
+                    else do out.ors_spec += legacy
+                }
+                if keep_or {
+                    if group_ok && len(group) > 0 {
+                        out.ors = group
+                    } else {
+                        out.is_unresolved = true
+                        for &s in group do free_selector(&s)
+                        delete(group)
+                    }
+                }
+                if is_has {
+                    if len(out.has) == group_start do out.never = true
+                    else do out.has[len(out.has) - 1].group_end = true
+                }
+                i = p
+                continue
+            }
+            if double_colon || strings.equal_fold(name, "before") ||
+               strings.equal_fold(name, "after") || strings.equal_fold(name, "first-letter") ||
+               strings.equal_fold(name, "first-line") {
+                out.specificity[2] += 1
+            } else {
+                out.specificity[1] += 1
             }
             // pseudo-classe estrutural (:first-child/:nth-child…): registra e
             // segue parseando o composto (ex.: li:first-child:hover)
@@ -1454,96 +1571,6 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                     else if strings.equal_fold(a, "rtl") do out.dir_req = .Rtl
                     else                                 do out.dir_req = .Never
                 }
-                i = p
-                continue
-            }
-            // :is(a, b)/:where(a, b): o elemento precisa casar ALGUM dos seletores
-            // (completos — combinadores, :not, estruturais). Um argumento é
-            // "seguro" se restringe o alvo (tag/classe/id/atributo/estrutural/
-            // :not) ou tem cadeia de combinadores; args triviais como :is(:hover)
-            // casariam qualquer um → caem no fallback (is_unresolved). :where não
-            // contribui especificidade.
-            if strings.equal_fold(name, "is") || strings.equal_fold(name, "where") ||
-               strings.equal_fold(name, "matches") || strings.equal_fold(name, "-webkit-any") {
-                if len(out.ors) == 0 { // 1 grupo por composto; extras ficam sempre-ativos
-                    // `:is()`/`:where()` VAZIO é válido (forgiving-selector-list) e casa
-                    // NADA — não tudo. O CSS minificado de sites reais emite `:is()`
-                    // quando a lista de origem some (PostCSS/purga); sem tratar isso, o
-                    // composto ficava totalmente vazio e casava TODO elemento, aplicando
-                    // as declarações (ex.: position:absolute) na página inteira → layout
-                    // colapsado (github.com: html/body viravam absolutos, page_h=0).
-                    group: [dynamic]Selector
-                    group_ok := true
-                    best := 0
-                    for part in split_commas_top(arg) {
-                        pt := strings.trim_space(part)
-                        if pt == "" do continue
-                        sel, k2 := parse_complex(pt)
-                        if !k2 { group_ok = false; break }
-                        tgt := sel.parts[len(sel.parts) - 1] // alvo (composto à direita)
-                        safe := len(sel.parts) > 1 || tgt.tag != "" || tgt.id != "" ||
-                                len(tgt.classes) > 0 || len(tgt.attrs) > 0 ||
-                                tgt.nth_kind != .None || tgt.empty_req || tgt.never ||
-                                tgt.ui_states != {} || len(tgt.nots) > 0 ||
-                                tgt.dir_req != .None
-                        if !safe { free_selector(&sel); group_ok = false; break }
-                        if sel.spec > best do best = sel.spec
-                        append(&group, sel)
-                    }
-                    if group_ok && len(group) > 0 {
-                        out.ors = group
-                        out.ors_spec = strings.equal_fold(name, "where") ? 0 : best
-                    } else {
-                        // vazio OU argumento não avaliável: marca para o bloco
-                        // pseudo_only. Sem outra restrição no composto, casa NADA.
-                        out.is_unresolved = true
-                        for &s in group do free_selector(&s)
-                        delete(group)
-                    }
-                }
-                i = p
-                continue
-            }
-            // :not(a, b): guarda os seletores negados (completos — combinadores,
-            // estruturais, atributos). Argumentos triviais (:not(:hover), alvo sem
-            // restrição) são IGNORADOS no MATCHING — negar por eles esconderia a
-            // regra inteira; melhor aproximar como ativa. Mas a ESPECIFICIDADE
-            // deles conta de qualquer forma (ver nots_spec).
-            if strings.equal_fold(name, "not") && arg != "" {
-                for part in split_commas_top(arg) {
-                    pt := strings.trim_space(part)
-                    if pt == "" do continue
-                    sel, k2 := parse_complex(pt)
-                    if !k2 do continue
-                    if sel.spec > out.nots_spec do out.nots_spec = sel.spec
-                    tgt := sel.parts[len(sel.parts) - 1]
-                    safe := len(sel.parts) > 1 || tgt.tag != "" || tgt.id != "" ||
-                            len(tgt.classes) > 0 || len(tgt.attrs) > 0 ||
-                            tgt.nth_kind != .None || tgt.empty_req || tgt.never ||
-                            tgt.ui_states != {} || len(tgt.nots) > 0 ||
-                            tgt.dir_req != .None
-                    if safe {
-                        append(&out.nots, sel)
-                    } else {
-                        free_selector(&sel)
-                    }
-                }
-                i = p
-                continue
-            }
-            // :has(S): seletor relacional. Cada argumento é um seletor relativo
-            // com combinador líder (>/+/~ ou descendente). Avaliado contra o DOM
-            // no motor de estilo (busca da esquerda p/ a direita a partir do nó).
-            if strings.equal_fold(name, "has") && arg != "" {
-                for part in split_commas_top(arg) {
-                    lead, rest := split_leading_combinator(strings.trim_space(part))
-                    if rest == "" do continue
-                    sel, k2 := parse_complex(rest)
-                    if !k2 do continue
-                    if sel.spec > out.has_spec do out.has_spec = sel.spec
-                    append(&out.has, Has_Arg{lead, sel})
-                }
-                if len(out.has) == 0 do out.is_unresolved = true // :has(inválido) → casa nada se solto
                 i = p
                 continue
             }
@@ -1816,29 +1843,28 @@ split_leading_combinator :: proc(s: string) -> (Combinator, string) {
     return .Descendant, t
 }
 
+// Tupla (IDs, classes/atributos/pseudo-classes, tipos/pseudo-elementos).
+// Sem carry entre colunas: onze classes continuam perdendo para um ID.
+specificity_add :: proc(a, b: [3]int) -> [3]int {
+    return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}
+}
+
+specificity_compare :: proc(a, b: [3]int) -> int {
+    for i in 0..<3 {
+        if a[i] < b[i] do return -1
+        if a[i] > b[i] do return 1
+    }
+    return 0
+}
+
+// Projeção histórica para sondas; NÃO usar para decidir a cascata.
+specificity_legacy :: proc(s: [3]int) -> int {
+    return 100 * s[0] + 10 * s[1] + s[2]
+}
+
 @(private)
 compound_spec :: proc(c: Compound) -> int {
-    s := 0
-    if c.id != ""                    do s += 100
-    s += 10 * len(c.classes)
-    s += 10 * len(c.attrs) // seletor de atributo conta como classe
-    if c.nth_kind != .None           do s += 10 // pseudo-classe conta como classe
-    if c.empty_req                   do s += 10 // :empty é pseudo-classe
-    s += 10 * card(c.ui_states)      // :checked/:disabled/… contam como classe
-    // :hover/:focus/:active (e :focus-visible/:focus-within) são pseudo-CLASSES
-    // e valem 10. Não somavam NADA: `a:hover` valia 1, igual a `a` puro, e quem
-    // decidia era a ordem no arquivo — funciona por acidente enquanto o autor
-    // põe o :hover depois, e quebra assim que a concorrente é de classe.
-    if c.state != .None              do s += 10
-    if c.dir_req != .None            do s += 10 // :dir(ltr) é pseudo-classe
-    if c.tag != "" && c.tag != "*"   do s += 1
-    // :not(a, b)/:has(a, b) valem o argumento MAIS ESPECÍFICO, não a soma
-    // (Selectors 4 §17). Com um argumento só as duas contas coincidem — é por
-    // isso que `.x:not(.y)` = 20 passava dos dois lados e servia de controle.
-    s += c.nots_spec
-    s += c.has_spec
-    s += c.ors_spec // :is(A, B) conta o máx dos args (:where = 0)
-    return s
+    return specificity_legacy(c.specificity)
 }
 
 // Parseia um bloco de declarações ("color:red; font-weight:bold").

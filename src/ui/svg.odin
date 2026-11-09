@@ -206,7 +206,7 @@ paint_svg_node :: proc(pt: ^Painter, node: ^dompkg.Node, svg_fg: u32, origin: im
 // Aplica os atributos/estilo de apresentação de `node` sobre `ctx`.
 // Ordem (spec): atributo de apresentação (especificidade ZERO) → regra CSS →
 // style="" do elemento. O style="" já está embutido no valor computado que vem
-// de g_svg_css; relê-lo aqui é redundante mas inofensivo (mesmo vencedor).
+// de svg_css_get (Computed.svg_css); relê-lo aqui é redundante mas inofensivo (mesmo vencedor).
 @(private="file")
 svg_apply :: proc(ctx: SvgCtx, node: ^dompkg.Node, cur: u32, eff: f32) -> SvgCtx {
     c := ctx
@@ -214,10 +214,10 @@ svg_apply :: proc(ctx: SvgCtx, node: ^dompkg.Node, cur: u32, eff: f32) -> SvgCtx
         if v, ok := node.attrs[prop]; ok do svg_set_prop(&c, prop, v, cur, eff)
     }
     // Regra CSS (`.icon path { fill: currentColor }`): vence o ATRIBUTO, que
-    // per-spec tem especificidade zero. Vem de g_svg_css, preenchido na resolução
-    // de estilo (o painter não tem o mapa de estilos). Só o que o nó DECLAROU —
+    // per-spec tem especificidade zero. Vem de Computed.svg_css via svg_css_get,
+    // preenchido na resolução de estilo. Só o que o nó DECLAROU —
     // a herança pela subárvore é o próprio SvgCtx.
-    if e, ok := g_svg_css[node]; ok {
+    if e, ok := svg_css_get(node); ok {
         if e.fill_set {
             c.fill_grad = ""
             if e.fill_none { c.has_fill = false } else { c.fill = col_o(e.fill, eff); c.has_fill = true }

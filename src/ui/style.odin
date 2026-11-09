@@ -93,11 +93,16 @@ Noinherit_Prop :: struct { name, initial: string }
 g_css_unknown: map[string]int
 
 // `fill`/`stroke`/`stroke-width` vindos da CASCATA (regra CSS, não do atributo
-// de apresentação). O painter de SVG (svg.odin) trabalha direto sobre o DOM, sem
-// o mapa de estilos, então guardamos aqui o que cada nó DECLAROU — a HERANÇA pela
-// subárvore continua sendo do painter (SvgCtx desce por <g>/<path>).
-// Esparso: só ganha entrada o nó com alguma das três props. Chaveado por ponteiro
-// de nó, como g_trans, e limpo junto com ele quando um DOM é liberado.
+// de apresentação). Esparso: só o nó que DECLAROU alguma prop ganha um `^Svg_Css`
+// no Computed (a HERANÇA pela subárvore continua sendo do painter, SvgCtx).
+//
+// ⚠️ M246: isto VIVIA num `map[^Node]Svg_Css` de pacote (`g_svg_css`). O runner
+// de teste troca o `context.allocator` a cada @(test) (tracking), o mapa crescia
+// com o alocador de um teste e era `clear`/rehashado com o do seguinte — len=1
+// com iteração vazia, falha em rajadas inclusive a 1 thread. Dono agora é o
+// Computed (mesmo alocador do mapa de estilos, liberado em free_styles). O
+// painter não recebe o mapa: `svg_css_bind` no fim de compute_styles / no
+// js_style_source_set (main thread depois do worker).
 // ── border-image (css-backgrounds-3 §6) ─────────────────────────────────────
 // A imagem é fatiada em 9 (4 cantos + 4 bordas + miolo) e substitui a borda.
 //
@@ -148,9 +153,31 @@ Svg_Css :: struct {
     stop_col_set: bool, stop_col: u32,
     stop_op_set:  bool, stop_op:  f32,
 }
-g_svg_css: map[^dompkg.Node]Svg_Css
 
-svg_css_clear :: proc() { clear(&g_svg_css) }
+// Fonte ATIVA do painter: o mapa de estilos do documento corrente. thread_local
+// pela mesma razão do g_js_styles — o worker de fetch computa estilo numa thread
+// e o paint corre na main; bind é o js_style_source_set, que já é o funil.
+@(thread_local)
+g_svg_css_styles: map[^dompkg.Node]Computed
+@(thread_local)
+g_svg_css_have: bool
+
+svg_css_bind :: proc(styles: map[^dompkg.Node]Computed) {
+    g_svg_css_styles = styles
+    g_svg_css_have = true
+}
+
+svg_css_clear :: proc() {
+    g_svg_css_have = false
+    g_svg_css_styles = {}
+}
+
+svg_css_get :: proc(n: ^dompkg.Node) -> (Svg_Css, bool) {
+    if !g_svg_css_have || n == nil do return {}, false
+    c, ok := g_svg_css_styles[n]
+    if !ok || c.svg_css == nil do return {}, false
+    return c.svg_css^, true
+}
 
 // ── Container queries ────────────────────────────────────────────────────────
 // A condição de `@container` avalia contra a LARGURA do contêiner (ancestral com
@@ -220,7 +247,7 @@ svg_css_len :: proc(tok: string, fs, vw, vh: f32) -> (f32, bool) {
 // resolve contra a cor JÁ computada do próprio elemento (mais correto que o `cur`
 // do painter, que é a cor do <svg> raiz).
 @(private="file")
-collect_svg_css :: proc(n: ^dompkg.Node, comp: ^Computed, decls: map[string]string, vars: map[string]string, vw, vh: f32) {
+collect_svg_css :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]string, vw, vh: f32) {
     e: Svg_Css
     any := false
     paint :: proc(v: string, cur: u32, set, none: ^bool, col: ^u32) -> bool {
@@ -296,7 +323,11 @@ collect_svg_css :: proc(n: ^dompkg.Node, comp: ^Computed, decls: map[string]stri
             e.shape_set = true; e.no_aa = na; e.seg_mul = sm; any = true
         }
     }
-    if any do g_svg_css[n] = e
+    if any {
+        p := new(Svg_Css)
+        p^ = e
+        comp.svg_css = p
+    }
 }
 
 css_prop_is_known :: proc(p: string) -> bool {
@@ -1312,6 +1343,9 @@ Computed :: struct {
     // ::placeholder (M218) — estilo do texto-DICA de <input>/<textarea>. Só `color`
     // e `opacity` são consumidos (é o que decide se a dica aparece e em que cor).
     placeholder: ^Computed,
+    // fill/stroke de REGRA CSS (nil = o painter usa só atributo). NÃO herda.
+    // Alocado só quando o nó declarou alguma prop da família; dono = free_styles.
+    svg_css: ^Svg_Css,
 }
 
 // Junta o conteúdo de todas as tags <style> da página (texto CSS).
@@ -1507,6 +1541,7 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
             c.bg_canvas = true // o paint estende a ÁREA de fundo deste elemento ao canvas
         }
     }
+    svg_css_bind(styles) // painter e os testes lêem daqui, não de um mapa global
     return
 }
 
@@ -1663,6 +1698,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     // aspas default de <q> quando não há prop `quotes`).
     if l, ok := n.attrs["lang"]; ok && l != "" do comp.lang = l
     // estas propriedades não herdam — zera antes de aplicar as deste nó
+    comp.svg_css = nil              // fill/stroke de regra CSS é por-elemento (M246)
     comp.counter_reset_raw = ""     // counter-reset/increment/set não herdam
     comp.counter_increment_raw = ""
     comp.counter_set_raw = ""
@@ -2010,7 +2046,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
             if _, x := kw(merged, "direction");      x do comp.direction      = ini.direction
         }
         resolve_animation(&comp, merged, kf, elem_vars, viewport_w, viewport_h)
-        collect_svg_css(n, &comp, merged, elem_vars, viewport_w, viewport_h)
+        collect_svg_css(&comp, merged, elem_vars, viewport_w, viewport_h)
         delete(merged)
 
         // float/clear LÓGICOS (css-logical): inline-start/end → físico conforme a
@@ -2154,6 +2190,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     child_inherit.after  = nil
     child_inherit.first_letter = nil
     child_inherit.placeholder  = nil
+    child_inherit.svg_css = nil // mesmo motivo dos ^Computed: alias vira double-free
     for c in n.children {
         compute_node(c, child_inherit, elem_vars, rules, idx, styles, viewport_w, viewport_h, kf, noinh)
     }
@@ -2165,11 +2202,14 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
 // Libera os pseudo-elementos (::before/::after) que compute_styles alocou e então
 // o mapa. Usar no lugar de delete(styles) — delete(map) sozinho vaza os ^Computed.
 free_styles :: proc(styles: map[^dompkg.Node]Computed) {
+    // o painter segura um ALIAS deste mapa; soltar antes de liberar os buckets
+    svg_css_clear()
     for _, comp in styles {
         if comp.before != nil { delete(comp.before.content); free(comp.before) }
         if comp.after  != nil { delete(comp.after.content);  free(comp.after)  }
         if comp.first_letter != nil { free(comp.first_letter) }
         if comp.placeholder  != nil { free(comp.placeholder)  }
+        if comp.svg_css != nil { free(comp.svg_css) }
     }
     delete(styles)
 }
@@ -2506,7 +2546,7 @@ when CASCADEPROBE {
 }
 
 collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates: []int, viewport_w: f32, want: csspkg.Pseudo_Kind = .None, state: csspkg.Element_State = .None, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil) -> map[string]string {
-    Win :: struct { spec, order: int, val: string }
+    Win :: struct { spec: Cascade_Priority, order: int, val: string }
     wins := make(map[string]Win, context.temp_allocator)
 
     // Sonda de CASCATA: com `-define:CASCADEPROBE=true` imprime, para o nó cujo
@@ -2543,19 +2583,10 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
     pass, pass_ok := pass_of(want, state)
     filter := pass_ok && masks != nil
 
-    // Prioridade de cascata codificada num int, do mais forte ao mais fraco:
-    //   importância > cascade layer > especificidade > ordem de fonte.
-    //   prio = (important ? IMPORTANT_BOOST : 0) + layer_rank*LAYER_MULT + spec
-    // LAYER_MULT > qualquer spec real (spec = id*100+classe*10+tag, inline=1000);
-    // IMPORTANT_BOOST > qualquer contribuição de layer (layer_rank ≤ 1000). Sem
-    // @layer, todo layer_rank = LAYER_UNLAYERED (constante) → ordenação idêntica à
-    // antiga (zero regressão); COM @layer, sem-layer (1000) vence em-layer (0).
-    LAYER_MULT      :: 100_000
-    IMPORTANT_BOOST :: 1_000_000_000
-
-    consider :: proc(wins: ^map[string]Win, prop: string, spec, order: int, val: string) {
+    // Importância > inline > layer > tupla de especificidade; ordem separada.
+    consider :: proc(wins: ^map[string]Win, prop: string, spec: Cascade_Priority, order: int, val: string) {
         if w, ok := wins[prop]; ok {
-            if spec < w.spec do return
+            if cascade_priority_compare(spec, w.spec) < 0 do return
             if spec == w.spec && order < w.order do return
         }
         wins[prop] = Win{spec, order, val}
@@ -2571,7 +2602,8 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         if !csspkg.media_matches(rule^, viewport_w, vh_mq, g_prefers_dark) do continue
         // @container: avalia contra o CONTÊINER medido (com fallback p/ viewport)
         if rule.cq_active && !container_matches(rule^, n, styles, viewport_w) do continue
-        best  := -1
+        best: [3]int
+        matched := false
         exact := false // algum seletor exato (sem aproximação) casou?
         for sel in rule.selectors {
             if len(sel.parts) == 0 do continue
@@ -2595,56 +2627,56 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             }
             if !accept do continue
             if selector_matches_node(sel, n) {
-                if sel.spec > best do best = sel.spec
+                if !matched || csspkg.specificity_compare(sel.specificity, best) > 0 do best = sel.specificity
+                matched = true
                 if !sel.loose do exact = true
             }
         }
         when CASCADEPROBE {
-            if casc_alvo && best >= 0 {
+            if casc_alvo && matched {
                 for prop, val in rule.decls {
                     if CASCADE_PROP != "" && !strings.contains(prop, CASCADE_PROP) do continue
                     v, imp := csspkg.split_important(val)
-                    p := rule.layer_rank * LAYER_MULT + best
-                    if imp do p += IMPORTANT_BOOST
-                    fmt.eprintfln("[casc]   CASOU  sel=%s  prop=%-16s val=%-20s spec=%d layer=%d imp=%v prio=%d ordem=%d",
+                    p := Cascade_Priority{important = imp, layer = rule.layer_rank, specificity = best}
+                    fmt.eprintfln("[casc]   CASOU  sel=%s  prop=%-16s val=%-20s spec=%v layer=%d imp=%v prio=%v ordem=%d",
                         casc_sel_txt(rule^), prop, v, best, rule.layer_rank, imp, p, rule.order)
                 }
             }
             // regra que NÃO casou mas declara a prop: é o outro lado da pergunta
             // ("por que a regra certa não entrou?"), e sem isto a sonda só mostra
             // metade do funil.
-            if casc_alvo && best < 0 {
+            if casc_alvo && !matched {
                 for prop, val in rule.decls {
                     if CASCADE_PROP != "" && !strings.contains(prop, CASCADE_PROP) do continue
                     fmt.eprintfln("[casc]   nao-casou  sel=%s  prop=%-16s val=%s", casc_sel_txt(rule^), prop, val)
                 }
             }
         }
-        if best < 0 do continue
+        if !matched do continue
         for prop, val in rule.decls {
             // display:none só de seletor exato — evita esconder conteúdo por engano
             if prop == "display" && !exact do continue
             v, imp := csspkg.split_important(val)
-            prio := rule.layer_rank * LAYER_MULT + best
-            consider(&wins, prop, imp ? prio + IMPORTANT_BOOST : prio, rule.order, v)
+            prio := Cascade_Priority{important = imp, layer = rule.layer_rank, specificity = best}
+            consider(&wins, prop, prio, rule.order, v)
         }
     }
     when CASCADEPROBE {
         if casc_alvo {
             for prop, w in wins {
                 if CASCADE_PROP != "" && !strings.contains(prop, CASCADE_PROP) do continue
-                fmt.eprintfln("[casc]   >>> VENCEU %-16s = %-20s prio=%d ordem=%d", prop, w.val, w.spec, w.order)
+                fmt.eprintfln("[casc]   >>> VENCEU %-16s = %-20s prio=%v ordem=%d", prop, w.val, w.spec, w.order)
             }
         }
     }
 
-    // style="" inline: especificidade máxima (só para o próprio elemento)
+    // style="" inline: vence layers dentro da mesma importância (só no próprio elemento)
     if style, ok := n.attrs["style"]; ok && want == .None && state == .None {
         inline := csspkg.parse_decls(style, context.temp_allocator)
         for prop, val in inline {
             v, imp := csspkg.split_important(val)
-            prio := csspkg.LAYER_UNLAYERED * LAYER_MULT + 1000 // inline = sem layer, spec 1000
-            consider(&wins, prop, imp ? prio + IMPORTANT_BOOST : prio, 1 << 30, v)
+            prio := Cascade_Priority{important = imp, inline = true, layer = csspkg.LAYER_UNLAYERED}
+            consider(&wins, prop, prio, 1 << 30, v)
         }
     }
 
@@ -2659,9 +2691,9 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         // guarda ordem por-declaração): `{-webkit-box-sizing:X; box-sizing:Y}`
         // resolve p/ Y, que é o que o autor quer (o prefixado é o fallback).
         // Entre REGRAS diferentes a ordem de fonte decide normalmente.
-        alias :: proc(wins: ^map[string]Win, prop: string, spec, order: int, val: string) {
+        alias :: proc(wins: ^map[string]Win, prop: string, spec: Cascade_Priority, order: int, val: string) {
             if w, ok := wins[prop]; ok {
-                if spec < w.spec do return
+                if cascade_priority_compare(spec, w.spec) < 0 do return
                 if spec == w.spec && order <= w.order do return
             }
             wins[prop] = Win{spec, order, val}
@@ -2784,7 +2816,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             sv := has_s ? ws.val : "auto"
             ev := has_e ? we.val : "auto"
             spec, order := ws.spec, ws.order
-            if !has_s || (has_e && (we.spec > spec || (we.spec == spec && we.order > order))) {
+            if !has_s || (has_e && (cascade_priority_compare(we.spec, spec) > 0 || (we.spec == spec && we.order > order))) {
                 spec, order = we.spec, we.order
             }
             alias(&wins, m.short, spec, order, strings.concatenate({sv, " / ", ev}, context.temp_allocator))
@@ -2983,12 +3015,12 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             }
 
             // Vencedor de cada átomo, calculado ANTES de mexer no mapa.
-            Atomo :: struct { chave, val: string }
+            Atomo :: struct { chave: string, winner: Win }
             atomos := make([dynamic]Atomo, 0, 12, context.temp_allocator)
             for l, li in LADOS {
             for s in SUBS {
                 chave := strings.concatenate({"border-", l, "-", s}, context.temp_allocator)
-                best  := Win{-1, -1, ""}
+                best  := Win{order = -1}
                 // ⚠️⚠️ EMPATE: `>=` na ordem, não `>`. Declarações do MESMO bloco —
                 // e todo o `style=""` inline é um bloco só — chegam com spec E
                 // ordem IGUAIS, porque o `wins` não guarda ordem por-declaração.
@@ -3001,7 +3033,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
                 // Pego pelo WPT auto-fill-auto-size-001-print, onde a caixa passou
                 // de 0 para 20px de altura por causa da borda que devia ser `none`.
                 melhor :: proc(best: ^Win, w: Win, val: string) {
-                    if w.spec > best.spec || (w.spec == best.spec && w.order >= best.order) {
+                    if best.order < 0 || cascade_priority_compare(w.spec, best.spec) > 0 || (w.spec == best.spec && w.order >= best.order) {
                         best^ = Win{w.spec, w.order, val}
                     }
                 }
@@ -3015,12 +3047,12 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
                     if v, k := item4(w.val, li); k do melhor(&best, w, v)
                 }
                 if w, ok := wins[chave]; ok do melhor(&best, w, w.val)
-                if best.spec >= 0 do append(&atomos, Atomo{chave, best.val})
+                if best.order >= 0 do append(&atomos, Atomo{chave, best})
             }
             }
-            // prio de SENTINELA: o átomo já É o vencedor da cascata; nada depois
-            // pode reabrir a disputa (o `wins` só é lido pelo valor daqui p/ frente).
-            for a in atomos do wins[a.chave] = Win{1 << 30, 1 << 30, a.val}
+            // Preserva a prioridade real do vencedor; o pairwise pula a família
+            // já resolvida, sem precisar de uma prioridade sentinela artificial.
+            for a in atomos do wins[a.chave] = a.winner
         }
     }
 
@@ -3099,10 +3131,10 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
                 l, ok2 := wins[lh]
                 if !ok2 do continue
                 // vence quem tem prioridade maior; empate desempata por ordem de fonte
-                if w.spec > l.spec || (w.spec == l.spec && w.order > l.order) {
+                if cascade_priority_compare(w.spec, l.spec) > 0 || (w.spec == l.spec && w.order > l.order) {
                     when CASCADEPROBE {
                         if probe {
-                            fmt.eprintfln("[casc]   xxx APAGOU %-22s = %-20s (prio=%d ordem=%d) — perdeu p/ %s = %s (prio=%d ordem=%d)",
+                            fmt.eprintfln("[casc]   xxx APAGOU %-22s = %-20s (prio=%v ordem=%d) — perdeu p/ %s = %s (prio=%v ordem=%d)",
                                 lh, l.val, l.spec, l.order, p.sh, w.val, w.spec, w.order)
                         }
                     }
@@ -7111,8 +7143,13 @@ compound_matches_node :: proc(c: csspkg.Compound, n: ^dompkg.Node) -> bool {
         }
         if !any_match do return false
     }
-    for h in c.has { // :has(S): precisa existir algo casando o seletor relativo
-        if !has_matches(n, h.lead, h.sel) do return false
+    has_group_match := false
+    for h, i in c.has { // OR dentro de uma chamada; AND entre chamadas de :has().
+        if !has_group_match do has_group_match = has_matches(n, h.lead, h.sel)
+        if h.group_end || i == len(c.has) - 1 {
+            if !has_group_match do return false
+            has_group_match = false
+        }
     }
     return true
 }

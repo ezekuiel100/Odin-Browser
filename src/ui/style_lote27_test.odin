@@ -2,8 +2,8 @@ package ui
 
 // Lote 27 — `all: initial|unset|revert` (7 sites no gap-miner).
 // A parte SVG do lote 27 (fill-opacity/stroke-*/fill-rule) ficou em
-// style_lote23_test.odin: TODO teste que toca o global g_svg_css precisa morar no
-// MESMO @(test), senão os procs correm em paralelo e um lê a entrada do outro.
+// style_lote23_test.odin: a família de pintura SVG (fill-opacity/…) mora lá
+// porque é o mesmo caminho (Computed.svg_css), não por causa de um global.
 
 import "core:testing"
 import htmlp "../html"

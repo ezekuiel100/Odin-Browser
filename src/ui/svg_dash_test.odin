@@ -8,8 +8,7 @@ package ui
 // padrão dos helpers `test_clip_hit`/`test_mask_alpha`.
 //
 // As afirmações da ponte CSS (`stroke-dasharray` vindo de REGRA) NÃO moram aqui:
-// tocam o global `g_svg_css` e por isso vivem no @(test) único de
-// style_lote23_test.odin.
+// vivem em style_lote23_test.odin (mesmo caminho Computed.svg_css).
 
 import "core:testing"
 import "core:math"

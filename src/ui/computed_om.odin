@@ -80,9 +80,11 @@ js_style_source_set :: proc(styles: map[^dompkg.Node]Computed, layout: ^Box, vw,
     g_js_laid_out = laid_out
     if g_js_boxes_ok { clear(&g_js_boxes) } // índice velho aponta p/ caixas liberadas
     g_js_boxes_ok = false
+    svg_css_bind(styles) // paint de SVG na main thread depois do worker
 }
 
 js_style_source_clear :: proc() {
+    svg_css_clear()
     g_js_styles = nil
     g_js_layout = nil
     g_js_have   = false

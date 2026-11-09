@@ -60,8 +60,8 @@ num_attr :: proc(n: ^dompkg.Node, name: string, def: f32) -> f32 {
 }
 
 // Lê um `<stop>`: `offset`, `stop-color`, `stop-opacity` — do ATRIBUTO, do
-// `style=` e da REGRA CSS (g_svg_css, que é o caminho pelo qual as duas props
-// chegam quando o autor as declara numa folha de estilo).
+// `style=` e da REGRA CSS (Computed.svg_css / svg_css_get, o caminho pelo qual
+// as duas props chegam quando o autor as declara numa folha de estilo).
 @(private = "file")
 read_stop :: proc(n: ^dompkg.Node, cur: u32) -> Svg_Stop {
     s := Svg_Stop{off = num_attr(n, "offset", 0), col = 0x000000, op = 1}
@@ -78,7 +78,7 @@ read_stop :: proc(n: ^dompkg.Node, cur: u32) -> Svg_Stop {
     if v, ok := n.attrs["stop-color"];   ok do set_one(&s, "stop-color", v, cur)
     if v, ok := n.attrs["stop-opacity"]; ok do set_one(&s, "stop-opacity", v, cur)
     // regra CSS vence o atributo (que tem especificidade zero, per spec)
-    if e, ok := g_svg_css[n]; ok {
+    if e, ok := svg_css_get(n); ok {
         if e.stop_col_set do s.col = e.stop_col
         if e.stop_op_set  do s.op  = e.stop_op
     }

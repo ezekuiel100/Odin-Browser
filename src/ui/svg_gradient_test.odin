@@ -134,7 +134,7 @@ test_m225_coleta_atributos :: proc(t: ^testing.T) {
 @(test)
 test_m225_stop_color_por_REGRA_CSS :: proc(t: ^testing.T) {
     // É o caso que dá nome ao marco: as duas props declaradas em FOLHA, não em
-    // atributo. Passam pela ponte g_svg_css (a mesma do fill/stroke).
+    // atributo. Passam por Computed.svg_css (a mesma ponte do fill/stroke).
     collect(`<svg><defs><linearGradient id="g">
         <stop class="a" offset="0"/><stop class="b" offset="1"/>
       </linearGradient></defs><rect fill="url(#g)"/></svg>`,

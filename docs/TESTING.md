@@ -66,9 +66,11 @@ Cada linha abaixo custou pelo menos uma conclusão errada.
 
 ## Flake conhecido
 
-`test_svg_css_paint` (`src/ui`) falha **em rajadas**, inclusive com uma thread só.
-Já houve sequências de 20/20 falhas e, minutos depois, verde duas vezes seguidas.
-Foi reproduzido numa árvore com o código suspeito revertido, então **não é da
-mudança que você está fazendo** — confirme nas duas árvores antes de investigar.
-Sintoma: `len(g_svg_css) == 1` mas iterar o mapa não produz chave nenhuma.
-Suspeita não confirmada: uso-depois-de-liberado de nó de DOM.
+Nenhum, neste momento.
+
+`test_svg_css_paint` **foi** o flake (rajadas inclusive a 1 thread: `len(g_svg_css)==1`
+e a iteração do mapa vazia). Causa: mapa global chaveado por `^Node`, alocado com o
+`context.allocator` do teste — o runner troca o tracking allocator a cada `@(test)`,
+o rehash/clear usava o alocador errado e o header (`len`) dessincronizava dos
+buckets. M246 moveu o dado para `Computed.svg_css` (dono = `free_styles`); o
+portão é `test_svg_css_dono_e_o_computed` (50 passadas + free_styles pai/filho).
