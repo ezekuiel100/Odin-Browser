@@ -12,8 +12,8 @@
 #       .\gap-miner.ps1 -Sites minha.txt    (corpus alternativo)
 #       .\gap-miner.ps1 -TimeoutSec 120 -Top 40
 #
-# Saidas: gap-mine\*.json (1 por site) + gap-mine\logs\*.log (stderr de cada um)
-#         gap-report.md   (relatorio agregado, rankings completos)
+# Saidas: _local\gap-mine\*.json + _local\gap-mine\logs\*.log
+#         _local\reports\gap-report.md (relatorio agregado)
 #
 # AVISO (ver memoria M73): o Defender pode quarentenar um browser.exe recem-
 # buildado apos as primeiras conexoes HTTPS. O minerador detecta o sumico do
@@ -32,9 +32,9 @@ $ErrorActionPreference = "Stop"
 
 $root    = $PSScriptRoot
 $browser = Join-Path $root "browser.exe"
-$mineDir = Join-Path $root "gap-mine"
+$mineDir = Join-Path $root "_local\gap-mine"
 $logDir  = Join-Path $mineDir "logs"
-$report  = Join-Path $root "gap-report.md"
+$report  = Join-Path $root "_local\reports\gap-report.md"
 if (-not $Sites) { $Sites = Join-Path $root "tools\sites.txt" }
 
 if (-not $Aggregate) {
@@ -49,6 +49,7 @@ if (-not $Aggregate) {
 }
 New-Item -ItemType Directory -Force -Path $mineDir | Out-Null
 New-Item -ItemType Directory -Force -Path $logDir  | Out-Null
+New-Item -ItemType Directory -Force -Path (Split-Path $report -Parent) | Out-Null
 
 # URL -> nome de arquivo seguro e estavel (mesma URL = mesmo json; -Resume usa isso)
 function Safe-Name($url) {

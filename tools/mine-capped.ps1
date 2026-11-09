@@ -44,7 +44,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
 if (-not $Browser) { $Browser = Join-Path $root "browser.exe" }
-if (-not $Out)     { $Out     = Join-Path $root "gap-mine" }
+if (-not $Out)     { $Out     = Join-Path $root "_local\gap-mine" }
 if (-not $Sites)   { $Sites   = Join-Path $root "tools\sites-short.txt" }
 
 if (-not (Test-Path $Browser)) { Write-Host "browser nao encontrado: $Browser" -ForegroundColor Red; exit 1 }

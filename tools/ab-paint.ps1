@@ -48,7 +48,7 @@ param(
 $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Sites) { $Sites = Join-Path $root "tools\sites-short.txt" }
-if (-not $Out)   { $Out   = Join-Path $root "ab-paint" }
+if (-not $Out)   { $Out   = Join-Path $root "_local\ab-paint" }
 foreach ($exe in @($A, $B)) {
     if (-not (Test-Path $exe)) { Write-Host ("binario nao encontrado: " + $exe); exit 1 }
 }

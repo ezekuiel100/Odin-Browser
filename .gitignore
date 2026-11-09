@@ -1,7 +1,6 @@
 # ─────────────────────────── Binários e artefatos de build ───────────────────
-# O build sai como browser.exe na raiz, e cada marco deixa ao lado um binário de
-# A/B (browser_m245.exe, browser_pre_m242.exe, browser_ctl244.exe…). São ~500 MB
-# de coisa regenerável, e o hash do Odin nem é reproduzível entre builds.
+# O build atual sai como browser.exe na raiz. Binários antigos e de comparação
+# ficam em _local/builds/; o hash do Odin não é reproduzível entre builds.
 *.exe
 *.dll
 *.lib

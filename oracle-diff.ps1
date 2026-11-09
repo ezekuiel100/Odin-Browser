@@ -2,7 +2,7 @@
 #
 # Para cada URL do corpus: renderiza no Chrome headless (referencia) e no nosso
 # browser.exe --render, na MESMA largura, e mede a diferenca via --imgdiff.
-# Ranqueia as piores paginas por dano visual -> oracle-report.md.
+# Ranqueia as piores paginas por dano visual -> _local/reports/oracle-report.md.
 #
 # Uso:  .\oracle-diff.ps1 [-Corpus sites.txt] [-Width 1440] [-Height 900] [-Limit 0]
 #
@@ -49,7 +49,7 @@ if (-not (Test-Path $corpusPath)) { Write-Error "corpus nao encontrado: $corpusP
 $urls = Get-Content $corpusPath -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and -not $_.StartsWith("#") }
 if ($Limit -gt 0) { $urls = $urls | Select-Object -First $Limit }
 
-$outDir = Join-Path $root "oracle-shots"
+$outDir = Join-Path $root "_local\oracle-shots"
 $ourDir = Join-Path $outDir "ours"
 $logDir = Join-Path $outDir "logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
@@ -135,7 +135,8 @@ foreach ($r in $valid) {
 foreach ($r in $invalid) {
     [void]$sb.AppendLine(("| {0} | {1:N0} | {2} |" -f $r.status, $r.blank, $r.url))
 }
-$reportPath = Join-Path $root "oracle-report.md"
+$reportPath = Join-Path $root "_local\reports\oracle-report.md"
+New-Item -ItemType Directory -Force -Path (Split-Path $reportPath -Parent) | Out-Null
 $sb.ToString() | Out-File -FilePath $reportPath -Encoding UTF8
 Write-Host ""
 Write-Host "Relatorio: $reportPath"

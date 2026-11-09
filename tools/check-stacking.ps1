@@ -1,7 +1,8 @@
-param([string]$Browser = ".\browser_stack.exe")
+param([string]$Browser = "")
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 $root = Split-Path $PSScriptRoot -Parent
+if (-not $Browser) { $Browser = Join-Path $root "browser.exe" }
 $outDir = Join-Path $root "tests/paint/_out"
 if (!(Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
 $png = Join-Path $outDir "stacking-result.png"

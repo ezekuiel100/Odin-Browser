@@ -115,6 +115,18 @@ armadilhas que já produziram conclusões falsas — estão em
 
 ## Como o código é organizado
 
+Na raiz ficam a entrada `main.odin`, os comandos de build e teste e os arquivos
+de referência. O executável atual `browser.exe` e sua `SDL2.dll` também ficam
+aqui, junto de `bookmarks.txt` e `imgui.ini` (dados locais do usuário).
+
+Artefatos locais ficam em `_local/`, ignorado pelo Git: `builds/` guarda
+executáveis antigos e de comparação, `reports/` guarda logs e relatórios,
+`screenshots/` guarda capturas e `scratch/` guarda experimentos avulsos.
+As ferramentas de diagnóstico gravam em `_local/gap-mine/`,
+`_local/oracle-shots/` e `_local/ab-paint/`. A captura F9 continua gerando
+`capture.png` na pasta de trabalho; as suítes mantêm suas saídas em `tests/*/_out/`.
+Para comparar com um build arquivado, use `-Browser .\_local\builds\<nome>.exe`.
+
 `src/net` → `src/html` → `src/dom` → `src/css` → `src/ui` (cascata, layout,
 pintura, chrome) e `src/js` (o motor JavaScript, que **não pode** importar
 `src/ui`). O mapa dos pacotes e as duas armadilhas que vale conhecer antes de
