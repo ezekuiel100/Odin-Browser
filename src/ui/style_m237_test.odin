@@ -182,7 +182,8 @@ test_m237_fallback_no_mesmo_bloco :: proc(t: ^testing.T) {
     testing.expectf(t, c.has_width && c.width == 300, "fallback de width; veio has=%v w=%v", c.has_width, c.width)
 
     c2 := test_compute_one(".i{width: 300px; width: fit-content}", "div", "i")
-    testing.expectf(t, c2.has_width && c2.width == 300, "fit-content (não implementado p/ width) não pode apagar; veio %v", c2.width)
+    testing.expect(t, c2.width_mc && c2.width_fit && !c2.has_width,
+        "fit-content agora implementado deve substituir a largura de fallback")
 
     c3 := test_compute_one(".i{width: 100px; width: bogus}", "div", "i")
     testing.expectf(t, c3.has_width && c3.width == 100, "valor sem sentido não pode apagar; veio has=%v w=%v", c3.has_width, c3.width)

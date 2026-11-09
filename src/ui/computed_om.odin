@@ -466,6 +466,8 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
         }
         return "400"
     case "font-style":  return c.italic ? "italic" : "normal"
+    case "font-kerning":
+        switch c.font_kerning { case .Auto: return "auto"; case .Normal: return "normal"; case .None: return "none" }
     case "font-family":
         // degradação #3: a cascata guarda só a família GENÉRICA
         switch c.font_family {
@@ -561,6 +563,9 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
             return px(b.content_w)
         }
         if c.has_width && !c.width_pct do return px(c.width)
+        if c.width_minc do return "min-content"
+        if c.width_fit do return "fit-content"
+        if c.width_mc do return "max-content"
         return "auto"
     case "height":
         if b := box_of(node); b != nil {

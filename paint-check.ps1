@@ -957,6 +957,41 @@ try {
     $bmp17.Dispose()
 }
 
+# ---------------------------------------------------------------- caso 18
+# A leitura de kerning precisa atravessar GPOS ExtensionPos das fontes Windows.
+# Compara tanto a tinta quanto o fundo dimensionado por width:max-content:
+# corrigir so a MEDIDA ou so a PINTURA faz as diferencas divergirem.
+$fixture18 = Join-Path $PSScriptRoot "tests\paint\kerning.html"
+$png18 = Join-Path $outDir "kerning.png"
+if (Test-Path $png18) { Remove-Item -LiteralPath $png18 -Force }
+& $Browser --render $fixture18 $png18 600 280 0 0 3 | Out-Null
+if (-not (Test-Path $png18)) { Write-Host "FAIL kerning: sem PNG"; exit 1 }
+$bmp18 = New-Object System.Drawing.Bitmap $png18
+try {
+    function FimDoFundo($bmp, $y) {
+        for ($x = $bmp.Width-1; $x -ge 0; $x--) {
+            $p = $bmp.GetPixel($x, $y)
+            if ($p.R -eq 219 -and $p.G -eq 234 -and $p.B -eq 254) { return $x }
+        }
+        return -1
+    }
+    Write-Host ""
+    Write-Host "kerning (GPOS ExtensionPos, medida e pintura)"
+    foreach ($row in @(0,2)) {
+        $normalInk = FimDaTinta $bmp18 ($row*64) ($row*64+63)
+        $noneInk = FimDaTinta $bmp18 (($row+1)*64) (($row+1)*64+63)
+        $normalBg = FimDoFundo $bmp18 ($row*64+2)
+        $noneBg = FimDoFundo $bmp18 (($row+1)*64+2)
+        $family = if ($row -eq 0) { "Segoe UI" } else { "Segoe UI + letter-spacing" }
+        Assert "$family normal reduz o avanco visivel vs none" `
+            ($normalInk -gt 100 -and $noneInk -gt $normalInk+4) `
+            ("normal="+$normalInk+", none="+$noneInk)
+        Assert "$family medida e pintura aplicam o mesmo ajuste" `
+            ($normalBg -gt 100 -and $noneBg -gt $normalBg+4 -and [math]::Abs(($noneBg-$normalBg)-($noneInk-$normalInk)) -le 1) `
+            ("delta fundo="+($noneBg-$normalBg)+", delta tinta="+($noneInk-$normalInk))
+    }
+} finally { $bmp18.Dispose() }
+
 if (-not $Keep) { Remove-Item -Recurse -Force $outDir -ErrorAction SilentlyContinue }
 
 Write-Host ""

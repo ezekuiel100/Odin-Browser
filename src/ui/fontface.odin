@@ -550,6 +550,7 @@ fontface_poll :: proc() -> bool {
     // sobrevivem e que a face nova rasteriza depois disto.
     imgui_sdlr.DestroyFontsTexture()
     if !im.FontAtlas_Build(io.Fonts) do return false
+    text_metrics_clear()
     imgui_sdlr.CreateFontsTexture()
     // Razão em-square das faces novas: só AGORA, com o atlas construído, o
     // avanço do glifo existe para ser medido (ver em_ratio_medido).

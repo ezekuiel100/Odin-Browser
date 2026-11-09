@@ -65,6 +65,7 @@ paint_canvas :: proc(pt: ^Painter, s: ^State, b: ^Box, origin: im.Vec2, dw, dh: 
                 col     = col_o(cmd.color, eff),
                 text    = cmd.text,
                 spacing = 0,
+                kerning = .None, // canvas mede pelo avanço do atlas, sem kerning
             })
 
         case .Draw_Image:

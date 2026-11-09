@@ -394,7 +394,7 @@ css_prop_is_known :: proc(p: string) -> bool {
          "all",
          "contain","will-change","offset-path","offset-distance","offset-rotate",
          "background-clip","-webkit-background-clip","background-origin","background-attachment","-webkit-text-fill-color",
-         "letter-spacing","word-spacing","text-indent","text-transform","white-space","content",
+         "font-kerning","letter-spacing","word-spacing","text-indent","text-transform","white-space","content",
          "overflow-wrap","word-wrap","word-break","text-overflow",
          "-webkit-line-clamp","line-clamp","-webkit-box-orient",
          "list-style","list-style-type","list-style-position","list-style-image",
@@ -402,7 +402,7 @@ css_prop_is_known :: proc(p: string) -> bool {
          // justify/scroll-chaining/ajuste-de-fonte): recognize-only, p/ não poluírem
          // o relatório de props desconhecidas. Comportamento real fica p/ o futuro.
          "image-rendering","hyphens","-webkit-hyphens","touch-action","text-justify",
-         "font-kerning","font-feature-settings","font-variation-settings","font-optical-sizing",
+         "font-feature-settings","font-variation-settings","font-optical-sizing",
          "overscroll-behavior","overscroll-behavior-x","overscroll-behavior-y",
          "overscroll-behavior-block","overscroll-behavior-inline",
          "text-size-adjust","-webkit-text-size-adjust","color-scheme",
@@ -1027,6 +1027,7 @@ Computed :: struct {
     has_font_family: bool, // este elemento definiu font-family? (idem)
     text_transform: Text_Transform, // maiúsculas/minúsculas/capitalizar (herda)
     letter_spacing: f32, // espaço extra entre glifos em px (herda; 0 = normal)
+    font_kerning: Font_Kerning, // herda; auto/normal usam os pares da face
     word_spacing:   f32,  // word-spacing: px extra em cada espaço entre palavras (herda; 0 = normal)
     // text-wrap: balance — HERDA (prop de texto), então NÃO entra no bloco de reset
     // das não-herdadas. `pretty`/`stable` seguem inertes (algoritmo diferente).
@@ -1101,8 +1102,8 @@ Computed :: struct {
     maxh_pct: f32, has_maxh_pct: bool, maxh_pct_off: f32,
     height_mc:  bool, // height: min/max/fit-content — altura intrínseca (NÃO auto → sem stretch)
     width_mc:   bool, // width: min/max/fit-content — largura intrínseca (resolve p/ measure_intrinsic_w; NÃO auto → sem stretch)
-    width_minc: bool, // ...e era MIN-content: a única diferença observável hoje é a
-                      // trilha `fr` de um grid não receber contribuição de item com span
+    width_minc: bool, // usa oportunidades de quebra na medida intrínseca
+    width_fit: bool,  // limita max-content ao disponível, respeitando min-content
     maxh:       f32,  has_maxh:  bool,  // só px (% de altura é ignorado, como height)
     minh:       f32,  has_minh:  bool,
     minh_mc:    bool, // min-height: min/max-content (teto = altura natural do conteúdo)
@@ -1735,6 +1736,8 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.maxw_bd = {}; comp.minh_bd = {}; comp.maxh_bd = {}
     comp.height_mc = false
     comp.width_mc = false
+    comp.width_minc = false
+    comp.width_fit = false
     comp.has_maxh = false
     comp.has_minh = false
     comp.minh_mc = false
@@ -2038,6 +2041,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
             if _, x := kw(merged, "line-height");    x do comp.line_height    = ini.line_height
             if _, x := kw(merged, "text-align");     x do comp.text_align     = ini.text_align
             if _, x := kw(merged, "letter-spacing"); x do comp.letter_spacing = ini.letter_spacing
+            if _, x := kw(merged, "font-kerning"); x do comp.font_kerning = ini.font_kerning
             if _, x := kw(merged, "word-spacing");   x do comp.word_spacing   = ini.word_spacing
             if _, x := kw(merged, "white-space");    x do comp.white_space    = ini.white_space
             if _, x := kw(merged, "visibility");     x do comp.invisible      = ini.invisible
@@ -4090,6 +4094,7 @@ apply_decls :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]
         if saw_size {
             if _, tem := decls["font-style"];  !tem do comp.italic = sh_italic
             if _, tem := decls["font-weight"]; !tem do comp.weight = sh_weight
+            if _, tem := decls["font-kerning"]; !tem do comp.font_kerning = .Auto
         }
         // TAMANHO e LINE-HEIGHT do shorthand (`font: [estilo] <size>[/<lh>] <familia>`).
         // Antes só o itálico e a família saíam daqui: `body{font:16px/1.5 sans-serif}`
@@ -4489,6 +4494,14 @@ apply_decls :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]
         if px, _, k := parse_len(resolve_var(v, vars), fs, vw, vh); k do comp.outline_off = px
     }
 
+    if v, ok := decls["font-kerning"]; ok {
+        switch strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator) {
+        case "auto":   comp.font_kerning = .Auto
+        case "normal": comp.font_kerning = .Normal
+        case "none":   comp.font_kerning = .None
+        }
+    }
+
     if v, ok := decls["width"]; ok {
         rvw := resolve_var(v, vars)
         // forma linear `pct*base + off`: cobre px puro, % puro e calc misto
@@ -4497,21 +4510,17 @@ apply_decls :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]
             if pc != 0 { comp.width = pc; comp.width_pct = true; comp.width_pct_off = off; comp.width_bd = bd }
             else       { comp.width = off; comp.width_pct = false; comp.width_pct_off = 0; comp.width_bd = {} }
             comp.has_width = true
+            comp.width_mc = false; comp.width_minc = false; comp.width_fit = false
         }
         else {
-            // max/min-content: largura intrínseca (resolvida p/ measure_intrinsic_w
-            // no layout). NÃO é `auto` → item flex/grid com ela não estica.
-            // ⚠️ fit-content FICA DE FORA de propósito: difere de max-content (limita
-            // ao disponível / envolve, não transborda). Tratá-lo como max-content
-            // regrediria sites reais; melhor manter o comportamento anterior (auto)
-            // até haver a resolução própria de fit-content. min-content é aproximado
-            // como max-content (sem teste que exija a distinção).
+            // Keywords intrínsecas não são auto: flex/grid não devem esticá-las.
             lv := strings.to_lower(strings.trim_space(rvw), context.temp_allocator)
-            if lv == "max-content" || lv == "min-content" do comp.width_mc = true
-            // A DISTINÇÃO importa num caso só (por isso ela nasceu tarde): num grid,
-            // uma trilha `fr` NÃO recebe a contribuição de um item que faz span sob
-            // min-content, e recebe sob max-content. Ver grid_intrinsic_w.
-            if lv == "min-content" do comp.width_minc = true
+            if lv == "max-content" || lv == "min-content" || lv == "fit-content" || lv == "auto" {
+                comp.has_width = false; comp.width_pct = false
+                comp.width_mc = lv != "auto"
+                comp.width_minc = lv == "min-content"
+                comp.width_fit = lv == "fit-content"
+            }
         }
     }
     if v, ok := decls["max-width"]; ok {
@@ -7981,6 +7990,8 @@ css_supports_decl :: proc(prop: string, value: string) -> bool {
     if value_has_unsupported_unit(v) do return false
     if value_has_unsupported_fn(v) do return false
     switch prop {
+    case "font-kerning":
+        return v == "auto" || v == "normal" || v == "none" || v == "inherit" || v == "initial" || v == "unset"
     case "display":
         // Espelha o switch de `display` em apply_decls: o que não está lá NÃO
         // gera o modo de caixa (list-item, ruby, math, `inline flow-root`…).

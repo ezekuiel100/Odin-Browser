@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Typography and intrinsic sizing regression</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 24px; font: 16px sans-serif; color: #172033; background: white; }
+h1 { font-size: 24px; }
+h2 { margin: 24px 0 8px; font-size: 18px; }
+.sample { font: 48px "Segoe UI", sans-serif; white-space: nowrap; }
+.normal { font-kerning: normal; }
+.none { font-kerning: none; }
+.track { letter-spacing: 2px; }
+.container { width: 220px; margin-bottom: 8px; border: 1px solid #94a3b8; }
+.sized { background: #dbeafe; padding: 4px 8px; font: 20px monospace; }
+.min { width: min-content; }
+.max { width: max-content; }
+.fit { width: fit-content; }
+.wide { width: 600px; }
+.grid { display: grid; grid-template-columns: 220px; gap: 8px; }
+.column { display: flex; flex-direction: column; width: 220px; gap: 8px; }
+.position { position: relative; width: 300px; height: 120px; background: #e2e8f0; }
+.absolute { position: absolute; left: 10px; right: 20px; top: 15px; width: 40px;
+  height: 40px; margin-left: auto; margin-right: 7px; background: #2563eb; }
+.fixed-margins { margin-left: 9px; margin-top: 5px; background: #dc2626; }
+</style>
+<h1>Tipografia e dimensionamento</h1>
+<h2>Kerning: a primeira linha deve ficar menor</h2>
+<div class="sample normal">AVATAR To WA</div>
+<div class="sample none">AVATAR To WA</div>
+<div class="sample normal track">AVATAR To WA</div>
+<h2>min-content, max-content e fit-content</h2>
+<div class="container"><div class="sized min">alpha beta gamma</div></div>
+<div class="container"><div class="sized max">alpha beta gamma</div></div>
+<div class="container"><div class="sized fit">alpha beta gamma</div></div>
+<div class="container wide"><div class="sized fit">alpha beta gamma</div></div>
+<h2>As mesmas larguras em grid e flex de coluna</h2>
+<div class="grid"><div class="sized min">alpha beta gamma</div><div class="sized fit">alpha beta gamma</div></div>
+<div class="column"><div class="sized min">alpha beta gamma</div><div class="sized fit">alpha beta gamma</div></div>
+<h2>Absolutos: azul x=233; vermelho x=19, y=20 (relativos ao pai)</h2>
+<div class="position"><div class="absolute"></div><div class="absolute fixed-margins"></div></div>

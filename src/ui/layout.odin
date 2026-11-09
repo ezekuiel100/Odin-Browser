@@ -304,6 +304,7 @@ Box :: struct {
     maxh_pct: f32, has_maxh_pct: bool, maxh_pct_off: f32,
     height_mc: bool, // height:min/max/fit-content (intrínseca; não estica em flex/grid)
     width_mc: bool,  // width:min/max/fit-content (largura intrínseca = measure_intrinsic_w)
+    width_fit: bool,
     width_minc: bool, // ...e era especificamente `min-content` (muda a fr num grid; ver grid_intrinsic_w)
     aspect: f32, // aspect-ratio (largura/altura); deriva a dimensão auto
     has_maxh: bool, maxh: f32,
@@ -480,6 +481,7 @@ Box :: struct {
     edit_em:       f32,          // razão em-square da face do edit_font (ver render_px)
 
     // inline formatting context
+    font_kerning: Font_Kerning,
     is_inline: bool,
     strut:     f32, // altura mínima da caixa-linha (fonte própria do bloco × line-height)
     is_table:  bool,
@@ -514,6 +516,7 @@ Inline_Item :: struct {
     em: f32,
     lh: f32, // multiplicador de altura de linha
     letter_spacing: f32, // px extra entre glifos (0 = normal)
+    font_kerning: Font_Kerning,
     deco: Deco, // text-decoration (line/color/style/thickness) que cobre este item
     valign: V_Align,    // vertical-align dentro da linha
     space_before: bool, // havia whitespace antes deste item no fluxo?
@@ -554,7 +557,7 @@ Inline_Item :: struct {
     draw_bytes: int,
 }
 
-Inline_Style :: struct { size: f32, weight: Font_Weight, italic: bool, color: u32, href: string, deco: Deco, lh: f32, family: Font_Family, fam_id: u8, letter_spacing: f32, ttx: Text_Transform, valign: V_Align, break_word: bool, tab_size: int }
+Inline_Style :: struct { size: f32, weight: Font_Weight, italic: bool, color: u32, href: string, deco: Deco, lh: f32, family: Font_Family, fam_id: u8, letter_spacing: f32, ttx: Text_Transform, valign: V_Align, break_word: bool, tab_size: int, font_kerning: Font_Kerning }
 
 // ── Construção da árvore ─────────────────────────────────────────────────────
 
@@ -733,7 +736,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
             // strut: caixa-linha tem no mínimo a altura da fonte PRÓPRIA do bloco ×
             // line-height (CSS §10.8), mesmo que o conteúdo seja menor (ex.: font-size:0).
             b.strut = eff_size * (comp.line_height > 0 ? comp.line_height : 1.3)
-            st := Inline_Style{eff_size, eff_weight, eff_ital, eff_color, "", deco_of(comp), comp.line_height, eff_family, comp.font_fam_id, comp.letter_spacing, comp.text_transform, .Baseline, comp.break_word || comp.break_all, comp.tab_size}
+            st := Inline_Style{eff_size, eff_weight, eff_ital, eff_color, "", deco_of(comp), comp.line_height, eff_family, comp.font_fam_id, comp.letter_spacing, comp.text_transform, .Baseline, comp.break_word || comp.break_all, comp.tab_size, comp.font_kerning}
             pending, started := false, false
             build_inline_items(node, &b.inlines, styles, st, base, &pending, &started, eff_ws, root = true, grads = &b.inline_grads)
             coalesce_words(&b.inlines)
@@ -875,7 +878,7 @@ build_first_letter_box :: proc(pc: ^Computed, text: string, base: string) -> ^Bo
         font = font, fsize = pc.font_size, scale = scale, em = fem,
         color = pc.color != 0 ? pc.color : DEFAULT_TEXT,
         lh = pc.line_height > 0 ? pc.line_height : 1.3,
-        letter_spacing = pc.letter_spacing,
+        letter_spacing = pc.letter_spacing, font_kerning = pc.font_kerning,
     }
     append(&pb.inlines, it)
     return pb
@@ -892,7 +895,7 @@ pseudo_inline_word :: proc(pc: Computed) -> Inline_Item {
         font = font, fsize = pc.font_size, scale = scale, em = fem,
         color = pc.color != 0 ? pc.color : DEFAULT_TEXT,
         lh = pc.line_height > 0 ? pc.line_height : 1.3,
-        letter_spacing = pc.letter_spacing,
+        letter_spacing = pc.letter_spacing, font_kerning = pc.font_kerning,
     }
 }
 
@@ -913,7 +916,7 @@ build_pseudo_box :: proc(pc: ^Computed, base: string) -> ^Box {
             font = font, fsize = pc.font_size, scale = scale, em = fem,
             color = pc.color != 0 ? pc.color : DEFAULT_TEXT,
             lh = pc.line_height > 0 ? pc.line_height : 1.3,
-            letter_spacing = pc.letter_spacing,
+            letter_spacing = pc.letter_spacing, font_kerning = pc.font_kerning,
         }
         append(&pb.inlines, it)
     }
@@ -1182,7 +1185,7 @@ words_mergeable :: proc(a, b: ^Inline_Item) -> bool {
         b.pad_before == 0 && a.pad_after == 0 &&    // sem margem/padding/borda inline no meio
         a.font == b.font && a.fsize == b.fsize && a.scale == b.scale &&
         a.color == b.color && a.lh == b.lh &&
-        a.letter_spacing == b.letter_spacing && a.valign == b.valign &&
+        a.letter_spacing == b.letter_spacing && a.font_kerning == b.font_kerning && a.valign == b.valign &&
         a.nowrap == b.nowrap && a.deco == b.deco
 }
 
@@ -1218,7 +1221,7 @@ build_block_children :: proc(node: ^dompkg.Node, b: ^Box, styles: map[^dompkg.No
     flush :: proc(b: ^Box, run: ^[dynamic]^dompkg.Node, styles: map[^dompkg.Node]Computed, base: string, size: f32, weight: Font_Weight, italic: bool, color: u32, align: Text_Align, deco: Deco, ws: White_Space, lh: f32, family: Font_Family, fam_id: u8, ls: f32, ttx: Text_Transform) {
         if len(run) == 0 do return
         ibox := new_box(); ibox.kind = .Block; ibox.is_inline = true; ibox.align = align
-        st := Inline_Style{size, weight, italic, color, "", deco, lh, family, fam_id, ls, ttx, .Baseline, b.break_word, 0}
+        st := Inline_Style{size, weight, italic, color, "", deco, lh, family, fam_id, ls, ttx, .Baseline, b.break_word, 0, b.font_kerning}
         pending, started := false, false
         for inode in run do build_inline_items(inode, &ibox.inlines, styles, st, base, &pending, &started, ws, grads = &ibox.inline_grads)
         coalesce_words(&ibox.inlines)
@@ -1291,7 +1294,7 @@ build_item_children :: proc(node: ^dompkg.Node, b: ^Box, styles: map[^dompkg.Nod
     flush :: proc(b: ^Box, run: ^[dynamic]^dompkg.Node, styles: map[^dompkg.Node]Computed, base: string, size: f32, weight: Font_Weight, italic: bool, color: u32, align: Text_Align, deco: Deco, family: Font_Family, fam_id: u8, ls: f32, ttx: Text_Transform, ws: White_Space) {
         if len(run) == 0 do return
         ibox := new_box(); ibox.kind = .Block; ibox.is_inline = true; ibox.align = align
-        st := Inline_Style{size, weight, italic, color, "", deco, 1.3, family, fam_id, ls, ttx, .Baseline, b.break_word, 0}
+        st := Inline_Style{size, weight, italic, color, "", deco, 1.3, family, fam_id, ls, ttx, .Baseline, b.break_word, 0, b.font_kerning}
         pending, started := false, false
         for inode in run do build_inline_items(inode, &ibox.inlines, styles, st, base, &pending, &started, ws, grads = &ibox.inline_grads)
         coalesce_words(&ibox.inlines)
@@ -1446,7 +1449,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
             if comp.has_color       do s2.color  = comp.color
             if comp.has_font_family { s2.family = comp.font_family; s2.fam_id = comp.font_fam_id }
             s2.ttx            = comp.text_transform
-            s2.letter_spacing = comp.letter_spacing
+            s2.letter_spacing = comp.letter_spacing; s2.font_kerning = comp.font_kerning
             s2.tab_size       = comp.tab_size // tab-size herda/redefine no aninhado
             if comp.has_font_size do s2.size = comp.font_size
             s2.break_word = comp.break_word || comp.break_all // herdado no Computed
@@ -1698,7 +1701,7 @@ add_words :: proc(items: ^[dynamic]Inline_Item, text: string, st: Inline_Style, 
                     kind = .Word,
                     font = font, fsize = st.size, scale = scale, em = fem, color = st.color,
                     lh = st.lh, deco = st.deco,
-                    letter_spacing = st.letter_spacing, valign = st.valign,
+                    letter_spacing = st.letter_spacing, font_kerning = st.font_kerning, valign = st.valign,
                 }
                 append_text_pieces(items,
                     xform_word(expand_tabs(text[line_start:seg_end], st.tab_size), st.ttx),
@@ -1726,7 +1729,7 @@ add_words :: proc(items: ^[dynamic]Inline_Item, text: string, st: Inline_Style, 
             kind = .Word,
             font = font, fsize = st.size, scale = scale, em = fem, color = st.color,
             lh = st.lh, deco = st.deco,
-            letter_spacing = st.letter_spacing, valign = st.valign,
+            letter_spacing = st.letter_spacing, font_kerning = st.font_kerning, valign = st.valign,
             space_before = pending^ && started^, // colapsa; apara o líder
             nowrap = no_wrap,
             can_break = st.break_word,
@@ -2261,7 +2264,9 @@ apply_box :: proc(b: ^Box, comp: Computed) {
     b.maxh_pct = comp.maxh_pct; b.has_maxh_pct = comp.has_maxh_pct; b.maxh_pct_off = comp.maxh_pct_off
     b.height_mc  = comp.height_mc
     b.width_mc   = comp.width_mc
+    b.font_kerning = comp.font_kerning
     b.width_minc = comp.width_minc
+    b.width_fit  = comp.width_fit
     b.aspect     = comp.aspect
     b.has_maxh   = comp.has_maxh; b.maxh = comp.maxh
     b.has_minh   = comp.has_minh; b.minh = comp.minh; b.minh_mc = comp.minh_mc
@@ -2466,12 +2471,7 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
             wpx := b.width_pct ? pct_resolve(b.width, b.width_pct_off, avail_w, b.width_bd) : b.width
             cw = b.box_sizing == .Border ? wpx - extra_w : wpx
         } else if b.width_mc {
-            // width:max/min/fit-content → largura intrínseca (content-box). Para grid
-            // isso é a SOMA das trilhas; measure_intrinsic_w despacha por tipo de box.
-            // ⚠️ Aproximação: min-content é medido como max-content em tudo MENOS na
-            // distribuição de span num grid, onde a diferença é observável (as
-            // trilhas `fr` ficam na base). Ver grid_intrinsic_w.
-            cw = measure_intrinsic_w(b, b.width_minc) - extra_w
+            cw = intrinsic_used_width(b, avail_w - ml - mr) - extra_w
         } else {
             cw = avail_w - ml - mr - extra_w
         }
@@ -2930,6 +2930,13 @@ node_margins :: proc(b: ^Box) -> (mt, mb: f32) {
 g_sp_font: ^im.Font
 g_sp_size: f32
 g_sp_w:    f32
+
+// Um rebuild pode mudar os avanços sem mudar o ponteiro da fonte.
+text_metrics_clear :: proc() {
+    g_sp_font = nil
+    g_kern_cache = {}
+}
+
 @(private="file")
 space_adv :: proc(it: ^Inline_Item) -> f32 {
     if it.font == nil || it.fsize <= 0 do return it.fsize * 0.28
@@ -2947,7 +2954,7 @@ word_width :: proc(it: ^Inline_Item) -> f32 {
         if it.letter_spacing != 0 {
             w += it.letter_spacing * f32(utf8.rune_count_in_string(it.text))
         }
-        it.text_w = w
+        it.text_w = max(0, w + text_kerning_width(it.font, render_px(it.fsize, it.em), it.text, it.font_kerning))
     }
     return it.text_w
 }
@@ -2956,15 +2963,17 @@ word_width :: proc(it: ^Inline_Item) -> f32 {
 // Devolve o corte e a largura acumulada. min_runes garante progresso (p/ a
 // quebra intra-palavra: pelo menos 1 runa mesmo que não caiba).
 @(private="file")
-rune_prefix_fitting :: proc(text: string, font: ^im.Font, fsize: f32, fem: f32, letter_spacing: f32, avail: f32, min_runes := 0) -> (cut: int, w: f32) {
+rune_prefix_fitting :: proc(text: string, font: ^im.Font, fsize: f32, fem: f32, letter_spacing: f32, avail: f32, min_runes := 0, kerning: Font_Kerning = .Auto) -> (cut: int, w: f32) {
     count := 0
+    prev: rune
     for r, off in text {
         buf, n := utf8.encode_rune(r)
         tmp: [5]u8
         copy(tmp[:4], buf[:])
         tmp[n] = 0
         rw := im.Font_CalcTextSizeA(font, render_px(fsize, fem), FLT_MAX, FLT_MAX, cstring(&tmp[0])).x
-        if letter_spacing != 0 do rw += letter_spacing
+        rw += letter_spacing + text_pair_kerning(font, render_px(fsize, fem), prev, r, kerning)
+        prev = r
         if w + rw > avail && count >= min_runes do return
         cut = off + n
         w += rw
@@ -2997,7 +3006,7 @@ apply_ellipsis :: proc(b: ^Box, start, end: int, cw: f32) {
         it := &b.inlines[j]
         if it.kind != .Word || it.font == nil || it.x >= cw do continue
         ell_w := im.Font_CalcTextSizeA(it.font, render_px(it.fsize, it.em), FLT_MAX, FLT_MAX, "…").x
-        cut, pw := rune_prefix_fitting(it.text, it.font, it.fsize, it.em, it.letter_spacing, cw - ell_w - it.x)
+        cut, pw := rune_prefix_fitting(it.text, it.font, it.fsize, it.em, it.letter_spacing, cw - ell_w - it.x, kerning = it.font_kerning)
         it.hidden = false
         it.ellipsized = true
         it.draw_bytes = cut
@@ -3094,7 +3103,7 @@ apply_clamp_ellipsis :: proc(b: ^Box, start, end: int, cw: f32) {
         ell_w := im.Font_CalcTextSizeA(it.font, render_px(it.fsize, it.em), FLT_MAX, FLT_MAX, "…").x
         avail := cw - it.x - ell_w
         if avail < 0 do avail = 0
-        cut, pw := rune_prefix_fitting(it.text, it.font, it.fsize, it.em, it.letter_spacing, avail)
+        cut, pw := rune_prefix_fitting(it.text, it.font, it.fsize, it.em, it.letter_spacing, avail, kerning = it.font_kerning)
         it.hidden = false
         it.ellipsized = true
         it.draw_bytes = cut
@@ -3179,7 +3188,7 @@ layout_inline :: proc(b: ^Box, wrap_w: f32 = -1, nlines: ^int = nil) -> f32 {
             // inteira → corta o prefixo que cabe e reinjeta o resto como item
             // seguinte (que quebra pra próxima linha e pode ser cortado de novo).
             if it.can_break && !it.nowrap && it.font != nil && ww > 0 && sp + it.text_w > ww {
-                cut, head_w := rune_prefix_fitting(it.text, it.font, it.fsize, it.em, it.letter_spacing, ww - sp, 1)
+                cut, head_w := rune_prefix_fitting(it.text, it.font, it.fsize, it.em, it.letter_spacing, ww - sp, 1, it.font_kerning)
                 if cut > 0 && cut < len(it.text) {
                     rest := it^
                     rest.text = strings.clone(it.text[cut:])
@@ -3691,14 +3700,14 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // propósito, então forçar o intrínseco encolheria todo `width:100%`/`50%`
         // (que antes acertava por acidente, esticando). Nunca coincide com `istr`:
         // com def_w o stretch não se aplica.
-        propria := child.def_w
+        propria := child.def_w || child.width_mc
         cs := (istr || propria) ? cw : min(measure_intrinsic_w(child), cw)
         // esticar preenche o container, mas o tamanho USADO é limitado por
         // min/max-width (css-align §4.2). Só no caminho FORÇADO: com width própria
         // quem clampa é o layout_box, que aí calcula a largura ele mesmo.
         if !propria do cs = stretch_clamp(child, .Row, cs, cw)
         fw: f32 = propria ? -1 : cs
-        layout_box(child, b.content_x, b.content_y, cs, fw, -1)
+        layout_box(child, b.content_x, b.content_y, propria ? cw : cs, fw, -1)
         if propria do cs = child.w // largura USADA (pós-%, pós-min/max) p/ a pass B
         cross[i] = cs
         grows[i] = child.flex_grow
@@ -3889,7 +3898,7 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // width e pode transbordar a célula); stretch → preenche a célula; senão
         // shrink-to-fit (max-content ∩ célula). avail_w é SEMPRE a célula (sw), p/
         // % de largura e filhos resolverem contra a trilha.
-        fw: f32 = it.def_w ? -1 : (stretch_w ? sw : min(measure_intrinsic_w(it), sw))
+        fw: f32 = (it.def_w || it.width_mc) ? -1 : (stretch_w ? sw : min(measure_intrinsic_w(it), sw))
         fh: f32 = stretch_h ? sh : -1
         // tamanho imposto pela célula é limitado por min/max (o caminho force_* do
         // layout_box não clampa). ⚠️ % de min/max-HEIGHT não chega resolvida aqui
@@ -3900,7 +3909,7 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // tamanho DEFINIDO (fw=-1) o avail_w é a célula (sw), p/ % resolver contra a
         // trilha; para os demais o avail_w = a própria largura forçada (preserva o
         // comportamento base — controles de formulário dependem dele p/ o intrínseco).
-        aw: f32 = it.def_w ? sw : fw
+        aw: f32 = (it.def_w || it.width_mc) ? sw : fw
         layout_box(it, cx, cy, aw, fw, fh)
         xoff: f32 = stretch_w ? 0 : flex_align(ji, sw, it.w)
         yoff: f32 = stretch_h ? 0 : flex_align(ai, sh, it.h)
@@ -4020,7 +4029,11 @@ grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspa
     // conteúdo: mede cada item e engorda as linhas auto/implícitas até caber
     for it, i in items {
         sw := grid_extent(xs, widths, col_of[i], cspan_of[i])
-        layout_box(it, b.content_x, b.content_y, sw, sw, -1) // altura natural
+        // A linha precisa da altura na largura USADA do item. Forçar a trilha
+        // em width:min-content media uma linha só; na pintura o item estreitava,
+        // quebrava em várias linhas e sobrepunha a próxima linha do grid.
+        fw: f32 = (it.def_w || it.width_mc) ? -1 : sw
+        layout_box(it, b.content_x, b.content_y, sw, fw, -1)
         r0 := row_of[i]; rs := rspan_of[i]
         cur := grid_span_gap(row_h, r0, rs, row_gap)
         if it.h > cur {
@@ -4904,7 +4917,7 @@ flex_base_main :: proc(c: ^Box, cw: f32) -> (base, grow, shrink: f32) {
 // curl.se) usava a largura intrínseca (logos grandes) e esmagava o conteúdo à esq.
 @(private="file")
 float_fit_width :: proc(child: ^Box, avail: f32) -> f32 {
-    w := min(measure_intrinsic_w(child), avail)
+    w := min(measure_intrinsic_w(child), max(measure_intrinsic_w(child, true), avail))
     extra := child.padding[3] + child.padding[1] + bw_x(child)
     if child.has_maxw {
         lim := child.maxw_pct ? pct_resolve(child.maxw, child.maxw_pct_off, avail, child.maxw_bd) : child.maxw
@@ -4957,9 +4970,10 @@ measure_min_content_w :: proc(b: ^Box, ignore_specified := false) -> f32 {
             iw, _ := image_dims(b)
             content = iw
         }
+    } else if b.is_grid {
+        content = grid_intrinsic_w(b, true)
     } else {
-        // bloco, flex com wrap, grid: o maior min-content entre os filhos. (Para
-        // grid isto subestima — o correto seria somar as colunas; ver o aviso.)
+        // Bloco, flex com wrap e coluna: a maior contribuição mínima dos filhos.
         for c in b.children {
             if c.pos == .Absolute || c.pos == .Fixed do continue
             w := measure_min_content_w(c) + c.margin[3] + c.margin[1]
@@ -4983,12 +4997,10 @@ flex_auto_min_w :: proc(c: ^Box) -> f32 {
     return cbm
 }
 
-// Largura "max-content" (border-box) de uma caixa, p/ dimensionar itens flex.
-// `min_content` só viaja até o grid (ver grid_intrinsic_w): o resto da árvore é
-// medido por max-content, que é a aproximação que este motor já fazia — a engine
-// trata `width:min-content` como `max-content` desde sempre (Computed.width_mc).
+// Contribuição intrínseca em border-box, sem executar layout nem alterar estilos.
 @(private="file")
 measure_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
+    if min_content || b.width_minc do return measure_min_content_w(b)
     extra := b.padding[3] + b.padding[1] + bw_x(b)
     if b.has_width && !b.width_pct {
         return b.box_sizing == .Border ? b.width : b.width + extra
@@ -5019,6 +5031,16 @@ measure_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
         }
     }
     return content + extra
+}
+
+// CSS Sizing 3: fit-content = min(max-content, max(min-content, disponível)).
+// As três medidas são border-box; padding/borda não podem ser somados duas vezes.
+@(private="file")
+intrinsic_used_width :: proc(b: ^Box, available: f32) -> f32 {
+    if b.width_minc do return measure_intrinsic_w(b, true)
+    preferred := measure_intrinsic_w(b)
+    if b.width_fit do return min(preferred, max(measure_intrinsic_w(b, true), available))
+    return preferred
 }
 
 // Largura intrínseca (max-content) de um container de grid = soma das colunas.
@@ -5082,7 +5104,7 @@ grid_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
         if cspan_of[i] != 1 do continue
         c := col_of[i]
         if c < 0 || c >= ncols do continue
-        w := measure_intrinsic_w(it) + it.margin[3] + it.margin[1]
+        w := measure_intrinsic_w(it, min_content) + it.margin[3] + it.margin[1]
         if w > colw[c] do colw[c] = w
     }
 
@@ -5096,7 +5118,7 @@ grid_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
             if s != span do continue
             c0 := col_of[i]
             if c0 < 0 || c0 + s > ncols do continue
-            need := measure_intrinsic_w(it) + it.margin[3] + it.margin[1] - col_gap * f32(s - 1)
+            need := measure_intrinsic_w(it, min_content) + it.margin[3] + it.margin[1] - col_gap * f32(s - 1)
             have: f32 = 0
             n_flex := 0
             for c in c0 ..< c0 + s {
@@ -5202,7 +5224,7 @@ inline_max_width :: proc(b: ^Box) -> f32 {
             cur = 0
         case .Word:
             word_width(&it)
-            cur += (it.space_before ? it.fsize * 0.28 + b.word_spacing : 0) + it.pad_before + it.text_w + it.pad_after
+            cur += (it.space_before ? space_adv(&it) + b.word_spacing : 0) + it.pad_before + it.text_w + it.pad_after
         case .Image:
             iw, _ := inline_img_dims(&it, FLT_MAX)
             cur += (it.space_before ? 4 : 0) + it.pad_before + iw + it.pad_after
@@ -5623,12 +5645,17 @@ place_absolute :: proc(c: ^Box, cb: Rect) {
     shrink := c.is_table
     fw: f32 = -1
     fh: f32 = -1
-    if !c.has_width {
+    if !c.has_width && !c.width_mc {
         if has_l && has_r && !shrink {
-            fw = cb.w - li - ri
+            fw = cb.w - li - ri - c.margin[3] - c.margin[1]
         } else {
-            fw = min(intrinsic_border_w(c), cb.w) // shrink-to-fit
+            available := cb.w - (has_l ? li : 0) - (has_r ? ri : 0) - c.margin[3] - c.margin[1]
+            fw = min(measure_intrinsic_w(c), max(measure_intrinsic_w(c, true), available))
         }
+    }
+    if c.width_fit {
+        available := cb.w - (has_l ? li : 0) - (has_r ? ri : 0) - c.margin[3] - c.margin[1]
+        fw = intrinsic_used_width(c, available)
     }
     // height:N% de um ABSOLUTO resolve contra a altura do bloco contenedor, que é
     // exatamente o `cb.h` daqui — e que só ESTE sítio conhece. O layout_box não
@@ -5647,7 +5674,7 @@ place_absolute :: proc(c: ^Box, cb: Rect) {
     if c.has_height_pct {
         fh = max(0, pct_resolve(c.height_pct, c.height_pct_off, cb.h, c.height_bd))
     } else if !c.has_height && has_t && has_b && !shrink {
-        fh = cb.h - ti - bi
+        fh = cb.h - ti - bi - c.margin[0] - c.margin[2]
     }
     // min/max-height em % têm a MESMA base e também só o CB a conhece; sem isto o
     // stretch_clamp logo abaixo compararia contra um limite nunca resolvido (o
@@ -5672,13 +5699,18 @@ place_absolute :: proc(c: ^Box, cb: Rect) {
         return 0
     }
     x: f32
-    if has_l && has_r && c.margin_left_auto && c.margin_right_auto {
-        free := cb.w - li - ri - c.w
-        x = cb.x + li + (free > 0 ? free / 2 : 0)
+    if has_l && has_r && (c.margin_left_auto || c.margin_right_auto) {
+        ml := c.margin_left_auto ? f32(0) : c.margin[3]
+        mr := c.margin_right_auto ? f32(0) : c.margin[1]
+        free := cb.w - li - ri - c.w - ml - mr
+        if c.margin_left_auto {
+            ml = c.margin_right_auto ? max(0, free / 2) : free
+        }
+        x = cb.x + li + ml
     } else if has_l {
-        x = cb.x + li
+        x = cb.x + li + (c.margin_left_auto ? 0 : c.margin[3])
     } else if has_r {
-        x = cb.x + cb.w - ri - c.w
+        x = cb.x + cb.w - ri - c.w - (c.margin_right_auto ? 0 : c.margin[1])
     } else if c.static_flex {
         mbw := c.margin[3] + c.w + c.margin[1]
         x = c.static_x + salign(c.static_ax, c.static_cw, mbw) + c.margin[3]
@@ -5686,13 +5718,16 @@ place_absolute :: proc(c: ^Box, cb: Rect) {
         x = c.has_static ? c.static_x : cb.x
     }
     y: f32
-    if has_t && has_b && c.margin_top_auto && c.margin_bottom_auto {
-        free := cb.h - ti - bi - c.h
-        y = cb.y + ti + (free > 0 ? free / 2 : 0)
+    if has_t && has_b && (c.margin_top_auto || c.margin_bottom_auto) {
+        mt := c.margin_top_auto ? f32(0) : c.margin[0]
+        mb := c.margin_bottom_auto ? f32(0) : c.margin[2]
+        free := cb.h - ti - bi - c.h - mt - mb
+        if c.margin_top_auto do mt = c.margin_bottom_auto ? free / 2 : free
+        y = cb.y + ti + mt
     } else if has_t {
-        y = cb.y + ti
+        y = cb.y + ti + (c.margin_top_auto ? 0 : c.margin[0])
     } else if has_b {
-        y = cb.y + cb.h - bi - c.h
+        y = cb.y + cb.h - bi - c.h - (c.margin_bottom_auto ? 0 : c.margin[2])
     } else if c.static_flex {
         mbh := c.margin[0] + c.h + c.margin[2]
         y = c.static_y + salign(c.static_ay, c.static_ch, mbh) + c.margin[0]
@@ -5732,7 +5767,7 @@ intrinsic_border_w :: proc(b: ^Box) -> f32 {
                 line = 0
             case .Word:
                 word_width(&it)
-                line += it.text_w + (it.space_before ? it.fsize * 0.28 + b.word_spacing : 0) + it.pad_before + it.pad_after
+                line += it.text_w + (it.space_before ? space_adv(&it) + b.word_spacing : 0) + it.pad_before + it.pad_after
             case .Image:
                 line += (it.w > 0 ? it.w : 32) + it.pad_before + it.pad_after
             case .InlineBox:
@@ -5848,7 +5883,7 @@ bg_over :: proc(dst, src: u32) -> u32 {
     b := mix(f32( dst        & 0xff), f32( src        & 0xff), a)
     return (r << 16) | (g << 8) | b
 }
-PC_InlineText  :: struct { font: ^im.Font, size: f32, pos: im.Vec2, col: u32, text: string, spacing: f32 }
+PC_InlineText  :: struct { font: ^im.Font, size: f32, pos: im.Vec2, col: u32, text: string, spacing: f32, kerning: Font_Kerning }
 PC_Line        :: struct { p0, p1: im.Vec2, col: u32 }
 PC_PushClip    :: struct { min, max: im.Vec2 }
 PC_PopClip     :: struct {}
@@ -6063,8 +6098,8 @@ replay_seg :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, cull := fals
                 }
             }
             if len(v.text) == 0 do break
-            if v.spacing != 0 {
-                draw_spaced_text(dl, v.font, v.size, v.pos, v.col, v.text, v.spacing)
+            if v.spacing != 0 || text_has_kerning(v.font, v.size, v.text, v.kerning) {
+                draw_spaced_text(dl, v.font, v.size, v.pos, v.col, v.text, v.spacing, v.kerning)
             } else {
                 // Par begin/end em vez de clone_to_cstring: `it.text` é uma FATIA do
                 // texto do documento (a quebra de linha faz `it.text = head`), então
@@ -8808,9 +8843,12 @@ emit_stacked :: proc(pt: ^Painter, s: ^State, child: ^Box, ox, oy, eff: f32, in_
 // Desenha texto glifo a glifo inserindo letter-spacing (px) após cada um.
 // Só chamado quando spacing != 0; o caso comum usa o AddText de string inteira.
 @(private="file")
-draw_spaced_text :: proc(dl: ^im.DrawList, font: ^im.Font, size: f32, pos: im.Vec2, col: u32, text: string, spacing: f32) {
+draw_spaced_text :: proc(dl: ^im.DrawList, font: ^im.Font, size: f32, pos: im.Vec2, col: u32, text: string, spacing: f32, kerning: Font_Kerning = .Auto) {
     x := pos.x
+    prev: rune
     for r in text {
+        x += text_pair_kerning(font, size, prev, r, kerning)
+        prev = r
         // Buffer de PILHA com o NUL escrito à mão, no lugar de clone_to_cstring:
         // este laço roda por CARACTERE, e `tracking-*` do Tailwind faz dele o
         // caminho comum (58% dos comandos de texto do github têm spacing). O par
@@ -8821,7 +8859,13 @@ draw_spaced_text :: proc(dl: ^im.DrawList, font: ^im.Font, size: f32, pos: im.Ve
         buf[n] = 0
         cs := cstring(&buf[0])
         adv := im.Font_CalcTextSizeA(font, size, FLT_MAX, FLT_MAX, cs).x
+        v0 := int(dl.VtxBuffer.Size)
         im.DrawList_AddTextImFontPtr(dl, font, size, {x, pos.y}, col, cs)
+        // AddText trunca a origem de cada chamada. Preserve a posição relativa
+        // fracionária dos glifos, como numa chamada única para a palavra inteira.
+        dx := (x - pos.x) - (f32(int(x)) - f32(int(pos.x)))
+        verts := ([^]im.DrawVert)(dl.VtxBuffer.Data)
+        for i in v0 ..< int(dl.VtxBuffer.Size) do verts[i].pos.x += dx
         x += adv + spacing
     }
 }
@@ -8935,7 +8979,7 @@ paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1
                 for si := b.text_shadow_n - 1; si >= 0; si -= 1 {
                     sh := b.text_shadows[si]
                     scol := col_o(sh.color, opa)
-                    emit(pt, PC_InlineText{it.font, rs, {px + sh.dx, ty + sh.dy}, scol, txt, it.letter_spacing})
+                    emit(pt, PC_InlineText{it.font, rs, {px + sh.dx, ty + sh.dy}, scol, txt, it.letter_spacing, it.font_kerning})
                 }
             }
             // texto: o replay decide entre AddText e draw_spaced_text por spacing.
@@ -8947,7 +8991,7 @@ paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1
                 for ig, gi in b.inline_grads do if ig.grp == it.ibg_grp { shade_i = gi; break }
             }
             if b.grad_clip_text || shade_i >= 0 do emit(pt, PC_ShadeGradBegin{})
-            emit(pt, PC_InlineText{it.font, rs, {px, ty}, tc, txt, it.letter_spacing})
+            emit(pt, PC_InlineText{it.font, rs, {px, ty}, tc, txt, it.letter_spacing, it.font_kerning})
             // decoração efetiva: a do :hover do autor SUBSTITUI a normal enquanto o
             // elemento estiver sob o mouse (ver eff_deco).
             deco := eff_deco(it, box_deco, box_deco_on, hov_deco_grp)
