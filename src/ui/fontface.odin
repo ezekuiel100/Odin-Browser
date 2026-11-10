@@ -34,6 +34,7 @@ package ui
 import "core:strings"
 import "core:fmt"
 import "core:thread"
+import "core:time"
 import "core:sync"
 import "core:slice"
 import "core:c"
@@ -46,12 +47,16 @@ import csspkg     "../css"
 import netpkg     "../net"
 import woff2pkg   "../woff2"
 
-// Teto de faces carregadas por sessão. Cada face ocupa FONT_N tamanhos no atlas
+// Teto de faces carregadas ou em download por sessão. Falhas não contam.
+// Cada face ocupa FONT_N tamanhos no atlas
 // (a mesma escada das embutidas) — a textura do atlas cresce com isso, e um site
 // com 20 pesos declarados encheria a GPU à toa.
-MAX_FACES :: 12
+MAX_FACES :: 32 // Loading + Ready; failed entries do not consume atlas capacity.
+FONT_RETRY_DELAY :: 2 * time.Second
+FONT_MAX_ATTEMPTS :: 3
 
 Face_State :: enum u8 { Loading, Ready, Failed }
+Face_Failure :: enum u8 { None, Network, Http, Empty, Decode, No_Glyphs, Thread }
 
 Loaded_Face :: struct {
     fam_id: u8,  // índice+1 em g_face_families
@@ -59,6 +64,10 @@ Loaded_Face :: struct {
     italic: bool,
     url:    string, // owned (resolvida)
     state:  Face_State,
+    failure: Face_Failure,
+    retryable: bool, // transient network/HTTP failures only
+    attempts: int,
+    last_attempt: time.Tick,
 
     // handoff worker → main
     done:    b32,
@@ -354,8 +363,75 @@ to_sfnt :: proc(body: []byte) -> []byte {
 @(private = "file")
 Face_Job :: struct { idx: int, url: string }
 
+// Keep diagnostics bounded, especially for embedded data: fonts.
+@(private)
+font_log_url :: proc(url: string) -> string {
+    if strings.has_prefix(url, "data:") do return "data:<embedded font>"
+    return url[:min(len(url), 180)]
+}
+
+Face_Reservation :: enum { Start, Existing, Deferred, Limit }
+
+// Main thread, with g_face_lock held. Only entries never handed to the atlas
+// can be recycled: the atlas borrows the payload of every installed face.
+@(private)
+fontface_reserve :: proc(fid: u8, weight: int, italic: bool, url: string, now: time.Tick) -> (int, Face_Reservation) {
+    retry, spare, active := -1, -1, 0
+    for &f, i in g_faces {
+        if f.state != .Failed do active += 1
+        if f.state == .Failed && f.fonts[0] == nil do spare = i
+        if f.fam_id != fid || f.weight != weight || f.italic != italic do continue
+        if f.state != .Failed do return i, .Existing
+        retry = i
+        if f.url == url && (f.attempts >= FONT_MAX_ATTEMPTS || time.tick_diff(f.last_attempt, now) < FONT_RETRY_DELAY) {
+            return i, .Deferred
+        }
+    }
+    if active >= MAX_FACES do return -1, .Limit
+    idx := retry >= 0 ? retry : spare
+    attempts := 1
+    if idx >= 0 {
+        old := &g_faces[idx]
+        if old.url == url && retry >= 0 do attempts = old.attempts + 1
+        delete(old.url)
+        delete(old.payload) // safe: this entry never entered the atlas
+    } else {
+        idx = len(g_faces)
+        append(&g_faces, Loaded_Face{})
+    }
+    g_faces[idx] = Loaded_Face{
+        fam_id = fid, weight = weight, italic = italic, url = strings.clone(url),
+        state = .Loading, attempts = attempts, last_attempt = now,
+    }
+    return idx, .Start
+}
+
 @(private = "file")
 g_face_lock: sync.Mutex
+
+@(private)
+fontface_retry_due :: proc(f: ^Loaded_Face, now: time.Tick) -> bool {
+    return f.state == .Failed && f.retryable && f.attempts < FONT_MAX_ATTEMPTS &&
+        time.tick_diff(f.last_attempt, now) >= FONT_RETRY_DELAY
+}
+
+// Caller holds g_face_lock; job URLs stay alive until the worker publishes done.
+@(private = "file")
+fontface_start :: proc(idx: int) {
+    job := new(Face_Job)
+    job.idx = idx
+    job.url = g_faces[idx].url
+    if t := thread.create(face_worker); t != nil {
+        t.data = job
+        thread.start(t)
+    } else {
+        free(job)
+        f := &g_faces[idx]
+        f.state = .Failed
+        f.failure = .Thread
+        fmt.eprintfln("[FONT] family=%q weight=%d italic=%v failure=Thread", g_face_families[int(f.fam_id)-1], f.weight, f.italic)
+    }
+}
 
 @(private = "file")
 face_worker :: proc(t: ^thread.Thread) {
@@ -365,10 +441,18 @@ face_worker :: proc(t: ^thread.Thread) {
     defer if resp.body != "" do delete(resp.body)
 
     payload: []byte
-    if resp.err == "" && len(resp.body) > 0 do payload = to_sfnt(transmute([]byte)resp.body)
+    failure: Face_Failure
+    switch {
+    case resp.err != "": failure = .Network
+    case resp.status >= 400: failure = .Http
+    case len(resp.body) == 0: failure = .Empty
+    case:
+        payload = to_sfnt(transmute([]byte)resp.body)
+        if payload == nil do failure = .Decode
+    }
     when #config(FONTPROBE, false) {
         fmt.eprintfln("[FF] worker %s: err=%q status=%d bytes=%d -> sfnt=%d",
-            job.url, resp.err, resp.status, len(resp.body), payload != nil ? len(payload) : -1)
+            font_log_url(job.url), resp.err, resp.status, len(resp.body), payload != nil ? len(payload) : -1)
     }
 
     sync.mutex_lock(&g_face_lock)
@@ -376,6 +460,13 @@ face_worker :: proc(t: ^thread.Thread) {
         f := &g_faces[job.idx]
         f.payload = payload
         f.state = payload != nil ? .Ready : .Failed
+        f.failure = failure
+        f.retryable = failure == .Network || (failure == .Http && (resp.status == 408 || resp.status == 429 || resp.status >= 500))
+        if failure != .None {
+            fmt.eprintfln("[FONT] family=%q weight=%d italic=%v attempt=%d failure=%v status=%d bytes=%d error=%q url=%s",
+                g_face_families[int(f.fam_id)-1], f.weight, f.italic, f.attempts, failure,
+                resp.status, len(resp.body), resp.err, font_log_url(f.url))
+        }
         sync.atomic_store(&f.done, true)
     } else if payload != nil {
         delete(payload)
@@ -435,16 +526,18 @@ scan_one :: proc(css_text, base: string) {
     when #config(FONTPROBE, false) {
         fmt.eprintfln("[FF] scan: %d face(s) parseadas, base=%s", len(faces), base)
         for f in faces do fmt.eprintfln("[FF]   fam=%q w=%d it=%v srcs=%d src0=%q hint0=%q",
-            f.family, f.weight, f.italic, len(f.srcs), len(f.srcs) > 0 ? f.srcs[0].url : "", len(f.srcs) > 0 ? f.srcs[0].hint : "")
+            f.family, f.weight, f.italic, len(f.srcs), len(f.srcs) > 0 ? font_log_url(f.srcs[0].url) : "", len(f.srcs) > 0 ? f.srcs[0].hint : "")
     }
     fontface_register(faces[:], base)
 }
 
 // Registra as @font-face de uma página e dispara os downloads. `base` resolve
-// URLs relativas. Idempotente: (família, peso, itálico) já registrado é pulado.
+// URLs relativas. Faces prontas/em download são idempotentes; falhas podem ser
+// tentadas novamente num próximo scan, com intervalo e limite por URL.
 fontface_register :: proc(faces: []csspkg.Font_Face, base: string) {
+    sync.mutex_lock(&g_face_lock)
+    defer sync.mutex_unlock(&g_face_lock)
     for face, fi in faces {
-        if len(g_faces) >= MAX_FACES do return
         // Um provedor publica a MESMA (família, peso, estilo) uma vez por bloco
         // Unicode, e nós só guardamos UMA. Pular a que não cobre o latim básico
         // QUANDO existe uma irmã que cobre: sem isto ficávamos com a primeira
@@ -468,27 +561,15 @@ fontface_register :: proc(faces: []csspkg.Font_Face, base: string) {
 
         fid := fam_id_of(face.family)
         if fid == 0 { delete(url); continue }
-        dup := false
-        for f in g_faces {
-            if f.fam_id == fid && f.weight == face.weight && f.italic == face.italic { dup = true; break }
+        idx, reservation := fontface_reserve(fid, face.weight, face.italic, url, time.tick_now())
+        delete(url)
+        if reservation == .Limit {
+            fmt.eprintfln("[FONT] family=%q weight=%d italic=%v skipped=atlas-limit limit=%d", face.family, face.weight, face.italic, MAX_FACES)
         }
-        if dup { delete(url); continue }
+        if reservation != .Start do continue
 
-        when #config(FONTPROBE, false) { fmt.eprintfln("[FF] registra fam_id=%d url=%s", fid, url) }
-        append(&g_faces, Loaded_Face{
-            fam_id = fid, weight = face.weight, italic = face.italic,
-            url = url, state = .Loading,
-        })
-        job := new(Face_Job)
-        job.idx = len(g_faces) - 1
-        job.url = g_faces[job.idx].url // a string vive enquanto a face viver
-        if t := thread.create(face_worker); t != nil {
-            t.data = job
-            thread.start(t)
-        } else {
-            free(job)
-            g_faces[len(g_faces) - 1].state = .Failed
-        }
+        when #config(FONTPROBE, false) { fmt.eprintfln("[FF] registra family=%q weight=%d italic=%v attempt=%d url=%s", face.family, face.weight, face.italic, g_faces[idx].attempts, font_log_url(g_faces[idx].url)) }
+        fontface_start(idx)
     }
 }
 
@@ -504,25 +585,40 @@ fontface_poll :: proc() -> bool {
     added := false
 
     sync.mutex_lock(&g_face_lock)
+    active := 0
+    for f in g_faces do if f.state != .Failed do active += 1
+    now := time.tick_now()
+    for &f, i in g_faces {
+        if active >= MAX_FACES || !fontface_retry_due(&f, now) do continue
+        f.state = .Loading
+        f.failure = .None
+        f.retryable = false
+        f.attempts += 1
+        f.last_attempt = now
+        sync.atomic_store(&f.done, false)
+        fmt.eprintfln("[FONT] family=%q weight=%d italic=%v retry=%d url=%s", g_face_families[int(f.fam_id)-1], f.weight, f.italic, f.attempts, font_log_url(f.url))
+        fontface_start(i)
+        active += 1
+    }
     for &f, i in g_faces {
         if !sync.atomic_load(&f.done) do continue
         sync.atomic_store(&f.done, false)
         if f.state != .Ready || f.payload == nil do continue
         // ⚠️ ver `face_glyph_count_in_ranges`: face com ZERO glifo aborta o
-        // processo lá embaixo, DENTRO do FontAtlas_Build. O payload NÃO é
-        // liberado: nada foi adicionado ao atlas agora, mas as faces vivem a
-        // sessão inteira por desenho (ver o aviso do topo) e o teto é MAX_FACES
-        // — não vale abrir uma exceção de tempo de vida aqui.
+        // processo lá embaixo, DENTRO do FontAtlas_Build. Esta entrada nunca
+        // entra no atlas: seu payload pode ser reciclado no próximo registro.
         // O FONTPROBE imprime a contagem de TODA face, não só das recusadas: é
         // a evidência que faltou quando eu tentei atribuir um crash a este
         // caminho sem número na mão.
         n_glifos := face_glyph_count_in_ranges(f.payload, g_text_ranges[:])
         when #config(FONTPROBE, false) {
             fmt.eprintfln("[FF] face %s: %d glifos nos ranges do atlas%s",
-                f.url, n_glifos, n_glifos == 0 ? " -> RECUSADA (abortaria o Build)" : "")
+                font_log_url(f.url), n_glifos, n_glifos == 0 ? " -> RECUSADA (abortaria o Build)" : "")
         }
         if n_glifos == 0 {
             f.state = .Failed // `fontface_pick` pula: a família cai na genérica
+            f.failure = .No_Glyphs
+            fmt.eprintfln("[FONT] family=%q weight=%d italic=%v failure=No_Glyphs url=%s", g_face_families[int(f.fam_id)-1], f.weight, f.italic, font_log_url(f.url))
             continue
         }
         for sz, k in g_font_sizes {
@@ -578,9 +674,21 @@ fontface_pick :: proc(fam_id: u8, weight: int, italic: bool, step: int) -> (^im.
         if cost < best_cost { best_cost = cost; best = i }
     }
     when #config(FONTPROBE, false) {
-        @(static) n := 0
-        n += 1
-        if n <= 5 do fmt.eprintfln("[FF] pick fam=%d w=%d it=%v step=%d -> %v", fam_id, weight, italic, step, best >= 0)
+        // Log changes rather than just the first five calls (often made before
+        // any download completed). Include the actual selected variant.
+        @(static) previous: map[u32]int
+        if previous == nil do previous = make(map[u32]int)
+        key := u32(fam_id) << 17 | u32(weight) << 1 | u32(italic ? 1 : 0)
+        last, seen := previous[key]
+        if !seen || last != best {
+            previous[key] = best
+            if best >= 0 {
+                f := &g_faces[best]
+                fmt.eprintfln("[FF] pick fam=%d requested-weight=%d requested-italic=%v -> weight=%d italic=%v url=%s", fam_id, weight, italic, f.weight, f.italic, font_log_url(f.url))
+            } else {
+                fmt.eprintfln("[FF] pick fam=%d requested-weight=%d requested-italic=%v -> generic fallback", fam_id, weight, italic)
+            }
+        }
     }
     if best < 0 do return nil, 0
     return g_faces[best].fonts[step], g_faces[best].em
@@ -594,7 +702,10 @@ fontface_pick :: proc(fam_id: u8, weight: int, italic: bool, step: int) -> (^im.
 fontface_pending :: proc() -> bool {
     sync.mutex_lock(&g_face_lock)
     defer sync.mutex_unlock(&g_face_lock)
-    for &f in g_faces do if f.state == .Loading && !sync.atomic_load(&f.done) do return true
+    for &f in g_faces {
+        if f.state == .Loading && !sync.atomic_load(&f.done) do return true
+        if f.state == .Failed && f.retryable && f.attempts < FONT_MAX_ATTEMPTS do return true
+    }
     return false
 }
 
