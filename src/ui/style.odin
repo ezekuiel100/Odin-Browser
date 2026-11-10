@@ -952,6 +952,9 @@ Hover_Style :: struct {
     bg:           u32, has_bg:       bool,
     border_c:     u32, has_border_c: bool,
     opacity:      f32, has_opacity:  bool,
+    shadows:      [MAX_SHADOWS]Shadow,
+    shadow_n:     int,
+    has_shadow:   bool, // includes box-shadow:none, which clears the base shadows
     // text-decoration do estado (linha/cor/estilo/espessura), não só o sublinhado:
     // `a:hover{text-decoration:none}` é tão comum quanto o inverso.
     deco:         Deco, has_deco:     bool,
@@ -2236,6 +2239,10 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
             if hc.has_bg && (!comp.has_bg || hc.bg != comp.bg) { comp.hover.has_bg = true; comp.hover.bg = hc.bg }
             if hc.has_border && hc.border_c[0] != comp.border_c[0] { comp.hover.has_border_c = true; comp.hover.border_c = hc.border_c[0] }
             if hc.opacity != comp.opacity        { comp.hover.has_opacity  = true; comp.hover.opacity  = hc.opacity }
+            if hc.shadow_n != comp.shadow_n || hc.shadows != comp.shadows {
+                comp.hover.has_shadow = true
+                comp.hover.shadows = hc.shadows; comp.hover.shadow_n = hc.shadow_n
+            }
             // text-decoration: compara a decoração INTEIRA e também o `deco_set`.
             // Sem o segundo, `a:hover{text-decoration:none}` sem regra normal some:
             // os dois lados têm underline=false (o sublinhado do link só nasce no

@@ -106,6 +106,11 @@ Layer_Cache :: struct {
 g_layer_cache: map[rawptr]Layer_Cache
 g_frame: int = 0 // contador de frames (incrementa em paint_layout)
 
+// Geometry-only shadow masks can be shared by cards and tinted at draw time.
+Shadow_Key :: struct { w, h, radius, dx, dy, blur, spread: f32 }
+Shadow_Mask :: struct { tex: ^sdl2.Texture, x, y: f32, w, h, used: int }
+g_shadow_masks: map[Shadow_Key]Shadow_Mask
+
 @(private="file")
 fnv :: proc(h: u64, v: u32) -> u64 { return (h ~ u64(v)) * 1099511628211 }
 
@@ -5709,8 +5714,9 @@ compute_subtree_bbox :: proc(b: ^Box) {
     // box-shadow externa: deslocamento + spread + ALCANCE do blur (~3σ). Usa o
     // mesmo blur_spread que composite_layer usa na margem de filtro — se um dia
     // divergirem, a sombra é cortada numa borda reta (a armadilha já anotada lá).
-    for i in 0 ..< b.shadow_n {
-        sh := b.shadows[i]
+    // Include both states: hover can introduce ink outside the idle bounds.
+    for i in 0 ..< b.shadow_n + b.hover.shadow_n {
+        sh := i < b.shadow_n ? b.shadows[i] : b.hover.shadows[i - b.shadow_n]
         if sh.inset do continue
         sp := sh.spread + blur_spread(sh.blur)
         x0 = min(x0, bx + sh.dx - sp);          y0 = min(y0, by + sh.dy - sp)
@@ -7519,6 +7525,12 @@ paint_layout :: proc(s: ^State, root: ^Box) {
     // RenderDrawData de fim-de-frame) e zera o orçamento de layers deste frame.
     animation_step_tree(root, im.GetIO().DeltaTime)
     g_frame += 1
+    shadow_stale := make([dynamic]Shadow_Key, 0, 8, context.temp_allocator)
+    for k, e in g_shadow_masks do if e.used < g_frame - 1 do append(&shadow_stale, k)
+    for k in shadow_stale {
+        sdl2.DestroyTexture(g_shadow_masks[k].tex)
+        delete_key(&g_shadow_masks, k)
+    }
     for t in g_layer_textures do sdl2.DestroyTexture(t)
     clear(&g_layer_textures)
     // eviction do cache de layers: destrói as entradas não usadas no frame anterior
@@ -7567,28 +7579,76 @@ paint_layout :: proc(s: ^State, root: ^Box) {
     im.Dummy({1, 1})
 }
 
-// Desenha uma box-shadow externa. Sem blur nativo no ImGui: aproxima o desfoque
-// empilhando N retângulos translúcidos crescentes (núcleo opaco, bordas suaves).
+// Antialiased coverage of a rounded box, in box-local coordinates.
+@(private="file")
+shadow_box_coverage :: proc(x, y, w, h, radius: f32) -> f32 {
+    if w <= 0 || h <= 0 do return 0
+    r := clamp(radius, 0, min(w, h) * 0.5)
+    qx := abs(x - w * 0.5) - (w * 0.5 - r)
+    qy := abs(y - h * 0.5) - (h * 0.5 - r)
+    ax, ay := max(qx, 0), max(qy, 0)
+    d := math.sqrt(ax * ax + ay * ay) + min(max(qx, qy), 0) - r
+    return clamp(0.5 - d, 0, 1)
+}
+
+// Blur the spread/offset silhouette first, then knock out the ORIGINAL border
+// box. An outer shadow never shows through a translucent or absent background.
+@(private="file")
+shadow_mask_alpha :: proc(k: Shadow_Key, x0, y0: f32, w, h: int) -> []f32 {
+    a := make([]f32, w * h, context.temp_allocator)
+    sr := k.radius > 0 ? max(k.radius + k.spread, 0) : f32(0)
+    for y in 0..<h {
+        for x in 0..<w {
+            px, py := x0 + f32(x) + 0.5, y0 + f32(y) + 0.5
+            a[y*w+x] = shadow_box_coverage(px - k.dx + k.spread, py - k.dy + k.spread,
+                k.w + 2*k.spread, k.h + 2*k.spread, sr)
+        }
+    }
+    blur_alpha(a, w, h, k.blur * 0.5)
+    for y in 0..<h {
+        for x in 0..<w {
+            px, py := x0 + f32(x) + 0.5, y0 + f32(y) + 0.5
+            a[y*w+x] *= 1 - shadow_box_coverage(px, py, k.w, k.h, k.radius)
+        }
+    }
+    return a
+}
+
+// Cached Gaussian alpha mask, drawn as one quad (also follows group transforms).
 @(private="file")
 draw_box_shadow :: proc(dl: ^im.DrawList, x0, y0, x1, y1, radius: f32, sh: Shadow, eff: f32) {
     // Mesma convencao das demais cores CSS: byte alto zero significa opaco.
     ab := (sh.color >> 24) & 0xff
     base := ab == 0 ? f32(1) : f32(ab) / 255.0
-    if base <= 0 do return
-
-    steps := 1
-    if sh.blur > 1 do steps = clamp(int(sh.blur * 0.5), 3, 12)
-    a_each := base / f32(steps)
-
-    rgb := sh.color & 0x00ffffff // tira o alpha; col_o aplica o nosso
-    for i in 0 ..< steps {
-        // i=0 = núcleo (cresce só pelo spread); último = spread + blur
-        grow := sh.spread + sh.blur * (f32(i) / f32(max(steps - 1, 1)))
-        if x1 - x0 + 2 * grow <= 0 || y1 - y0 + 2 * grow <= 0 do continue
-        rr := max(radius + grow, 0)
-        c := col_o(rgb, eff * a_each)
-        im.DrawList_AddRectFilled(dl, {x0 + sh.dx - grow, y0 + sh.dy - grow}, {x1 + sh.dx + grow, y1 + sh.dy + grow}, c, rr)
+    if base <= 0 || eff <= 0 || g_renderer == nil do return
+    k := Shadow_Key{x1-x0, y1-y0, radius, sh.dx, sh.dy, max(sh.blur, 0), sh.spread}
+    if k.w <= 0 || k.h <= 0 || k.w + 2*k.spread <= 0 || k.h + 2*k.spread <= 0 do return
+    e, found := g_shadow_masks[k]
+    if !found {
+        pad := blur_spread(k.blur * 0.5) + 2
+        lx, ly := math.floor(min(0, k.dx-k.spread-pad)), math.floor(min(0, k.dy-k.spread-pad))
+        rx, ry := math.ceil(max(k.w, k.w+k.dx+k.spread+pad)), math.ceil(max(k.h, k.h+k.dy+k.spread+pad))
+        // Match the offscreen compositor's bounded texture allocation.
+        if rx-lx > 8192 || ry-ly > 8192 || (rx-lx)*(ry-ly) > 16_777_216 do return
+        w, h := int(rx-lx), int(ry-ly)
+        a := shadow_mask_alpha(k, lx, ly, w, h)
+        buf := make([]u8, w*h*4, context.temp_allocator)
+        for v, i in a {
+            buf[i*4] = 255; buf[i*4+1] = 255; buf[i*4+2] = 255
+            buf[i*4+3] = u8(clamp(math.round(v*255), 0, 255))
+        }
+        tex := sdl2.CreateTexture(g_renderer, .ABGR8888, .STATIC, c.int(w), c.int(h))
+        if tex == nil do return
+        if sdl2.UpdateTexture(tex, nil, raw_data(buf), c.int(w*4)) != 0 {
+            sdl2.DestroyTexture(tex); return
+        }
+        sdl2.SetTextureBlendMode(tex, .BLEND)
+        sdl2.SetTextureScaleMode(tex, .Linear)
+        e = Shadow_Mask{tex, lx, ly, w, h, g_frame}
     }
+    e.used = g_frame; g_shadow_masks[k] = e
+    p := im.Vec2{x0+e.x, y0+e.y}
+    im.DrawList_AddImage(dl, im.TextureID(uintptr(e.tex)), p, {p.x+f32(e.w), p.y+f32(e.h)}, {0, 0}, {1, 1}, col_o(sh.color & 0x00ffffff, eff*base))
 }
 
 // Desenha uma box-shadow INSET (sombra interna). Empilha anéis translúcidos
@@ -8601,6 +8661,11 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // troca o valor base (ex.: classe alternada por JS) — a transition anima em
     // ambos os casos. Sem transition (dur=0) ou sem nó, usa o alvo instantâneo.
     hovering := b.hover.active && over
+    eff_shadows := b.shadows
+    eff_shadow_n := b.shadow_n
+    if hovering && b.hover.has_shadow {
+        eff_shadows = b.hover.shadows; eff_shadow_n = b.hover.shadow_n
+    }
     tgt_bg      := (b.hover.has_bg      && hovering) ? b.hover.bg      : b.bg
     tgt_bg_has  := b.hover.has_bg && hovering ? true : b.has_bg
     tgt_border  := (b.hover.has_border_c && hovering) ? b.hover.border_c : b.border_c[0]
@@ -8805,9 +8870,9 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     if !b.invisible {
         // box-shadow externa: desenhada ATRÁS do fundo/borda do próprio box.
         // (as inset vêm depois do fundo, por cima — ver abaixo.)
-        for i := b.shadow_n - 1; i >= 0; i -= 1 {
-            if b.shadows[i].inset do continue
-            emit(pt, PC_Shadow{screen.x, screen.y, screen.x + b.w, screen.y + b.h, radius, b.shadows[i], eff, false})
+        for i := eff_shadow_n - 1; i >= 0; i -= 1 {
+            if eff_shadows[i].inset do continue
+            emit(pt, PC_Shadow{screen.x, screen.y, screen.x + b.w, screen.y + b.h, radius, eff_shadows[i], eff, false})
         }
         // FUNDO DO CANVAS (css-backgrounds §2.11.2): o fundo do elemento raiz (ou
         // do <body>, quando a raiz não tem) cobre a PÁGINA INTEIRA. Sem isto,
@@ -8860,9 +8925,9 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
             emit_bg_image(pt, op0, op1, cv0, cv1, b, eff, -1) // -1 = camada 0
         }
         // box-shadow inset: por cima do fundo, recortada à caixa, sob a borda.
-        for i := b.shadow_n - 1; i >= 0; i -= 1 {
-            if !b.shadows[i].inset do continue
-            emit(pt, PC_Shadow{screen.x, screen.y, screen.x + b.w, screen.y + b.h, radius, b.shadows[i], eff, true})
+        for i := eff_shadow_n - 1; i >= 0; i -= 1 {
+            if !eff_shadows[i].inset do continue
+            emit(pt, PC_Shadow{screen.x, screen.y, screen.x + b.w, screen.y + b.h, radius, eff_shadows[i], eff, true})
         }
         if b.has_border && !hide_empty {
             if b.bimg.active do emit(pt, PC_BorderImage{screen, b, eff_border, eff, radius, corner_flags})
@@ -9057,6 +9122,17 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
             }
         }
         emit(pt, PC_MaskCorners{screen.x, screen.y, screen.x + b.w, screen.y + b.h, radius, corner_flags, col_o(behind, eff)})
+        // The corner cleanup also erased the outer shadow in those notches.
+        // Restore only the part inside the rectangular box; the mask has a
+        // transparent hole for the rounded interior, so children stay intact.
+        if !b.invisible && eff_shadow_n > 0 {
+            emit(pt, PC_PushClip{screen, {screen.x + b.w, screen.y + b.h}})
+            for i := eff_shadow_n - 1; i >= 0; i -= 1 {
+                if eff_shadows[i].inset do continue
+                emit(pt, PC_Shadow{screen.x, screen.y, screen.x + b.w, screen.y + b.h, radius, eff_shadows[i], eff, false})
+            }
+            emit(pt, PC_PopClip{})
+        }
         if b.has_border {
             if b.bimg.active do emit(pt, PC_BorderImage{screen, b, eff_border, eff, radius, corner_flags})
             else             do emit(pt, PC_Border{screen, b, eff_border, eff, radius, corner_flags})

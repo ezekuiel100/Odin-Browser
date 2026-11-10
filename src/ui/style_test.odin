@@ -2306,6 +2306,19 @@ test_object_position :: proc(t: ^testing.T) {
 // ── :hover ─────────────────────────────────────────────────────────────────
 
 @(test)
+test_hover_box_shadow :: proc(t: ^testing.T) {
+    c := test_compute_one("div:hover{box-shadow:0 8px 24px #ff800080, inset 0 0 4px blue}", "div")
+    testing.expect(t, c.shadow_n == 0, "hover shadow does not leak into idle")
+    testing.expect(t, c.hover.has_shadow && c.hover.shadow_n == 2, "hover keeps both shadow layers")
+    testing.expect(t, near(c.hover.shadows[0].blur, 24) && !c.hover.shadows[0].inset, "outer blur preserved")
+    testing.expect(t, c.hover.shadows[1].inset, "inset preserved")
+    n := test_compute_one("div{box-shadow:0 0 20px red} div:hover{box-shadow:none}", "div")
+    testing.expect(t, n.shadow_n == 1 && n.hover.has_shadow && n.hover.shadow_n == 0, "none clears base shadow on hover")
+    r := test_compute_one("div{box-shadow:0 0 20px red} div:hover{box-shadow:0 0 20px blue}", "div")
+    testing.expect(t, r.hover.has_shadow && r.hover.shadows[0].color == 0x0000ff, "hover replaces equal-length shadow list")
+}
+
+@(test)
 test_hover_color :: proc(t: ^testing.T) {
     c := test_compute_one("a{color:blue} a:hover{color:red}", "a")
     testing.expect_value(t, c.color, u32(0x0000ff))       // normal: azul (hover NÃO vaza)
