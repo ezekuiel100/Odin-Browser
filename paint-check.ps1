@@ -1087,6 +1087,13 @@ try {
     Assert "animation pausa por clique preserva os relogios" ((Px3d $pauseBmp 134 300 $fade.R $fade.G $fade.B) -and (Px3d $pauseBmp 818 300 $combo.R $combo.G $combo.B)) ("antes="+$combo+", pausa="+$pauseBmp.GetPixel(818,300))
 } finally { $refBmp.Dispose(); $pauseBmp.Dispose() }
 
+# Inline opacity/visibility and out-of-flow descendants inside buttons.
+& (Join-Path $PSScriptRoot "tools/check-inline-effects.ps1") -Browser $Browser
+Assert "10 casos de efeitos e posicionamento inline" ($LASTEXITCODE -eq 0) "ver casos acima"
+
+& (Join-Path $PSScriptRoot "tools/check-inline-controls.ps1") -Browser $Browser
+Assert "7 casos de estilos e pseudo-elementos inline" ($LASTEXITCODE -eq 0) "ver casos acima"
+
 # Contextos: a mesma fixture roda sozinha para comparacao antes/depois.
 & (Join-Path $PSScriptRoot "tools/check-stacking.ps1") -Browser $Browser
 Assert "24 casos de contexto de empilhamento" ($LASTEXITCODE -eq 0) "ver casos acima"

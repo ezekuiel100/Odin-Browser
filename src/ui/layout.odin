@@ -505,12 +505,17 @@ Box :: struct {
     align:     Text_Align,
     align_last: Text_Align, has_align_last: bool, // text-align-last (última linha)
     inlines:   [dynamic]Inline_Item,
+    inline_effects: [dynamic]^Inline_Effect, // owned scopes, shared by word fragments
+    inline_parent_effect: ^Inline_Effect, // out-of-flow descendants retain inline opacity
 
     children: [dynamic]^Box,
 }
 
 Inline_Item :: struct {
     kind:  enum { Word, Image, Break, InlineBox },
+    effect: ^Inline_Effect,
+    invisible: bool, // independent of line-clamp/ellipsis
+    ibg_invisible: bool,
     box:   ^Box,   // InlineBox: caixa (display:inline-block) que flui na linha (owned)
                    // ⚠️ p/ InlineBox, x/y/w/h descrevem a MARGIN box (a border-box
                    // é bx.w/bx.h, deslocada por bx.x/bx.y = margem esq/topo).
@@ -567,7 +572,7 @@ Inline_Item :: struct {
     draw_bytes: int,
 }
 
-Inline_Style :: struct { size: f32, weight: Font_Weight, italic: bool, color: u32, href: string, deco: Deco, lh: f32, family: Font_Family, fam_id: u8, letter_spacing: f32, ttx: Text_Transform, valign: V_Align, break_word: bool, tab_size: int, font_kerning: Font_Kerning, break_all, min_break: bool }
+Inline_Style :: struct { size: f32, weight: Font_Weight, italic: bool, color: u32, href: string, deco: Deco, lh: f32, family: Font_Family, fam_id: u8, letter_spacing: f32, ttx: Text_Transform, valign: V_Align, break_word: bool, tab_size: int, font_kerning: Font_Kerning, break_all, min_break: bool, effect: ^Inline_Effect, invisible: bool }
 
 // ── Construção da árvore ─────────────────────────────────────────────────────
 
@@ -745,9 +750,9 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
             // strut: caixa-linha tem no mínimo a altura da fonte PRÓPRIA do bloco ×
             // line-height (CSS §10.8), mesmo que o conteúdo seja menor (ex.: font-size:0).
             b.strut = eff_size * (comp.line_height > 0 ? comp.line_height : 1.3)
-            st := Inline_Style{eff_size, eff_weight, eff_ital, eff_color, "", deco_of(comp), comp.line_height, eff_family, comp.font_fam_id, comp.letter_spacing, comp.text_transform, .Baseline, comp.break_word || comp.break_all, comp.tab_size, comp.font_kerning, comp.break_all, comp.break_all || comp.wrap_anywhere}
+            st := Inline_Style{eff_size, eff_weight, eff_ital, eff_color, "", deco_of(comp), comp.line_height, eff_family, comp.font_fam_id, comp.letter_spacing, comp.text_transform, .Baseline, comp.break_word || comp.break_all, comp.tab_size, comp.font_kerning, comp.break_all, comp.break_all || comp.wrap_anywhere, nil, comp.invisible}
             pending, started := false, false
-            build_inline_items(node, &b.inlines, styles, st, base, &pending, &started, eff_ws, root = true, grads = &b.inline_grads)
+            build_inline_items(node, &b.inlines, styles, st, base, &pending, &started, eff_ws, root = true, grads = &b.inline_grads, owner = b)
             coalesce_words(&b.inlines)
         } else {
             build_block_children(node, b, styles, base, eff_size, eff_weight, eff_ital, eff_color, comp.text_align, deco_of(comp), eff_ws, comp.line_height, eff_family, comp.font_fam_id, comp.letter_spacing, comp.text_transform)
@@ -798,6 +803,8 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
                     anon := new_box(); anon.kind = .Block; anon.is_inline = true; anon.align = b.align
                     anon.align_last = b.align_last; anon.has_align_last = b.has_align_last
                     anon.inlines = b.inlines
+                    anon.inline_effects = b.inline_effects; b.inline_effects = nil
+                    anon.invisible = b.invisible
                     b.inlines = nil
                     b.is_inline = false
                     append(&b.children, anon)
@@ -836,6 +843,8 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
                 anon := new_box(); anon.kind = .Block; anon.is_inline = true; anon.align = b.align
                 anon.align_last = b.align_last; anon.has_align_last = b.has_align_last
                 anon.inlines = b.inlines
+                anon.inline_effects = b.inline_effects; b.inline_effects = nil
+                anon.invisible = b.invisible
                 b.inlines = nil
                 b.is_inline = false
                 append(&b.children, anon)
@@ -883,7 +892,7 @@ build_first_letter_box :: proc(pc: ^Computed, text: string, base: string) -> ^Bo
     pb.is_inline = true
     font, scale, fem := l_pick_font(pc.font_size, pc.weight, pc.font_fam_id, pc.font_family, pc.italic)
     it := Inline_Item{
-        kind = .Word, text = strings.clone(text),
+        kind = .Word, text = strings.clone(text), invisible = pc.invisible,
         font = font, fsize = pc.font_size, scale = scale, em = fem,
         color = pc.color != 0 ? pc.color : DEFAULT_TEXT,
         lh = pc.line_height > 0 ? pc.line_height : 1.3,
@@ -900,7 +909,7 @@ build_first_letter_box :: proc(pc: ^Computed, text: string, base: string) -> ^Bo
 pseudo_inline_word :: proc(pc: Computed) -> Inline_Item {
     font, scale, fem := l_pick_font(pc.font_size, pc.weight, pc.font_fam_id, pc.font_family, pc.italic)
     return Inline_Item{
-        kind = .Word, text = strings.clone(pc.content),
+        kind = .Word, text = strings.clone(pc.content), invisible = pc.invisible,
         font = font, fsize = pc.font_size, scale = scale, em = fem,
         color = pc.color != 0 ? pc.color : DEFAULT_TEXT,
         lh = pc.line_height > 0 ? pc.line_height : 1.3,
@@ -921,7 +930,7 @@ build_pseudo_box :: proc(pc: ^Computed, base: string) -> ^Box {
         pb.is_inline = true
         font, scale, fem := l_pick_font(pc.font_size, pc.weight, pc.font_fam_id, pc.font_family, pc.italic)
         it := Inline_Item{
-            kind = .Word, text = strings.clone(pc.content),
+            kind = .Word, text = strings.clone(pc.content), invisible = pc.invisible,
             font = font, fsize = pc.font_size, scale = scale, em = fem,
             color = pc.color != 0 ? pc.color : DEFAULT_TEXT,
             lh = pc.line_height > 0 ? pc.line_height : 1.3,
@@ -1182,6 +1191,7 @@ slot_host :: proc(slot: ^dompkg.Node) -> ^dompkg.Node {
 words_mergeable :: proc(a, b: ^Inline_Item) -> bool {
     return a.kind == .Word && b.kind == .Word &&
         !b.space_before &&                          // sem espaço colapsável entre eles
+        a.effect == b.effect && a.invisible == b.invisible &&
         a.href == "" && b.href == "" &&             // não funde links (hit-test por palavra)
         a.hov_grp == b.hov_grp &&                   // nem palavras de elementos :hover distintos
                                                     // (fundir moveria a região de hover)
@@ -1225,12 +1235,12 @@ build_block_children :: proc(node: ^dompkg.Node, b: ^Box, styles: map[^dompkg.No
 
     flush :: proc(b: ^Box, run: ^[dynamic]^dompkg.Node, styles: map[^dompkg.Node]Computed, base: string, size: f32, weight: Font_Weight, italic: bool, color: u32, align: Text_Align, deco: Deco, ws: White_Space, lh: f32, family: Font_Family, fam_id: u8, ls: f32, ttx: Text_Transform) {
         if len(run) == 0 do return
-        ibox := new_box(); ibox.kind = .Block; ibox.is_inline = true; ibox.align = align
-        st := Inline_Style{size, weight, italic, color, "", deco, lh, family, fam_id, ls, ttx, .Baseline, b.break_word, 0, b.font_kerning, b.break_all, b.min_break}
+        ibox := new_box(); ibox.kind = .Block; ibox.is_inline = true; ibox.align = align; ibox.invisible = b.invisible
+        st := Inline_Style{size, weight, italic, color, "", deco, lh, family, fam_id, ls, ttx, .Baseline, b.break_word, 0, b.font_kerning, b.break_all, b.min_break, nil, b.invisible}
         pending, started := false, false
-        for inode in run do build_inline_items(inode, &ibox.inlines, styles, st, base, &pending, &started, ws, grads = &ibox.inline_grads)
+        for inode in run do build_inline_items(inode, &ibox.inlines, styles, st, base, &pending, &started, ws, grads = &ibox.inline_grads, owner = ibox)
         coalesce_words(&ibox.inlines)
-        if len(ibox.inlines) > 0 {
+        if len(ibox.inlines) > 0 || len(ibox.children) > 0 {
             append(&b.children, ibox)
         } else {
             free_layout(ibox)
@@ -1298,12 +1308,12 @@ build_item_children :: proc(node: ^dompkg.Node, b: ^Box, styles: map[^dompkg.Nod
 
     flush :: proc(b: ^Box, run: ^[dynamic]^dompkg.Node, styles: map[^dompkg.Node]Computed, base: string, size: f32, weight: Font_Weight, italic: bool, color: u32, align: Text_Align, deco: Deco, family: Font_Family, fam_id: u8, ls: f32, ttx: Text_Transform, ws: White_Space) {
         if len(run) == 0 do return
-        ibox := new_box(); ibox.kind = .Block; ibox.is_inline = true; ibox.align = align
-        st := Inline_Style{size, weight, italic, color, "", deco, 1.3, family, fam_id, ls, ttx, .Baseline, b.break_word, 0, b.font_kerning, b.break_all, b.min_break}
+        ibox := new_box(); ibox.kind = .Block; ibox.is_inline = true; ibox.align = align; ibox.invisible = b.invisible
+        st := Inline_Style{size, weight, italic, color, "", deco, 1.3, family, fam_id, ls, ttx, .Baseline, b.break_word, 0, b.font_kerning, b.break_all, b.min_break, nil, b.invisible}
         pending, started := false, false
-        for inode in run do build_inline_items(inode, &ibox.inlines, styles, st, base, &pending, &started, ws, grads = &ibox.inline_grads)
+        for inode in run do build_inline_items(inode, &ibox.inlines, styles, st, base, &pending, &started, ws, grads = &ibox.inline_grads, owner = ibox)
         coalesce_words(&ibox.inlines)
-        if len(ibox.inlines) > 0 do append(&b.children, ibox)
+        if len(ibox.inlines) > 0 || len(ibox.children) > 0 do append(&b.children, ibox)
         else                     do free_layout(ibox)
         clear(run)
     }
@@ -1352,11 +1362,71 @@ under_inline_anchor :: proc(node: ^dompkg.Node) -> bool {
     return false
 }
 
-// Achata o conteúdo inline (texto, <a>, <b>, <img>, <br>) em itens.
-// pending: há whitespace pendente do fluxo? started: já saiu algum item?
-// (estado compartilhado por todo o contexto inline p/ colapsar/aparar espaços.)
+// Empty positioned inlines need an anchor even when all their children are out of flow.
 @(private="file")
-build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, styles: map[^dompkg.Node]Computed, st: Inline_Style, base: string, pending, started: ^bool, ws: White_Space, root := false, grads: ^[dynamic]Inline_Grad = nil) {
+inline_flow_presence :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed) -> (flow, positioned: bool) {
+    kids := make([dynamic]^dompkg.Node, context.temp_allocator)
+    flow_children(node, styles, &kids)
+    if c, ok := &styles[node]; ok {
+        flow = (c.before != nil && c.before.has_content) || (c.after != nil && c.after.has_content)
+    }
+    for child in kids {
+        if child.kind == .Text {
+            if strings.trim_space(child.text) != "" do flow = true
+            continue
+        }
+        if child.kind != .Element || l_is_skip(child.tag) do continue
+        c, ok := &styles[child]
+        if !ok || c.display_none do continue
+        if c.position == .Absolute || c.position == .Fixed { positioned = true; continue }
+        if child.tag == "br" || child.tag == "img" || child.tag == "svg" ||
+           c.display_inline_block || c.display_inline_level || !l_flows_inline(child.tag, c^) {
+            flow = true
+        }
+        f, p := inline_flow_presence(child, styles)
+        flow = flow || f; positioned = positioned || p
+    }
+    return
+}
+
+// Generated inline content must keep its own style and geometric boxes.
+@(private="file")
+build_inline_pseudo :: proc(pc: ^Computed, items: ^[dynamic]Inline_Item, st: Inline_Style,
+                            base: string, pending, started: ^bool, ws: White_Space, owner: ^Box) {
+    if pc.display_none do return
+    positioned := pc.position == .Absolute || pc.position == .Fixed
+    boxed := !pc.display_contents && (positioned || pc.display_inline_block || pc.display_block ||
+        pc.has_width || pc.has_height || pc.has_bg || pc.has_border || pc.bg_img != "" ||
+        pc.has_transform || pc.opacity != 1)
+    if boxed {
+        pb := build_pseudo_box(pc, base)
+        if positioned && owner != nil {
+            pb.inline_parent_effect = st.effect
+            append(&owner.children, pb)
+            if st.effect != nil {
+                append(&st.effect.absolutes, pb)
+                append(items, Inline_Item{kind = .InlineBox, effect = st.effect})
+            }
+        } else {
+            append(items, Inline_Item{kind = .InlineBox, box = pb, effect = st.effect,
+                valign = pc.valign, nowrap = ws == .Pre || ws == .Nowrap,
+                space_before = pending^ && started^})
+            started^ = true; pending^ = false
+        }
+        return
+    }
+    ps := st
+    ps.size = pc.font_size; ps.weight = pc.weight; ps.italic = pc.italic
+    ps.family = pc.font_family; ps.fam_id = pc.font_fam_id; ps.color = pc.color
+    ps.invisible = pc.invisible; ps.lh = pc.line_height
+    ps.letter_spacing = pc.letter_spacing; ps.font_kerning = pc.font_kerning
+    ps.ttx = pc.text_transform
+    add_words(items, pc.content, ps, pending, started, pc.white_space)
+}
+
+// Flatten inline content into words without losing paint scopes or out-of-flow boxes.
+@(private="file")
+build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, styles: map[^dompkg.Node]Computed, st: Inline_Style, base: string, pending, started: ^bool, ws: White_Space, root := false, grads: ^[dynamic]Inline_Grad = nil, owner: ^Box = nil) {
     #partial switch node.kind {
     case .Text:
         add_words(items, node.text, st, pending, started, ws)
@@ -1366,12 +1436,26 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         // num <span> inline) vaza como palavras no fluxo. Os contextos de bloco
         // já filtram; aqui é o filtro do contexto inline. `root` nunca é skip/none.
         if l_is_skip(node.tag) do return
-        if comp, ok := styles[node]; ok && comp.display_none && !root do return
+        if comp, ok := &styles[node]; ok && comp.display_none && !root do return
+        if comp, ok := &styles[node]; ok && !root && owner != nil &&
+           (comp.position == .Absolute || comp.position == .Fixed) {
+            if cb := build_layout(node, styles, base); cb != nil {
+                cb.inline_parent_effect = st.effect
+                append(&owner.children, cb)
+                if st.effect != nil {
+                    append(&st.effect.absolutes, cb)
+                    // A zero-width paint anchor keeps an otherwise empty opacity
+                    // scope alive without contributing a word or line break.
+                    append(items, Inline_Item{kind = .InlineBox, effect = st.effect})
+                }
+            }
+            return
+        }
         // float: NÃO é conteúdo inline — o bloco pai o hasteia e posiciona (ver
         // collect_floats/build_block_children). Pular aqui evita laytá-lo no fluxo
         // (o que avançava o cy e desalinhava). `root` = este nó É o float sendo
         // construído por build_layout → não pular (senão a caixa ficaria vazia).
-        if comp, ok := styles[node]; ok && comp.float != .None && !root do return
+        if comp, ok := &styles[node]; ok && comp.float != .None && !root do return
         // display:inline-block: constrói uma caixa própria (bg/borda/padding/
         // width/height) que flui na linha como um item atômico (feito antes de
         // achatar o conteúdo, senão o span viraria texto solto). `root` = este nó
@@ -1380,9 +1464,9 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         // (idem p/ inline-flex/inline-grid/inline-table: `display_inline_level`
         // é átomo inline COM formatador próprio dentro — a caixa é construída por
         // build_layout, que já liga is_flex/is_grid/is_table.)
-        if comp, ok := styles[node]; ok && (comp.display_inline_block || comp.display_inline_level) && !root {
+        if comp, ok := &styles[node]; ok && (comp.display_inline_block || comp.display_inline_level) && !root {
             if cb := build_layout(node, styles, base); cb != nil {
-                append(items, Inline_Item{kind = .InlineBox, box = cb, valign = comp.valign, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
+                append(items, Inline_Item{kind = .InlineBox, box = cb, effect = st.effect, valign = comp.valign, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
                 started^ = true; pending^ = false
             }
             return
@@ -1399,12 +1483,37 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         // reftests de 3D-rendering-context e de ::first-letter+::marker que só
         // "passavam" porque a caixa era descartada. `!has_transform`: defesa extra
         // (um bloco 3D-transformado sob link seria mostrado sem a rotação).
-        if comp, ok := styles[node]; ok && !root && comp.float == .None && !comp.has_transform && !l_flows_inline(node.tag, comp) && under_inline_anchor(node) {
+        if comp, ok := &styles[node]; ok && !root && comp.float == .None && !comp.has_transform && !l_flows_inline(node.tag, comp^) && under_inline_anchor(node) {
             if cb := build_layout(node, styles, base); cb != nil {
-                append(items, Inline_Item{kind = .InlineBox, box = cb, valign = comp.valign, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
+                append(items, Inline_Item{kind = .InlineBox, box = cb, effect = st.effect, valign = comp.valign, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
                 started^ = true; pending^ = false
             }
             return
+        }
+        // An empty positioned inline still establishes an absolute containing
+        // block. Keep a zero-size anchor at the top of its line; this does not
+        // atomize spans containing flowing text or change their wrapping.
+        if comp, ok := &styles[node]; ok && !root && comp.position == .Relative && l_flows_inline(node.tag, comp^) {
+            flow, positioned := inline_flow_presence(node, styles)
+            if !flow && positioned {
+                if cb := build_layout(node, styles, base); cb != nil {
+                    append(items, Inline_Item{kind = .InlineBox, box = cb, effect = st.effect,
+                        valign = .Top, nowrap = ws == .Pre || ws == .Nowrap})
+                }
+                return
+            }
+        }
+        // Preserve an otherwise empty block wrapper around positioned children.
+        // Flattening this wrapper would lose its margins and the static position.
+        if comp, ok := &styles[node]; ok && !root && comp.float == .None &&
+           !comp.has_transform && !l_flows_inline(node.tag, comp^) {
+            flow, positioned := inline_flow_presence(node, styles)
+            if !flow && positioned {
+                if cb := build_layout(node, styles, base); cb != nil {
+                    append(items, Inline_Item{kind = .InlineBox, box = cb, effect = st.effect, valign = .Top})
+                }
+                return
+            }
         }
         // <svg> INLINE em fluxo de texto: sem isto o ícone SUMIA por completo.
         // `l_flows_inline` já dizia que <svg> flui inline, mas NÃO havia caso p/ ele
@@ -1415,15 +1524,27 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         if node.tag == "svg" {
             if cb := build_layout(node, styles, base); cb != nil {
                 va := V_Align.Baseline
-                if comp, ok := styles[node]; ok do va = comp.valign
-                append(items, Inline_Item{kind = .InlineBox, box = cb, valign = va, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
+                if comp, ok := &styles[node]; ok do va = comp.valign
+                append(items, Inline_Item{kind = .InlineBox, box = cb, effect = st.effect, valign = va, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
                 started^ = true; pending^ = false
             }
             return
         }
+        inline_st := st
+        if comp, ok := &styles[node]; ok {
+            inline_st.invisible = comp.invisible
+            if !root && owner != nil && (comp.opacity != 1 || comp.hover.has_opacity) {
+                effect := new(Inline_Effect)
+                effect^ = Inline_Effect{parent = st.effect, opacity = comp.opacity,
+                    hover_opacity = comp.hover.opacity, has_hover = comp.hover.has_opacity,
+                    node = node}
+                append(&owner.inline_effects, effect)
+                inline_st.effect = effect
+            }
+        }
         if node.tag == "img" {
-            it := Inline_Item{kind = .Image, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^}
-            if comp, ok := styles[node]; ok {
+            it := Inline_Item{kind = .Image, effect = inline_st.effect, invisible = inline_st.invisible, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^}
+            if comp, ok := &styles[node]; ok {
                 it.valign = comp.valign
                 // width/height do CSS dimensionam o replaced inline (senão usa o
                 // intrínseco — comum: logos sized por CSS que ficariam gigantes).
@@ -1447,12 +1568,12 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
             started^ = false; pending^ = false // apara espaço no início da nova linha
             return
         }
-        s2 := st
+        s2 := inline_st
         ws2 := ws
         // estilo COMPUTADO do próprio elemento inline: color/font-family só quando
         // explicitamente definidos (senão herda — preserva cor de link e mono do
         // <pre>); text-transform/letter-spacing/font-size/decorações herdam direto.
-        if comp, ok := styles[node]; ok {
+        if comp, ok := &styles[node]; ok {
             ws2 = comp.white_space // já veio herdado do compute_styles
             if comp.has_color       do s2.color  = comp.color
             if comp.has_font_family { s2.family = comp.font_family; s2.fam_id = comp.font_fam_id }
@@ -1462,8 +1583,8 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
             if comp.has_font_size do s2.size = comp.font_size
             s2.break_word = comp.break_word || comp.break_all
             s2.break_all = comp.break_all; s2.min_break = comp.break_all || comp.wrap_anywhere
-            if comp.weight != .Regular do s2.weight = comp.weight
-            if comp.italic    do s2.italic = true
+            s2.weight = comp.weight
+            s2.italic = comp.italic
             // Decoração PROPAGA da caixa decoradora p/ os descendentes: o filho
             // acumula (OR) sobre o que já herdou no run — `text-decoration:none`
             // num descendente NÃO apaga a linha de um ancestral (CSS Text Decor §2).
@@ -1479,7 +1600,6 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         // UA em compute_styles (comp.italic acima) — forçar pela tag ignoraria
         // um font-style:normal do autor.
         switch node.tag {
-        case "b", "strong", "th":      s2.weight = .Bold
         case "u", "ins":               s2.deco.underline = true
         case "s", "del", "strike":     s2.deco.strike = true
         case "code", "kbd", "samp", "tt": if s2.family == .Sans do s2.family = .Mono
@@ -1490,7 +1610,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
                 // Defaults do UA-stylesheet para links, mas o AUTOR sobrepõe:
                 //   cor de link só quando o autor não definiu `color` no link;
                 //   sublinhado só quando o autor não definiu `text-decoration`.
-                lc := styles[node]
+                lc := &styles[node]
                 if !lc.has_color do s2.color = COL_LINK
                 if !lc.deco_set  do s2.deco.underline = true
             }
@@ -1499,15 +1619,15 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         // counter(c)}` num <span> vazio). Elementos de bloco/inline-block já injetam
         // os pseudos em build_layout; aqui é o caso inline puro. `root` = já tratado.
         if !root {
-            if pc, ok := styles[node]; ok && pc.before != nil && pc.before.has_content {
-                add_words(items, pc.before.content, s2, pending, started, ws2)
+            if pc, ok := &styles[node]; ok && pc.before != nil && pc.before.has_content {
+                build_inline_pseudo(pc.before, items, s2, base, pending, started, ws2, owner)
             }
         }
         // <q>: aspas geradas (UA `q::before{content:open-quote}` / `::after{close-quote}`).
         // Profundidade = nº de <q> ancestrais; marca vem de `quotes` ou default por idioma.
         q_lvl := node.tag == "q" ? q_depth(node) : -1
         if q_lvl >= 0 {
-            if qc, ok := styles[node]; ok {
+            if qc, ok := &styles[node]; ok {
                 if m := quote_mark(qc.quotes_raw, qc.lang, q_lvl, true); m != "" {
                     add_words(items, m, s2, pending, started, ws2)
                 }
@@ -1519,7 +1639,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         // caminho de BLOCO — um <slot> cercado de texto ficava no fallback.
         ikids := make([dynamic]^dompkg.Node, context.temp_allocator)
         flow_children(node, styles, &ikids)
-        for c in ikids do build_inline_items(c, items, styles, s2, base, pending, started, ws2, grads = grads)
+        for c in ikids do build_inline_items(c, items, styles, s2, base, pending, started, ws2, grads = grads, owner = owner)
         // Todos os itens deste <a> (palavras próprias e as de elementos aninhados)
         // ganham o MESMO grupo: o realce de hover vale o link INTEIRO, não só a
         // palavra sob o cursor. Mesmo esquema do `ibg_grp` — o guarda `== 0` faz o
@@ -1532,7 +1652,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         // `:hover` do AUTOR que muda a text-decoration num elemento INLINE. Mesmo
         // agrupamento: a região de hover é o ELEMENTO, e a decoração-alvo viaja no
         // item porque quem pinta a linha é o item, não a caixa.
-        if hv, ok := styles[node]; ok && hv.hover.active && hv.hover.has_deco && len(items) > start_idx {
+        if hv, ok := &styles[node]; ok && hv.hover.active && hv.hover.has_deco && len(items) > start_idx {
             hd := hv.hover.deco
             // O sublinhado de link nasce aqui (`!deco_set` logo acima), então o
             // estado :hover precisa do MESMO default: `a:hover{color:red}` não
@@ -1560,7 +1680,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         // por aqui — os ramos acima dão `return`; a margem dele, nos QUATRO lados, é
         // tratada no case .InlineBox do layout da linha (CSS 2.1 §10.8.1).
         if !root && len(items) > start_idx {
-            if lc, ok := styles[node]; ok {
+            if lc, ok := &styles[node]; ok {
                 left  := lc.margin[3] + lc.padding[3] + lc.border_w[3]
                 right := lc.margin[1] + lc.padding[1] + lc.border_w[1]
                 if left  != 0 do items[start_idx].pad_before += left
@@ -1582,6 +1702,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
                     for k in start_idx ..< len(items) {
                         if items[k].ibg_grp != 0 do continue // um filho aninhado já pegou
                         items[k].ibg_grp = grp
+                        items[k].ibg_invisible = lc.invisible
                         items[k].ibg_has = lc.has_bg
                         items[k].ibg  = lc.has_bg ? lc.bg : 0
                         items[k].ibd  = lc.border_c[0]
@@ -1600,7 +1721,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
             }
         }
         if q_lvl >= 0 {
-            if qc, ok := styles[node]; ok {
+            if qc, ok := &styles[node]; ok {
                 if m := quote_mark(qc.quotes_raw, qc.lang, q_lvl, false); m != "" {
                     add_words(items, m, s2, pending, started, ws2)
                 }
@@ -1608,8 +1729,8 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         }
         // ::after de um elemento inline achatado no run (ver ::before acima).
         if !root {
-            if pc, ok := styles[node]; ok && pc.after != nil && pc.after.has_content {
-                add_words(items, pc.after.content, s2, pending, started, ws2)
+            if pc, ok := &styles[node]; ok && pc.after != nil && pc.after.has_content {
+                build_inline_pseudo(pc.after, items, s2, base, pending, started, ws2, owner)
             }
         }
     }
@@ -1703,6 +1824,7 @@ add_words :: proc(items: ^[dynamic]Inline_Item, text: string, st: Inline_Style, 
         lh = st.lh, deco = st.deco, letter_spacing = st.letter_spacing,
         font_kerning = st.font_kerning, valign = st.valign, nowrap = no_wrap,
         can_break = st.break_word, break_all = st.break_all, min_break = st.min_break,
+        effect = st.effect, invisible = st.invisible,
     }
     i := 0
     for i < len(text) {
@@ -1771,7 +1893,7 @@ inject_list_marker :: proc(b: ^Box, node: ^dompkg.Node, size: f32, color: u32, f
     if !ok do return
     font, scale, fem := l_pick_font(size, .Regular, fam_id, family)
     it := Inline_Item{
-        kind = .Word, text = strings.clone(marker),
+        kind = .Word, text = strings.clone(marker), invisible = b.invisible,
         font = font, fsize = size, scale = scale, em = fem, color = color,
     }
     if b.is_inline {
@@ -2001,7 +2123,7 @@ inject_input_label :: proc(b: ^Box, node: ^dompkg.Node, size: f32, color: u32, f
     if !b.is_inline { b.is_inline = true }
     font, scale, fem := l_pick_font(size, .Regular, fam_id, family)
     append(&b.inlines, Inline_Item{
-        kind = .Word, text = strings.clone(label),
+        kind = .Word, text = strings.clone(label), invisible = b.invisible,
         font = font, fsize = size, scale = scale, em = fem, color = color,
     })
 }
@@ -3174,6 +3296,12 @@ apply_clamp_ellipsis :: proc(b: ^Box, start, end: int, cw: f32) {
 // centro da caixa. `nlines` devolve o nº de linhas (a busca binária do balance).
 layout_inline :: proc(b: ^Box, wrap_w: f32 = -1, nlines: ^int = nil) -> f32 {
     restore_text_fragments(b)
+    for child in b.children {
+        if child.pos == .Absolute || child.pos == .Fixed {
+            child.static_x = b.content_x; child.static_y = b.content_y
+            child.has_static = true
+        }
+    }
     cw := b.content_w
     ww := wrap_w >= 0 ? wrap_w : cw
     // text-wrap: balance — procura a MENOR largura de quebra que ainda produz o
@@ -5491,7 +5619,7 @@ Reparent :: struct { child, from, to, anchor: ^Box }
 // grupo (ex.: abspos sob opacity:0.5 recebe a opacidade), então não içamos.
 @(private="file")
 forms_group :: proc(b: ^Box) -> bool {
-    return creates_stacking_context(b) || b.hover.has_opacity || b.hover.has_transform || b.trans[.Opacity].on || b.trans[.Transform].on
+    return b.inline_parent_effect != nil || creates_stacking_context(b) || b.hover.has_opacity || b.hover.has_transform || b.trans[.Opacity].on || b.trans[.Transform].on
 }
 
 // ── BBOX DE SUBÁRVORE ────────────────────────────────────────────────────────
@@ -5761,20 +5889,32 @@ layout_absolutes_rec :: proc(b: ^Box, cb, page: Rect, cb_box, page_box: ^Box, gr
             layout_absolutes_rec(child, child_cb, child_fix, ccb_box, cfx_box, cgroup, cgroup_fixed, canchor, canchor_fix, rep)
         case .Absolute:
             place_absolute(child, child_cb)
-            if ccb_box != b && ccb_box != nil && !cgroup {
+            if ccb_box != b && ccb_box != nil && !cgroup && child.inline_parent_effect == nil {
                 mark_hoisted(child, canchor)
                 append(rep, Reparent{child, b, ccb_box, canchor})
             }
             layout_absolutes_rec(child, Rect{child.x, child.y, child.w, child.h}, child_fix, child, cfx_box, false, cgroup_fixed, child, canchor_fix, rep)
         case .Fixed:
             place_absolute(child, child_fix)
-            if cfx_box != b && cfx_box != nil && !cgroup_fixed {
+            if cfx_box != b && cfx_box != nil && !cgroup_fixed && child.inline_parent_effect == nil {
                 mark_hoisted(child, canchor_fix)
                 append(rep, Reparent{child, b, cfx_box, canchor_fix})
             }
             layout_absolutes_rec(child, Rect{child.x, child.y, child.w, child.h}, child_fix, child, cfx_box, false, cgroup_fixed, child, child, rep)
         }
     }
+    // Inline atoms use local coordinates. Visit their out-of-flow descendants
+    // with containing rectangles translated into that space; keep them there
+    // rather than hoisting into a tree with a different coordinate origin.
+    for it in b.inlines {
+        if it.kind != .InlineBox || it.box == nil do continue
+        dx := b.content_x + it.x; dy := b.content_y + it.y
+        local_cb := Rect{child_cb.x-dx, child_cb.y-dy, child_cb.w, child_cb.h}
+        local_fix := Rect{child_fix.x-dx, child_fix.y-dy, child_fix.w, child_fix.h}
+        layout_absolutes_rec(it.box, local_cb, local_fix, ccb_box, cfx_box,
+                             true, true, it.box, it.box, rep)
+    }
+
 }
 
 @(private="file")
@@ -8329,6 +8469,13 @@ paint_resize_grip :: proc(pt: ^Painter, b: ^Box, screen: im.Vec2, eff: f32) {
 
 paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, in_xform := false, scope: ^Stacking_Scope = nil, stacked := false, abs_origin: im.Vec2 = {}) {
     if scope != nil && !stacked && b in scope.deferred do return
+    if b.inline_parent_effect != nil {
+        effect := b.inline_parent_effect
+        b.inline_parent_effect = nil
+        defer b.inline_parent_effect = effect
+        paint_inline_absolute(pt, s, b, effect, ox, oy, opa, in_xform, scope, stacked, abs_origin)
+        return
+    }
     local_scope: Stacking_Scope
     active_scope := scope
     owns_scope := scope == nil || stacking_context_at(b, ox, oy)
@@ -8796,7 +8943,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         // mesma degradação do `:hover{color}`, que também não desce por caixas.
         hdeco := b.hover.deco
         if b.href != "" && !b.hover.deco_set do hdeco.underline = true // default de link do UA
-        if !b.invisible do paint_inline(pt, s, b, ox2, child_oy, eff, oc, ot, in_xform || b.has_transform || b.has_xform_matrix, hdeco, b.hover.has_deco && hovering, active_scope) // visibility:hidden esconde o texto
+        paint_inline(pt, s, b, ox2, child_oy, eff, oc, ot, in_xform || b.has_transform || b.has_xform_matrix, hdeco, b.hover.has_deco && hovering, active_scope) // per-item visibility lets descendants become visible
         if b.overflow_hidden do emit(pt, PC_PopClip{})
     } else {
         switch b.kind {
@@ -9003,8 +9150,7 @@ draw_spaced_text :: proc(dl: ^im.DrawList, font: ^im.Font, size: f32, pos: im.Ve
     }
 }
 
-@(private="file")
-paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, over_color: u32 = 0, over_t: f32 = 0, in_xform := false, box_deco: Deco = {}, box_deco_on := false, scope: ^Stacking_Scope = nil) {
+paint_inline_content :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, over_color: u32 = 0, over_t: f32 = 0, in_xform := false, box_deco: Deco = {}, box_deco_on := false, scope: ^Stacking_Scope = nil) {
     im.SetCursorPos({b.content_x + ox, b.content_y + oy})
     cs := im.GetCursorScreenPos()
 
@@ -9026,14 +9172,14 @@ paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1
     // rendem um run por linha (box-decoration-break:slice, o default).
     for i := 0; i < len(b.inlines); {
         it := b.inlines[i]
-        if it.ibg_grp == 0 || it.hidden { i += 1; continue }
+        if it.ibg_grp == 0 || it.hidden || it.ibg_invisible { i += 1; continue }
         grp := it.ibg_grp
         y0 := it.y
         x_left := cs.x + it.x - it.ibl
         x_right := cs.x + it.x + it.w
         top := f32(1e9); bot := f32(-1e9)
         j := i
-        for j < len(b.inlines) && b.inlines[j].ibg_grp == grp && b.inlines[j].y == y0 && !b.inlines[j].hidden {
+        for j < len(b.inlines) && b.inlines[j].ibg_grp == grp && b.inlines[j].y == y0 && !b.inlines[j].hidden && !b.inlines[j].ibg_invisible {
             e := b.inlines[j]
             x_right = cs.x + e.x + e.w + e.ibr
             core := e.fsize > 0 ? e.fsize : e.h // altura de conteúdo ≈ font-size (em box)
@@ -9089,7 +9235,7 @@ paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1
     }
 
     for &it, it_i in b.inlines {
-        if it.hidden do continue // cortado pelo text-overflow:ellipsis
+        if it.hidden || (it.invisible && it.kind != .InlineBox) do continue // retain layout for hidden text
         px := cs.x + it.x
         py := cs.y + it.y
         switch it.kind {
@@ -9177,7 +9323,7 @@ paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1
     }
 
     tem_link := false
-    if !b.pe_none do for &it in b.inlines do if it.href != "" && !it.hidden { tem_link = true; break }
+    if !b.pe_none do for &it in b.inlines do if it.href != "" && !it.hidden && !it.invisible { tem_link = true; break }
     if tem_link { // pointer-events:none e caixa sem link nenhum saem sem alocar nada
         // o realce do UA só existe p/ quem NÃO tem sublinhado: repetir a linha num
         // link já sublinhado dá traço duplo (o do texto e o do realce).
@@ -9195,7 +9341,7 @@ hovered_deco_grp :: proc(b: ^Box, cs: im.Vec2) -> u32 {
     hit: u32 = 0
     for i := 0; i < len(b.inlines); {
         it := b.inlines[i]
-        if it.hov_grp == 0 || it.hidden { i += 1; continue }
+        if it.hov_grp == 0 || it.hidden || it.invisible { i += 1; continue }
         x0 := cs.x + it.x; x1 := cs.x + it.x + it.w
         top := cs.y + it.y; bot := top + it.h
         j := i + 1
@@ -9237,7 +9383,7 @@ paint_link_hover :: proc(pt: ^Painter, s: ^State, b: ^Box, cs: im.Vec2, opa: f32
     runs := make([dynamic]Link_Run, 0, 4, context.temp_allocator)
     for i := 0; i < len(b.inlines); {
         it := b.inlines[i]
-        if it.href == "" || it.hidden { i += 1; continue }
+        if it.href == "" || it.hidden || it.invisible { i += 1; continue }
         wc := over_t > 0 ? lerp_color(it.color, over_color, over_t) : it.color
         r := Link_Run{
             grp = it.link_grp, href = it.href, col = col_o(wc, opa),
@@ -9252,7 +9398,7 @@ paint_link_hover :: proc(pt: ^Painter, s: ^State, b: ^Box, cs: im.Vec2, opa: f32
         // senão dois links vizinhos sem grupo viravam um só.
         for r.grp != 0 && j < len(b.inlines) {
             e := b.inlines[j]
-            if e.hidden || e.href == "" || e.link_grp != r.grp || e.y != it.y do break
+            if e.hidden || e.invisible || e.href == "" || e.link_grp != r.grp || e.y != it.y do break
             r.x1 = cs.x + e.x + e.w
             if v := cs.y + e.y;       v < r.top do r.top = v
             if v := cs.y + e.y + e.h; v > r.bot do r.bot = v
@@ -10235,6 +10381,8 @@ free_layout :: proc(b: ^Box) {
         if it.box != nil    do free_layout(it.box)
     }
     delete(b.inlines)
+    for effect in b.inline_effects { delete(effect.absolutes); free(effect) }
+    delete(b.inline_effects)
     delete(b.inline_grads)
     if b.img_url != ""   do delete(b.img_url)
     if b.bg_img != ""    do delete(b.bg_img)

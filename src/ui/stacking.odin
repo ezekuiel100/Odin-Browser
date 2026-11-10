@@ -58,14 +58,15 @@ collect_stacking :: proc(scope: ^Stacking_Scope, b: ^Box, ox, oy: f32, clip: int
     }
     child_oy := b.overflow_scroll ? oy - b.scroll_y : oy
     for child in stacking_children(b) {
+        if child.inline_parent_effect != nil do continue // painted by its inline opacity scope
         cc := overflow_escapes(b, child) ? clip : own_clip
         cx, cy := ox, child_oy
         if child.pos == .Absolute { cx = origin.x; cy = origin.y }
-        if child.pos == .Fixed { cx = 0; cy = 0 }
+        if child.pos == .Fixed { cx = origin.x; cy = origin.y }
         collect_stacking_child(scope, child, cx, cy, cc, origin)
     }
     for it in b.inlines {
-        if it.kind == .InlineBox && it.box != nil {
+        if it.kind == .InlineBox && it.box != nil && it.effect == nil {
             collect_stacking_child(scope, it.box, b.content_x + ox + it.x, b.content_y + child_oy + it.y, own_clip, {b.content_x + ox + it.x, b.content_y + child_oy + it.y})
         }
     }

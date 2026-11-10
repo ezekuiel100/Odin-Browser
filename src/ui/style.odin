@@ -2275,7 +2275,10 @@ compute_pseudo :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]strin
     pc := Computed{
         color = parent.color, font_size = parent.font_size,
         line_height = parent.line_height, font_family = parent.font_family,
-        italic = parent.italic,
+        italic = parent.italic, weight = parent.weight,
+        font_fam_id = parent.font_fam_id, invisible = parent.invisible,
+        white_space = parent.white_space, text_transform = parent.text_transform,
+        letter_spacing = parent.letter_spacing, font_kerning = parent.font_kerning,
         opacity = 1.0, deco_color = DECO_UNSET,
         // transform neutro (escala 1, origem 50%, matriz identidade). Sem isto os
         // campos ficam em 0 e o paint dispara um xform de matriz-zero que colapsa
