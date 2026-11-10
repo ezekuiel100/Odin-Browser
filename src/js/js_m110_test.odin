@@ -89,7 +89,8 @@ var Xa=e({tick:()=>Hr});
 export{Xa as t,un as U};`
     // {tick:()=>Hr}: o GETTER devolve a função Hr → W = Hr → W() = 9
     vm.module_stubs["app.js"] = `import{t as s}from"runtime.js";const{tick:W}=s;export const r=W();`
-    r := vm_run(vm, `var got; import("app.js").then(function(m){ got = m.r; }).catch(function(e){ got = ""+e; }); got`)
+    vm_run(vm, `var got; import("app.js").then(function(m){ got = m.r; }).catch(function(e){ got = ""+e; });`)
+    r := vm_run(vm, `got`)
     testing.expectf(t, as_number(r) == 9, "cenário sveltekit fim-a-fim: got %v", r)
 }
 

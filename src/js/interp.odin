@@ -4969,3 +4969,17 @@ run :: proc(src: string) -> Value {
     check_parse_recoveries(vm, src)
     return v
 }
+
+// Como `run`, mas lê `probe` numa SEGUNDA tarefa, depois do checkpoint de
+// microtasks que fecha a primeira. O valor de conclusão de `run(src)` é síncrono
+// (spec): `Promise.resolve(1).then(v => x = v); x` dá o valor ANTERIOR de x, então
+// testes de Promise/async que liam o estado ali codificavam o modelo antigo de
+// reações drenadas no settle (anterior ao bfd7c21).
+run_settled :: proc(src, probe: string) -> Value {
+    vm := vm_create()
+    defer vm_free(vm)
+    vm_run(vm, src)
+    v := vm_run(vm, probe)
+    check_parse_recoveries(vm, src)
+    return v
+}

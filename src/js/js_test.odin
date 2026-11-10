@@ -838,37 +838,39 @@ test_switch_continue_atravessa :: proc(t: ^testing.T) {
 
 @(test)
 test_promise_resolve_then :: proc(t: ^testing.T) {
-    src := "var got = -1; Promise.resolve(42).then(v => got = v); got"
-    testing.expect_value(t, as_number(run(src)), f64(42))
+    // reação é microtask: na mesma tarefa `got` ainda é -1; depois do checkpoint, 42
+    src := "var got = -1; Promise.resolve(42).then(v => got = v); var sync = got;"
+    testing.expect_value(t, as_number(run_settled(src, "sync")), f64(-1))
+    testing.expect_value(t, as_number(run_settled(src, "got")), f64(42))
 }
 
 @(test)
 test_promise_encadeamento :: proc(t: ^testing.T) {
     // then devolve promise derivada; o valor flui transformado pela cadeia
-    src := "var r = -1; Promise.resolve(5).then(v => v * 2).then(v => v + 1).then(v => r = v); r"
-    testing.expect_value(t, as_number(run(src)), f64(11))
+    src := "var r = -1; Promise.resolve(5).then(v => v * 2).then(v => v + 1).then(v => r = v);"
+    testing.expect_value(t, as_number(run_settled(src, "r")), f64(11))
 }
 
 @(test)
 test_promise_catch :: proc(t: ^testing.T) {
-    src := "var e = ''; Promise.reject('falhou').catch(x => e = 'pego:' + x); e"
-    v, _ := run(src).(string)
+    src := "var e = ''; Promise.reject('falhou').catch(x => e = 'pego:' + x);"
+    v, _ := run_settled(src, "e").(string)
     testing.expect_value(t, v, "pego:falhou")
 }
 
 @(test)
 test_promise_throw_no_then_vira_reject :: proc(t: ^testing.T) {
     // exceção dentro do then rejeita a derivada -> catch a pega
-    src := "var e = ''; Promise.resolve(1).then(function(v) { throw new Error('boom'); }).catch(x => e = x.message); e"
-    v, _ := run(src).(string)
+    src := "var e = ''; Promise.resolve(1).then(function(v) { throw new Error('boom'); }).catch(x => e = x.message);"
+    v, _ := run_settled(src, "e").(string)
     testing.expect_value(t, v, "boom")
 }
 
 @(test)
 test_promise_reject_passa_pelo_then :: proc(t: ^testing.T) {
     // then sem handler de erro é passthrough: a rejeição segue até o catch
-    src := "var e = ''; Promise.reject('x').then(v => 'nunca').catch(r => e = 'fim:' + r); e"
-    v, _ := run(src).(string)
+    src := "var e = ''; Promise.reject('x').then(v => 'nunca').catch(r => e = 'fim:' + r);"
+    v, _ := run_settled(src, "e").(string)
     testing.expect_value(t, v, "fim:x")
 }
 
@@ -882,16 +884,16 @@ test_promise_executor :: proc(t: ^testing.T) {
         p.then(v => got = v);
         var antes = got;    // ainda pendente quando o then registrou
         res('agora');
-        antes + '/' + got
+        var depois = got;   // settle só ENFILEIRA: na mesma tarefa continua pendente
     `
-    v, _ := run(src).(string)
-    testing.expect_value(t, v, "pendente/agora")
+    v, _ := run_settled(src, "antes + '/' + depois + '/' + got").(string)
+    testing.expect_value(t, v, "pendente/pendente/agora")
 }
 
 @(test)
 test_promise_executor_throw :: proc(t: ^testing.T) {
-    src := "var e = ''; new Promise(function() { throw 'no executor'; }).catch(x => e = x); e"
-    v, _ := run(src).(string)
+    src := "var e = ''; new Promise(function() { throw 'no executor'; }).catch(x => e = x);"
+    v, _ := run_settled(src, "e").(string)
     testing.expect_value(t, v, "no executor")
 }
 
@@ -899,51 +901,51 @@ test_promise_executor_throw :: proc(t: ^testing.T) {
 test_promise_adocao :: proc(t: ^testing.T) {
     // then que devolve OUTRA promise: a derivada espera/adota a interna
     // (é o padrão fetch(u).then(r => r.json()).then(data => ...))
-    src := "var r = -1; Promise.resolve(3).then(v => Promise.resolve(v * 10)).then(v => r = v); r"
-    testing.expect_value(t, as_number(run(src)), f64(30))
+    src := "var r = -1; Promise.resolve(3).then(v => Promise.resolve(v * 10)).then(v => r = v);"
+    testing.expect_value(t, as_number(run_settled(src, "r")), f64(30))
 }
 
 // ── M20: async / await ────────────────────────────────────────────────────────
 
 @(test)
 test_async_devolve_promise :: proc(t: ^testing.T) {
-    // o retorno de uma async fn vira Promise cumprida (settle síncrono -> then na hora)
-    src := "async function f() { return 5; } var got = -1; f().then(v => got = v); got"
-    testing.expect_value(t, as_number(run(src)), f64(5))
+    // o retorno de uma async fn vira Promise cumprida; o then roda no checkpoint
+    src := "async function f() { return 5; } var got = -1; f().then(v => got = v);"
+    testing.expect_value(t, as_number(run_settled(src, "got")), f64(5))
 }
 
 @(test)
 test_await_valor_e_promise :: proc(t: ^testing.T) {
     // await de não-promise devolve o valor; de promise, o valor assentado
-    src := "async function f() { var a = await 3; var b = await Promise.resolve(4); return a + b; } var g = -1; f().then(v => g = v); g"
-    testing.expect_value(t, as_number(run(src)), f64(7))
+    src := "async function f() { var a = await 3; var b = await Promise.resolve(4); return a + b; } var g = -1; f().then(v => g = v);"
+    testing.expect_value(t, as_number(run_settled(src, "g")), f64(7))
 }
 
 @(test)
 test_await_sequencial :: proc(t: ^testing.T) {
-    src := "async function f() { var a = await Promise.resolve(1); var b = await Promise.resolve(a + 1); return b * 10; } var g = -1; f().then(v => g = v); g"
-    testing.expect_value(t, as_number(run(src)), f64(20))
+    src := "async function f() { var a = await Promise.resolve(1); var b = await Promise.resolve(a + 1); return b * 10; } var g = -1; f().then(v => g = v);"
+    testing.expect_value(t, as_number(run_settled(src, "g")), f64(20))
 }
 
 @(test)
 test_await_rejeicao_try_catch :: proc(t: ^testing.T) {
     // await de promise rejeitada lança — capturável com try/catch normal
-    src := "async function f() { try { await Promise.reject('x'); return 'nao'; } catch (e) { return 'pego:' + e; } } var g = ''; f().then(v => g = v); g"
-    v, _ := run(src).(string)
+    src := "async function f() { try { await Promise.reject('x'); return 'nao'; } catch (e) { return 'pego:' + e; } } var g = ''; f().then(v => g = v);"
+    v, _ := run_settled(src, "g").(string)
     testing.expect_value(t, v, "pego:x")
 }
 
 @(test)
 test_async_throw_vira_rejeicao :: proc(t: ^testing.T) {
-    src := "async function f() { throw new Error('e1'); } var g = ''; f().catch(e => g = e.message); g"
-    v, _ := run(src).(string)
+    src := "async function f() { throw new Error('e1'); } var g = ''; f().catch(e => g = e.message);"
+    v, _ := run_settled(src, "g").(string)
     testing.expect_value(t, v, "e1")
 }
 
 @(test)
 test_async_arrow :: proc(t: ^testing.T) {
-    src := "var f = async x => (await Promise.resolve(x)) * 2; var g = -1; f(21).then(v => g = v); g"
-    testing.expect_value(t, as_number(run(src)), f64(42))
+    src := "var f = async x => (await Promise.resolve(x)) * 2; var g = -1; f(21).then(v => g = v);"
+    testing.expect_value(t, as_number(run_settled(src, "g")), f64(42))
 }
 
 @(test)
@@ -989,9 +991,8 @@ test_promise_settle_uma_vez :: proc(t: ^testing.T) {
         var n = 0;
         var p = new Promise(function(resolve, reject) { resolve(1); resolve(2); reject(3); });
         p.then(function(v) { n = v; });
-        n
     `
-    testing.expect_value(t, as_number(run(src)), f64(1))
+    testing.expect_value(t, as_number(run_settled(src, "n")), f64(1))
 }
 
 // ── M12: JSON ─────────────────────────────────────────────────────────────────

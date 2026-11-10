@@ -99,20 +99,18 @@ test_tostring_type_detection_no_loop :: proc(t: ^testing.T) {
 test_promise_deep_chain_flat :: proc(t: ^testing.T) {
     // ANTES (reações síncronas aninhadas): estourava a guarda de recursão em ~10000.
     // Agora roda de uma fila plana — uma cadeia de 20000 completa sem RangeError.
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var n = 0;
         function loop(){ n++; if (n >= 20000) return n; return Promise.resolve().then(loop); }
         loop();
-        n
-    `)), f64(20000))
+    `, "n")), f64(20000))
 }
 
 @(test)
 test_promise_then_still_works :: proc(t: ^testing.T) {
     // o achatamento não quebrou o encadeamento normal
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var v = 0;
         Promise.resolve(10).then(function(x){ return x + 5; }).then(function(y){ v = y; });
-        v
-    `)), f64(15))
+    `, "v")), f64(15))
 }

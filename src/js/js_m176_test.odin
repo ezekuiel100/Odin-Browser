@@ -44,13 +44,12 @@ m176_aggregate_error_existe :: proc(t: ^testing.T) {
 // que o construtor global — antes ele saía sem protótipo nenhum.
 @(test)
 m176_promise_any_rejeita_com_aggregate_de_verdade :: proc(t: ^testing.T) {
-    testing.expect_value(t, run(`
+    testing.expect_value(t, run_settled(`
         var r = '';
         Promise.any([Promise.reject(1), Promise.reject(2)]).catch(function(e){
             r = (e instanceof AggregateError) + '/' + (e instanceof Error) + '/' + e.errors.length;
         });
-        r
-    `).(string), "true/true/2")
+    `, "r").(string), "true/true/2")
 }
 
 // guarda: os construtores que já existiam seguem intactos e distintos entre si

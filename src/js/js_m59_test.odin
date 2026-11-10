@@ -162,34 +162,31 @@ test_array_of_and_iterators :: proc(t: ^testing.T) {
 
 @(test)
 test_promise_finally_on_resolve :: proc(t: ^testing.T) {
-    testing.expect_value(t, run(`
+    testing.expect_value(t, run_settled(`
         var log = [];
         Promise.resolve(42)
             .finally(function(){ log.push('fin'); })
             .then(function(v){ log.push('v' + v); });
-        log.join(',')
-    `).(string), "fin,v42")
+    `, "log.join(',')").(string), "fin,v42")
 }
 
 @(test)
 test_promise_finally_on_reject :: proc(t: ^testing.T) {
-    testing.expect_value(t, run(`
+    testing.expect_value(t, run_settled(`
         var log = [];
         Promise.reject('erro')
             .finally(function(){ log.push('fin'); })
             .catch(function(e){ log.push('c' + e); });
-        log.join(',')
-    `).(string), "fin,cerro")
+    `, "log.join(',')").(string), "fin,cerro")
 }
 
 @(test)
 test_promise_finally_callback_throw :: proc(t: ^testing.T) {
     // exceção no cb do finally rejeita a derivada (substitui o valor)
-    testing.expect_value(t, run(`
+    testing.expect_value(t, run_settled(`
         var got = '';
         Promise.resolve(1)
             .finally(function(){ throw 'boom'; })
             .catch(function(e){ got = e; });
-        got
-    `).(string), "boom")
+    `, "got").(string), "boom")
 }

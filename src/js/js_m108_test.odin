@@ -37,15 +37,15 @@ m108_blob_slice :: proc(t: ^testing.T) {
 
 @(test)
 m108_blob_text :: proc(t: ^testing.T) {
-    // text() → Promise<string>; promise resolvida roda o then na hora nesta engine
-    r := run(`var out=''; new Blob(['olá']).text().then(function(s){ out = s; }); out`)
+    // text() → Promise<string>; o then roda no checkpoint, lido na 2ª tarefa
+    r := run_settled(`var out=''; new Blob(['olá']).text().then(function(s){ out = s; });`, "out")
     s, _ := r.(string)
     testing.expectf(t, s == "olá", "Blob.text(): got %q", s)
 }
 
 @(test)
 m108_blob_arraybuffer :: proc(t: ^testing.T) {
-    r := run(`var n=-1; new Blob(['hello']).arrayBuffer().then(function(ab){ n = ab.byteLength; }); n`)
+    r := run_settled(`var n=-1; new Blob(['hello']).arrayBuffer().then(function(ab){ n = ab.byteLength; });`, "n")
     testing.expectf(t, as_number(r) == 5, "Blob.arrayBuffer().byteLength: got %v", r)
 }
 

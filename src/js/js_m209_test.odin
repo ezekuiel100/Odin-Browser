@@ -120,25 +120,27 @@ m209_promise_with_resolvers :: proc(t: ^testing.T) {
     testing.expect_value(t, val(`(function(){ var w = Promise.withResolvers(); return typeof w.resolve + "," + typeof w.reject })()`),
         "function,function")
     // resolve/reject de FORA do executor mexem na promise devolvida (é o ponto da API)
-    testing.expect_value(t, val(`(function(){
+    // (reações são microtasks: o estado é lido numa 2ª tarefa, depois do checkpoint)
+    settled :: proc(src: string) -> string {
+        s, _ := run_settled(src, "visto").(string)
+        return s
+    }
+    testing.expect_value(t, settled(`
         var w = Promise.withResolvers(), visto = "pendente";
         w.promise.then(function(v){ visto = "ok:" + v });
         w.resolve(42);
-        return visto
-    })()`), "ok:42")
-    testing.expect_value(t, val(`(function(){
+    `), "ok:42")
+    testing.expect_value(t, settled(`
         var w = Promise.withResolvers(), visto = "pendente";
         w.promise.catch(function(e){ visto = "erro:" + e });
         w.reject("boom");
-        return visto
-    })()`), "erro:boom")
+    `), "erro:boom")
     // encadeia como qualquer promise
-    testing.expect_value(t, val(`(function(){
+    testing.expect_value(t, settled(`
         var w = Promise.withResolvers(), visto = "";
         w.promise.then(function(v){ return v * 2 }).then(function(v){ visto = String(v) });
         w.resolve(21);
-        return visto
-    })()`), "42")
+    `), "42")
 }
 
 // ── Promise.prototype na cadeia (gap antigo que o oráculo do Chrome expôs) ────

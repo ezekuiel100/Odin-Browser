@@ -134,9 +134,8 @@ m155_asyncgen_yield_star_encaminha_throw :: proc(t: ^testing.T) {
             var r = await ag.throw("BOOM");
             out = r.value;
         })();
-        out
     `
-    testing.expect_value(t, run(src).(string), "caught:BOOM")
+    testing.expect_value(t, run_settled(src, "out").(string), "caught:BOOM")
 }
 
 @(test)
@@ -151,9 +150,8 @@ m155_asyncgen_yield_star_encaminha_return :: proc(t: ^testing.T) {
             var r = await ag.return("R");
             log.push("v=" + r.value + ",done=" + r.done);
         })();
-        log.join(",")
     `
-    testing.expect_value(t, run(src).(string), "in,out,v=R,done=true")
+    testing.expect_value(t, run_settled(src, `log.join(",")`).(string), "in,out,v=R,done=true")
 }
 
 @(test)
@@ -168,14 +166,14 @@ m155_asyncgen_yield_star_encaminha_next :: proc(t: ^testing.T) {
             var r = await ag.next("Z");
             out = r.value;
         })();
-        out
     `
-    testing.expect_value(t, run(src).(string), "got:Z")
+    testing.expect_value(t, run_settled(src, "out").(string), "got:Z")
 }
 
 @(test)
 m155_asyncgen_yield_star_delegacao_normal :: proc(t: ^testing.T) {
     // contra-caso: for-await sobre delegação normal segue intacto.
+    // ⚠️ o for-await ainda é BLOQUEANTE (ver m117_async_iterator): lido na 2ª tarefa.
     src := `
         var out = "?";
         async function* inner(){ yield 2; yield 3; }
@@ -185,9 +183,8 @@ m155_asyncgen_yield_star_delegacao_normal :: proc(t: ^testing.T) {
             for await (const x of outer()) acc.push(x);
             out = acc.join(",");
         })();
-        out
     `
-    testing.expect_value(t, run(src).(string), "1,2,3,4")
+    testing.expect_value(t, run_settled(src, "out").(string), "1,2,3,4")
 }
 
 // ── o padrão regenerator: erro cruzando fronteira async aninhada ──────────────
@@ -201,7 +198,6 @@ m155_async_aninhado_reencaminha_erro :: proc(t: ^testing.T) {
         async function inner(){ throw new Error("boom-async"); }
         async function outer(){ await inner(); }
         (async function(){ try { await outer(); } catch(e){ out = e && e.message; } })();
-        out
     `
-    testing.expect_value(t, run(src).(string), "boom-async")
+    testing.expect_value(t, run_settled(src, "out").(string), "boom-async")
 }

@@ -32,7 +32,8 @@ m109_vm :: proc() -> ^Interp {
 m109_import_dinamico_namespace :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["mod.js"] = `export const x = 42; export function f(){ return 7; }`
-    r := vm_run(vm, `var got = 0; import("mod.js").then(function(m){ got = m.x + m.f(); }); got`)
+    vm_run(vm, `var got = 0; import("mod.js").then(function(m){ got = m.x + m.f(); });`)
+    r := vm_run(vm, `got`)
     testing.expectf(t, as_number(r) == 49, "import() namespace: got %v", r)
 }
 
@@ -40,7 +41,8 @@ m109_import_dinamico_namespace :: proc(t: ^testing.T) {
 m109_export_default :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["d.js"] = `export default 5;`
-    r := vm_run(vm, `var got; import("d.js").then(function(m){ got = m.default; }); got`)
+    vm_run(vm, `var got; import("d.js").then(function(m){ got = m.default; });`)
+    r := vm_run(vm, `got`)
     testing.expectf(t, as_number(r) == 5, "export default: got %v", r)
 }
 
@@ -50,7 +52,8 @@ m109_import_estatico_encadeado :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["b.js"] = `export const y = 10;`
     vm.module_stubs["a.js"] = `import { y } from "b.js"; export const soma = y + 1;`
-    r := vm_run(vm, `var got; import("a.js").then(function(m){ got = m.soma; }); got`)
+    vm_run(vm, `var got; import("a.js").then(function(m){ got = m.soma; });`)
+    r := vm_run(vm, `got`)
     testing.expectf(t, as_number(r) == 11, "cadeia estática a→b: got %v", r)
 }
 
@@ -59,7 +62,8 @@ m109_import_star_as_ns :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["m.js"] = `export const a = 1; export const b = 2;`
     vm.module_stubs["uses.js"] = `import * as ns from "m.js"; export const total = ns.a + ns.b;`
-    r := vm_run(vm, `var got; import("uses.js").then(function(m){ got = m.total; }); got`)
+    vm_run(vm, `var got; import("uses.js").then(function(m){ got = m.total; });`)
+    r := vm_run(vm, `got`)
     testing.expectf(t, as_number(r) == 3, "import * as ns: got %v", r)
 }
 
@@ -68,7 +72,8 @@ m109_export_snapshot_adiado :: proc(t: ^testing.T) {
     // `export {a as b}` reflete o valor FINAL (atribuição após o export)
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["s.js"] = `var a = 1; export { a as b }; a = 2;`
-    r := vm_run(vm, `var got; import("s.js").then(function(m){ got = m.b; }); got`)
+    vm_run(vm, `var got; import("s.js").then(function(m){ got = m.b; });`)
+    r := vm_run(vm, `got`)
     testing.expectf(t, as_number(r) == 2, "snapshot adiado exporta o valor final: got %v", r)
 }
 
@@ -76,12 +81,13 @@ m109_export_snapshot_adiado :: proc(t: ^testing.T) {
 m109_cache_identidade :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["c.js"] = `export const n = 1;`
-    r := vm_run(vm, `
+    // ⚠️ lido na MESMA tarefa isto passava sem testar nada (undefined === undefined)
+    vm_run(vm, `
         var m1, m2;
         import("c.js").then(function(m){ m1 = m; });
         import("c.js").then(function(m){ m2 = m; });
-        m1 === m2
     `)
+    r := vm_run(vm, `m1 !== undefined && m1 === m2`)
     b, _ := r.(bool)
     testing.expect(t, b, "mesmo especificador → mesmo namespace (cache)")
 }
@@ -89,12 +95,12 @@ m109_cache_identidade :: proc(t: ^testing.T) {
 @(test)
 m109_import_inexistente_rejeita :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
-    r := vm_run(vm, `
+    vm_run(vm, `
         var err = "";
         import("nope.js").then(function(){ err = "resolveu?!"; })
                           .catch(function(e){ err = "" + e; });
-        err
     `)
+    r := vm_run(vm, `err`)
     s, _ := r.(string)
     testing.expectf(t, strings.contains(s, "nope.js"), "import() inexistente rejeita: got %q", s)
 }
@@ -104,11 +110,11 @@ m109_reexport :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["base.js"] = `export const k = 9; export const j = 4; export default 0;`
     vm.module_stubs["re.js"] = `export { k as kk } from "base.js"; export * from "base.js";`
-    r := vm_run(vm, `
+    vm_run(vm, `
         var got;
         import("re.js").then(function(m){ got = m.kk + "," + m.k + "," + m.j + "," + (typeof m.default); });
-        got
     `)
+    r := vm_run(vm, `got`)
     s, _ := r.(string)
     testing.expectf(t, s == "9,9,4,undefined", "re-export {as}/*: got %q", s)
 }
@@ -117,7 +123,8 @@ m109_reexport :: proc(t: ^testing.T) {
 m109_import_meta_url :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["meta.js"] = `export const u = import.meta.url;`
-    r := vm_run(vm, `var got; import("meta.js").then(function(m){ got = m.u; }); got`)
+    vm_run(vm, `var got; import("meta.js").then(function(m){ got = m.u; });`)
+    r := vm_run(vm, `got`)
     s, _ := r.(string)
     testing.expectf(t, s == "meta.js", "import.meta.url = url do módulo: got %q", s)
 }
@@ -127,7 +134,8 @@ m109_default_import_binding :: proc(t: ^testing.T) {
     vm := m109_vm(); defer vm_free(vm)
     vm.module_stubs["lib.js"] = `export default function(){ return 33; }`
     vm.module_stubs["app.js"] = `import D from "lib.js"; export const r = D();`
-    r := vm_run(vm, `var got; import("app.js").then(function(m){ got = m.r; }); got`)
+    vm_run(vm, `var got; import("app.js").then(function(m){ got = m.r; });`)
+    r := vm_run(vm, `got`)
     testing.expectf(t, as_number(r) == 33, "import default binding: got %v", r)
 }
 
@@ -150,19 +158,19 @@ m109_padrao_sveltekit :: proc(t: ^testing.T) {
     vm.module_stubs["dep.js"] = `var Xa={onMount:2,tick:7};function G(){return 1}
 export{Xa as t,G};`
     vm.module_stubs["main.js"] = `import{t as s,G as g}from"dep.js";const{onMount:U,tick:W}=s;export const r=W+g();`
-    r := vm_run(vm, `var got; import("main.js").then(function(m){ got = m.r; }).catch(function(e){ got = ""+e; }); got`)
+    vm_run(vm, `var got; import("main.js").then(function(m){ got = m.r; }).catch(function(e){ got = ""+e; });`)
+    r := vm_run(vm, `got`)
     testing.expectf(t, as_number(r) == 8, "padrão sveltekit (export-list+rename+destructure): got %v", r)
 }
 
 @(test)
 m109_sem_hooks_import_rejeita :: proc(t: ^testing.T) {
     // vm PURO (sem hooks): import() rejeita em vez de estourar; estático é no-op
-    r := run(`
+    r := run_settled(`
         var out = "";
         import("x.js").then(function(){ out = "resolveu?!"; })
                       .catch(function(e){ out = "rejeitou"; });
-        out
-    `)
+    `, "out")
     s, _ := r.(string)
     testing.expectf(t, s == "rejeitou", "sem hooks: import() rejeita: got %q", s)
 }

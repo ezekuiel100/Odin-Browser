@@ -35,13 +35,11 @@ m130_await_retoma_com_promise_resolvida_depois :: proc(t: ^testing.T) {
         (async function(){ ordem.push("antes"); await p; ordem.push("depois") })();
         ordem.push("sincrono");
         enable(true);
-        ordem.join(",")
     `
-    // O essencial: "depois" ACONTECE. (A posição exata dele em relação ao código
-    // síncrono seguinte é uma fidelidade de microtask que ainda não temos.)
-    got := run(src).(string)
-    testing.expectf(t, strings.contains(got, "depois"), "a corrotina retomou (ordem=%s)", got)
-    testing.expectf(t, strings.contains(got, "antes"), "o corpo rodou até o await (ordem=%s)", got)
+    // "depois" ACONTECE, e na posição da spec: a retomada é microtask, então
+    // vem depois de TODO o código síncrono da tarefa (FIFO desde o bfd7c21).
+    got := run_settled(src, `ordem.join(",")`).(string)
+    testing.expect_value(t, got, "antes,sincrono,depois")
 }
 
 @(test)
@@ -64,9 +62,8 @@ m130_await_de_ja_resolvida_continua_funcionando :: proc(t: ^testing.T) {
     src := `
         var r = "nao";
         (async function(){ r = await Promise.resolve("sim") })();
-        r
     `
-    testing.expect_value(t, run(src).(string), "sim")
+    testing.expect_value(t, run_settled(src, "r").(string), "sim")
 }
 
 @(test)
@@ -79,9 +76,8 @@ m130_rejeicao_vira_throw_no_ponto_do_await :: proc(t: ^testing.T) {
             try { await p } catch (e) { capturado = e.message }
         })();
         rej(new Error("falhou"));
-        capturado
     `
-    testing.expect_value(t, run(src).(string), "falhou")
+    testing.expect_value(t, run_settled(src, "capturado").(string), "falhou")
 }
 
 @(test)
@@ -89,9 +85,8 @@ m130_valor_de_retorno_resolve_a_promise_da_async :: proc(t: ^testing.T) {
     src := `
         var got = "nao";
         (async function(){ return 7 })().then(function(v){ got = "v=" + v });
-        got
     `
-    testing.expect_value(t, run(src).(string), "v=7")
+    testing.expect_value(t, run_settled(src, "got").(string), "v=7")
 }
 
 @(test)
@@ -103,9 +98,8 @@ m130_awaits_encadeados :: proc(t: ^testing.T) {
         var passos = [];
         (async function(){ await p1; passos.push("um"); await p2; passos.push("dois") })();
         e1(1); e2(2);
-        passos.join(",")
     `
-    testing.expect_value(t, run(src).(string), "um,dois")
+    testing.expect_value(t, run_settled(src, `passos.join(",")`).(string), "um,dois")
 }
 
 // ── 2) hasOwnProperty em Array (o lit-html valida o template com isso) ───────

@@ -4,8 +4,8 @@ import "core:testing"
 
 // M117 — Streams API mínima (ReadableStream + reader/asyncIterator). Bundles
 // evergreen (docker/medium/shopify no gap-report limpo) fazem `new ReadableStream`
-// incondicional → "is not a constructor". `run` já roda o microtask-drain das
-// promises (as promises de read() assentam síncrono).
+// incondicional → "is not a constructor". As reações de read() são microtasks:
+// o resultado é lido numa 2ª tarefa (`run_settled`), depois do checkpoint.
 
 @(test)
 m117_readable_stream_is_constructor :: proc(t: ^testing.T) {
@@ -17,20 +17,17 @@ m117_readable_stream_is_constructor :: proc(t: ^testing.T) {
 @(test)
 m117_reader_reads_enqueued :: proc(t: ^testing.T) {
     // start() enfileira 2 chunks + fecha; o reader lê os dois e depois done.
-    r := run(`
+    r := run_settled(`
         var rs = new ReadableStream({
             start: function(c){ c.enqueue('a'); c.enqueue('b'); c.close(); }
         });
         var out = [];
         var rd = rs.getReader();
-        function step(res){ if (res.done) return; out.push(res.value); }
-        // read() assenta síncrono nesta engine; encadeia via .then
         var done = false;
         rd.read().then(function(r1){ out.push(r1.value);
           return rd.read(); }).then(function(r2){ out.push(r2.value);
           return rd.read(); }).then(function(r3){ done = r3.done; });
-        out.join(',') + '|' + done
-    `)
+    `, "out.join(',') + '|' + done")
     s, _ := r.(string)
     testing.expect_value(t, s, "a,b|true")
 }
@@ -38,7 +35,10 @@ m117_reader_reads_enqueued :: proc(t: ^testing.T) {
 @(test)
 m117_async_iterator :: proc(t: ^testing.T) {
     // for-await sobre um ReadableStream.
-    r := run(`
+    // ⚠️ DEGRADAÇÃO conhecida: o for-await ainda usa o await BLOQUEANTE
+    // (promise_await_blocking), então `sum` já vale 6 na MESMA tarefa — pela spec
+    // seria 0 ali. Lido na 2ª tarefa para não codificar esse desvio.
+    r := run_settled(`
         var rs = new ReadableStream({
             start: function(c){ c.enqueue(1); c.enqueue(2); c.enqueue(3); c.close(); }
         });
@@ -46,15 +46,14 @@ m117_async_iterator :: proc(t: ^testing.T) {
         (async function(){
             for await (var x of rs) { sum += x; }
         })();
-        sum
-    `)
+    `, "sum")
     testing.expect_value(t, as_number(r), f64(6))
 }
 
 @(test)
 m117_pull_source :: proc(t: ^testing.T) {
     // fonte que produz via pull() (síncrono): 1 chunk por pull, fecha no 3º.
-    r := run(`
+    r := run_settled(`
         var n = 0;
         var rs = new ReadableStream({
             pull: function(c){ n++; if (n <= 2) c.enqueue(n); else c.close(); }
@@ -64,8 +63,7 @@ m117_pull_source :: proc(t: ^testing.T) {
         rd.read().then(function(a){ got.push(a.done ? 'D' : a.value);
           return rd.read(); }).then(function(b){ got.push(b.done ? 'D' : b.value);
           return rd.read(); }).then(function(cc){ got.push(cc.done ? 'D' : cc.value); });
-        got.join(',')
-    `)
+    `, "got.join(',')")
     s, _ := r.(string)
     testing.expect_value(t, s, "1,2,D")
 }

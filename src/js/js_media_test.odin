@@ -83,14 +83,16 @@ media_play_rejeita_e_paused_continua_true :: proc(t: ^testing.T) {
 media_play_entrega_NotAllowedError_na_microtarefa :: proc(t: ^testing.T) {
     // ⚠️ Lição do repo: check de entrega ASSÍNCRONA conferido na linha seguinte
     // acusa BAD até contra o Chrome. O nome do erro só existe depois que a
-    // microtarefa roda — por isso este caso é separado do de cima e lê no fim.
+    // microtarefa roda — por isso este caso é separado do de cima e lê numa
+    // SEGUNDA tarefa (na mesma, o valor de conclusão ainda é 'nada', como no Chrome).
     root := media_dom(); defer dom.free_tree(root)
-    r := run_with_dom(`
+    vm := vm_create_with_dom(root)
+    defer vm_free(vm)
+    vm_run(vm, `
         var visto = 'nada';
         document.getElementById('v').play().catch(function(err){ visto = err.name; });
-        Promise.resolve().then(function(){}).then(function(){});
-        visto
-    `, root)
+    `)
+    r := vm_run(vm, `visto`)
     s, _ := r.(string)
     testing.expectf(t, s == "NotAllowedError",
         "a rejeição é NotAllowedError (o que o site usa p/ mostrar o pôster); veio %q", s)

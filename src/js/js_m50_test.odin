@@ -11,29 +11,26 @@ import "core:testing"
 
 @(test)
 test_thenable_adotado :: proc(t: ^testing.T) {
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var out = 0;
         Promise.resolve({ then: function(f){ f(42) } })
-            .then(function(v){ out = (v === 42) ? 1 : 2 });
-        out`)), f64(1))
+            .then(function(v){ out = (v === 42) ? 1 : 2 });`, "out")), f64(1))
 }
 
 @(test)
 test_thenable_rejeita :: proc(t: ^testing.T) {
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var out = 0;
         Promise.resolve({ then: function(f, r){ r('nope') } })
-            .catch(function(e){ out = (e === 'nope') ? 1 : 2 });
-        out`)), f64(1))
+            .catch(function(e){ out = (e === 'nope') ? 1 : 2 });`, "out")), f64(1))
 }
 
 @(test)
 test_thenable_que_lanca :: proc(t: ^testing.T) {
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var out = 0;
         Promise.resolve({ then: function(){ throw 'boom' } })
-            .catch(function(e){ out = (e === 'boom') ? 1 : 2 });
-        out`)), f64(1))
+            .catch(function(e){ out = (e === 'boom') ? 1 : 2 });`, "out")), f64(1))
 }
 
 // ── interleaving de microtasks (promise pendente assentada depois) ────────────
@@ -41,25 +38,23 @@ test_thenable_que_lanca :: proc(t: ^testing.T) {
 @(test)
 test_microtask_irmaos_interleave :: proc(t: ^testing.T) {
     // p.then(A).then(a); p.then(B) com settle posterior: A, B, a (não A, a, B)
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var log = '';
         var r; var p = new Promise(function(res){ r = res });
         p.then(function(){ log += 'A' }).then(function(){ log += 'a' });
         p.then(function(){ log += 'B' });
-        r(1);
-        log == 'ABa' ? 1 : 0`)), f64(1))
+        r(1);`, "log == 'ABa' ? 1 : 0")), f64(1))
 }
 
 // ── resolve(própria promise) ──────────────────────────────────────────────────
 
 @(test)
 test_resolve_ciclo_typeerror :: proc(t: ^testing.T) {
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var r; var p = new Promise(function(res){ r = res });
         var err = 0;
         p.catch(function(e){ err = (e && e.name == 'TypeError') ? 1 : 2 });
-        r(p);
-        err`)), f64(1))
+        r(p);`, "err")), f64(1))
 }
 
 // ── await dentro de callback de .then (o hang de 10s) ─────────────────────────
@@ -68,20 +63,19 @@ test_resolve_ciclo_typeerror :: proc(t: ^testing.T) {
 test_await_dentro_de_then :: proc(t: ^testing.T) {
     // antes: o drain externo ficava bloqueado no await e a reação do .then
     // interno nunca rodava → 10s de timeout e valor falso. Agora: instantâneo.
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var out = 0;
         Promise.resolve().then(function(){
             return (async function(){
                 var v = await Promise.resolve(41).then(function(x){ return x + 1 });
                 out = v;
             })();
-        });
-        out`)), f64(42))
+        });`, "out")), f64(42))
 }
 
 @(test)
 test_await_encadeado_dentro_de_then :: proc(t: ^testing.T) {
-    testing.expect_value(t, as_number(run(`
+    testing.expect_value(t, as_number(run_settled(`
         var out = 0;
         Promise.resolve().then(function(){
             return (async function(){
@@ -89,8 +83,7 @@ test_await_encadeado_dentro_de_then :: proc(t: ^testing.T) {
                 var b = await Promise.resolve(a).then(function(x){ return x + 2 });
                 out = b;
             })();
-        });
-        out`)), f64(22))
+        });`, "out")), f64(22))
 }
 
 // ── timers: ordem de vencimento e cancelamento no mesmo pump ──────────────────
