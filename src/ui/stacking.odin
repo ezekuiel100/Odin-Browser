@@ -7,6 +7,7 @@ import im "../../vendor/imgui"
 Stacking_Clip :: struct {
     min, max: im.Vec2,
     parent: int,
+    box: ^Box,
 }
 Stacking_Entry :: struct {
     box: ^Box,
@@ -54,7 +55,7 @@ collect_stacking :: proc(scope: ^Stacking_Scope, b: ^Box, ox, oy: f32, clip: int
             {b.ovf_clip_x ? b.x + ox + b.border_w[3] : -big,
              b.ovf_clip_y ? b.y + oy + b.border_w[0] : -big},
             {b.ovf_clip_x ? b.x + ox + b.w - b.border_w[1] : big,
-             b.ovf_clip_y ? b.y + oy + b.h - b.border_w[2] : big}, clip})
+             b.ovf_clip_y ? b.y + oy + b.h - b.border_w[2] : big}, clip, b})
     }
     child_oy := b.overflow_scroll ? oy - b.scroll_y : oy
     for child in stacking_children(b) {
@@ -112,15 +113,17 @@ sort_stacking :: proc(entries: []Stacking_Entry) {
 paint_stacking :: proc(pt: ^Painter, s: ^State, scope: ^Stacking_Scope, negative: bool, sx, sy, eff: f32, in_xform: bool) {
     for entry in scope.entries {
         if (entry.z < 0) != negative do continue
-        // All rectangular clips intersect, so their push order is immaterial.
-        count := 0
+        // Restore the same rounded clips as normal-flow children. Layers must
+        // close in reverse order, even when rectangular clips are interleaved.
+        opened := make([dynamic]bool, 0, 4, context.temp_allocator)
         for c := entry.clip; c >= 0; c = scope.clips[c].parent {
             rect := scope.clips[c]
-            emit(pt, PC_PushClip{{rect.min.x + sx, rect.min.y + sy}, {rect.max.x + sx, rect.max.y + sy}})
-            count += 1
+            rounded := rounded_overflow_clip(rect.box)
+            emit_overflow_clip(pt, rect.box, {rect.min.x + sx, rect.min.y + sy}, {rect.max.x + sx, rect.max.y + sy}, rounded)
+            append(&opened, rounded)
         }
         paint_box(pt, s, entry.box, entry.ox, entry.oy, eff, in_xform, scope, true, entry.origin)
-        for i in 0 ..< count do emit(pt, PC_PopClip{})
+        for i := len(opened)-1; i >= 0; i -= 1 do end_overflow_clip(pt, opened[i])
     }
 }
 

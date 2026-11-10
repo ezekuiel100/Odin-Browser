@@ -94,6 +94,29 @@ try {
 } finally { $bmp.Dispose() }
 $bmp=Render "rotate" ($html.Replace('scale(1.08)','rotate(90deg)'))
 try { Pixel $bmp "local clip follows rotation" 280 150 255 0 0 } finally { $bmp.Dispose() }
+$rounded=Get-Content (Join-Path $root "tests/paint/hover-rounded-backdrop.html") -Raw
+$reference=$rounded.Replace('overflow:hidden','overflow:visible').Replace('<div class="photo"></div>','')
+$ref=Render "rounded-backdrop-reference" $reference 120 120
+$bmp=Render "rounded-backdrop" $rounded 120 120
+try {
+    foreach ($pt in @(@(76,74),@(243,74),@(76,306),@(243,306))) {
+        $p=$ref.GetPixel($pt[0],$pt[1])
+        Pixel $bmp "hover corner reveals actual backdrop $($pt -join ',')" $pt[0] $pt[1] $p.R $p.G $p.B
+    }
+    Pixel $bmp "rounded clip keeps center photo" 120 140 224 64 64
+    Pixel $bmp "rounded clip keeps left border" 75 140 255 128 0
+    foreach ($position in @('absolute','relative')) {
+        $positioned=$rounded.Replace('.photo {', ".photo { position:$position; top:0; left:0; z-index:2;")
+        $pos=Render "rounded-backdrop-$position" $positioned 120 120
+        try {
+            foreach ($pt in @(@(76,74),@(243,74),@(76,306),@(243,306))) {
+                $p=$ref.GetPixel($pt[0],$pt[1])
+                Pixel $pos "positioned $position corner reveals actual backdrop $($pt -join ',')" $pt[0] $pt[1] $p.R $p.G $p.B
+            }
+            Pixel $pos "positioned $position content remains visible" 120 140 224 64 64
+        } finally { $pos.Dispose() }
+    }
+} finally { $bmp.Dispose(); $ref.Dispose() }
 Write-Host "hover-transform-clip: $($checks-$fails) PASS / $fails FAIL"
 if ($ExpectBroken) { if ($fails -gt 0) { exit 0 }; exit 1 }
 if ($fails -gt 0) { exit 1 }; exit 0

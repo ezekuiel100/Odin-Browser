@@ -32,6 +32,36 @@ image_has_rounding :: proc(r: Image_Rounding) -> bool {
     return false
 }
 
+// Multiply a content layer's alpha by its padding-box outline. Outside the
+// curve stays transparent, revealing the actual backdrop rather than a fill.
+apply_round_clip :: proc(buf: []u8, w, h: int, bx, by, bw, bh: f32, r: Image_Rounding) {
+    for y in 0..<h {
+        py := f32(y) + 0.5 - by
+        for x in 0..<w {
+            idx := (y*w+x)*4+3
+            if buf[idx] == 0 do continue
+            px := f32(x) + 0.5 - bx
+            a: f32 = 1
+            if px < 0 || py < 0 || px > bw || py > bh {
+                a = 0
+            } else {
+                for i in 0..<4 {
+                    rx, ry := r.rx[i], r.ry[i]
+                    if rx <= 0 || ry <= 0 do continue
+                    left, top := i == 0 || i == 3, i < 2
+                    cx, cy := left ? rx : bw-rx, top ? ry : bh-ry
+                    if (left ? px < cx : px > cx) && (top ? py < cy : py > cy) {
+                        dx, dy := (px-cx)/rx, (py-cy)/ry
+                        d := (math.sqrt(dx*dx+dy*dy)-1)*min(rx,ry)
+                        a = min(a, clamp(0.5-d, 0, 1))
+                    }
+                }
+            }
+            buf[idx] = u8(math.round(f32(buf[idx])*a))
+        }
+    }
+}
+
 // Clockwise convex outline, intersected with the visible image rectangle. This
 // keeps cover/contain and viewport clipping independent of the rounded shape.
 image_round_polygon :: proc(p0, p1: im.Vec2, r: Image_Rounding, lo, hi: im.Vec2, out: ^[160]im.Vec2) -> int {

@@ -104,6 +104,7 @@ Layer_Cache :: struct {
     used:   int,           // g_frame em que foi usada por último (p/ eviction)
 }
 g_layer_cache: map[rawptr]Layer_Cache
+g_round_clip_cache: map[rawptr]Layer_Cache
 g_frame: int = 0 // contador de frames (incrementa em paint_layout)
 
 // Geometry-only shadow masks can be shared by cards and tinted at draw time.
@@ -6148,7 +6149,7 @@ Paint_Cmd :: union {
     PC_Shadow, PC_Gradient, PC_RectFilled, PC_RectMulti, PC_Rect, PC_BgImage, PC_Border, PC_BorderImage,
     PC_ControlMark, PC_Image, PC_TextInput, PC_MaskCorners, PC_InnerNotch, PC_InlineText,
     PC_Line, PC_PushClip, PC_PopClip, PC_XformBegin, PC_XformEnd,
-    PC_LayerBegin, PC_LayerEnd, PC_BackdropFilter, PC_Polyline, PC_Select,
+    PC_LayerBegin, PC_LayerEnd, PC_BackdropFilter, PC_Polyline, PC_Select, PC_RoundClipBegin,
     PC_ShadeGradBegin, PC_ShadeGradEnd,
 }
 PC_Shadow      :: struct { x0, y0, x1, y1, radius: f32, sh: Shadow, eff: f32, inset: bool }
@@ -6218,6 +6219,7 @@ PC_XformEnd    :: struct { cx, cy, a, b, c, d: f32 }
 // struct, então não dá para condicioná-los).
 PC_LayerBegin  :: struct { opacity: f32, blend: Blend_Mode, filters: [MAX_FILTERS]Filter_Op, n_filters: int, node: rawptr, backdrop: u32, clip: Clip_Shape, mask: csspkg.Gradient, cbx, cby, cbw, cbh: f32 }
 PC_LayerEnd    :: struct {}
+PC_RoundClipBegin :: struct { node: rawptr, p0, p1: im.Vec2, rounding: Image_Rounding }
 // backdrop-filter: filtra o BACKDROP (o `dl` acumulado até aqui) na região do
 // border-box e desenha o resultado de volta, ANTES do fundo/conteúdo do elemento.
 PC_BackdropFilter :: struct { x0, y0, x1, y1, radius: f32, filters: [MAX_FILTERS]Filter_Op, n: int }
@@ -6330,6 +6332,12 @@ replay_seg :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, cull := fals
             lf := v.filters // cópia local addressable p/ fatiar o array
             i = composite_layer(cmds, i + 1, dl, v.opacity, v.blend, lf[:v.n_filters], v.node, v.backdrop, v.clip, v.mask, v.cbx, v.cby, v.cbw, v.cbh)
             // A layer pode ter empilhado/desempilhado clip no `dl` pai.
+            if cull { cmin = im.DrawList_GetClipRectMin(dl); cmax = im.DrawList_GetClipRectMax(dl) }
+            continue
+        case PC_RoundClipBegin:
+            i = composite_layer(cmds, i + 1, dl, 1, .Normal, nil, v.node, 0,
+                cbx = v.p0.x, cby = v.p0.y, cbw = v.p1.x-v.p0.x, cbh = v.p1.y-v.p0.y,
+                rounding = v.rounding, round_clip = true)
             if cull { cmin = im.DrawList_GetClipRectMin(dl); cmax = im.DrawList_GetClipRectMax(dl) }
             continue
         case PC_BackdropFilter:
@@ -6499,11 +6507,13 @@ buf_premul :: proc(buf: []u8) {
 }
 
 @(private="file")
-composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity: f32, blend: Blend_Mode, filters: []Filter_Op, node: rawptr, backdrop: u32, clip := Clip_Shape{}, mask := csspkg.Gradient{}, cbx: f32 = 0, cby: f32 = 0, cbw: f32 = 0, cbh: f32 = 0) -> int {
+composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity: f32, blend: Blend_Mode, filters: []Filter_Op, node: rawptr, backdrop: u32, clip := Clip_Shape{}, mask := csspkg.Gradient{}, cbx: f32 = 0, cby: f32 = 0, cbw: f32 = 0, cbh: f32 = 0, rounding := Image_Rounding{}, round_clip := false) -> int {
     if g_renderer == nil {
         return replay_seg(cmds, start, dl) // fallback: sem compositing
     }
     io := im.GetIO()
+    cache := &g_layer_cache
+    if round_clip do cache = &g_round_clip_cache
     vw := io.DisplaySize.x // viewport (p/ recortar o bbox), em f32
     vh := io.DisplaySize.y
 
@@ -6524,7 +6534,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     when SUBBBOX {
         pb: Pred_BBox
         has_pb := false
-        if g_pred_i < len(g_pred_bbox) {
+        if !round_clip && g_pred_i < len(g_pred_bbox) {
             pb = g_pred_bbox[g_pred_i]; g_pred_i += 1; has_pb = true
             if pb.node != node { g_uiprof.bb_desalinho += 1; has_pb = false }
         }
@@ -6673,6 +6683,13 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     h: u64 = 14695981039346656037
     h = fnv(h, u32(blend))
     h = fnv(h, backdrop)
+    if round_clip {
+        for i in 0..<4 {
+            h = fnv(h, transmute(u32)rounding.rx[i]); h = fnv(h, transmute(u32)rounding.ry[i])
+        }
+        h = fnv(h, transmute(u32)(cbx-fx)); h = fnv(h, transmute(u32)(cby-fy))
+        h = fnv(h, transmute(u32)cbw); h = fnv(h, transmute(u32)cbh)
+    }
     // clip-path entra no hash (muda os pixels). Usa o box RELATIVO ao bbox
     // (cbx-fx, cby-fy) — invariante a scroll, preservando o cache-hit ao rolar.
     if has_clip {
@@ -6722,6 +6739,10 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
         cmdh := ([^]im.DrawCmd)(ld.CmdBuffer.Data)
         for k in 0 ..< cn {
             r := cmdh[k].ClipRect
+            // A nested rounded clip is an image quad. Its vertices may stay
+            // identical while its content changes; hash the sampled texture.
+            tid := u64(cmdh[k].TextureId)
+            h = fnv(h, u32(tid & 0xffffffff)); h = fnv(h, u32(tid >> 32))
             h = fnv(h, transmute(u32)r.x); h = fnv(h, transmute(u32)r.y)
             h = fnv(h, transmute(u32)r.z); h = fnv(h, transmute(u32)r.w)
         }
@@ -6731,10 +6752,10 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
 
     // CACHE HIT: mesmo conteúdo e tamanho → reusa a textura, só reposiciona.
     if node != nil {
-        if e, ok := g_layer_cache[node]; ok && e.hash == h && e.iw == iw && e.ih == ih {
+        if e, ok := cache^[node]; ok && e.hash == h && e.iw == iw && e.ih == ih {
             when UIPROF { g_uiprof.lay_hit += 1 }
             e.used = g_frame; e.fx = fx; e.fy = fy
-            g_layer_cache[node] = e
+            cache^[node] = e
             // o tint tem de seguir a convenção com que a TEXTURA CACHEADA foi feita
             tint := e.custom ? u32(0xFFFFFFFF) : (e.premul ? premul_tint(opacity) : imgui_mul_alpha(0xFFFFFFFF, opacity))
             im.DrawList_AddImage(dl, im.TextureID(uintptr(e.tex)), {fx, fy}, {fx + f32(iw), fy + f32(ih)}, {0, 0}, {1, 1}, tint)
@@ -6744,7 +6765,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     when UIPROF {
         if node == nil {
             g_uiprof.lay_m_nonode += 1
-        } else if e, ok := g_layer_cache[node]; !ok {
+        } else if e, ok := cache^[node]; !ok {
             g_uiprof.lay_m_new += 1
         } else if e.hash != h {
             g_uiprof.lay_m_hash += 1
@@ -6792,7 +6813,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     // que o AddImage normal componha αs·B + (1−αs)·backdrop sobre o framebuffer.
     comp_tex := tex
     intermediate: ^sdl2.Texture = nil // a textura .TARGET vira descartável quando processada na CPU
-    if has_filter || cpu_blend || has_clip || has_mask {
+    if has_filter || cpu_blend || has_clip || has_mask || round_clip {
         pw, ph := int(iw), int(ih)
         buf := make([]u8, pw * ph * 4, context.temp_allocator)
         rect := sdl2.Rect{0, 0, iw, ih}
@@ -6806,6 +6827,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
             // sobre o conteúdo inteiro, como na spec: clip/mask são o passo final).
             if has_clip do apply_clip_mask(buf, pw, ph, clip, cbx - fx, cby - fy, cbw, cbh)
             if has_mask do apply_mask_gradient(buf, pw, ph, mask, cbx - fx, cby - fy, cbw, cbh)
+            if round_clip do apply_round_clip(buf, pw, ph, cbx-fx, cby-fy, cbw, cbh, rounding)
             buf_premul(buf) // volta à convenção da textura (ver premul_blend)
             t2 := sdl2.CreateTexture(g_renderer, .ABGR8888, .STATIC, iw, ih)
             if t2 != nil {
@@ -6836,11 +6858,11 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     // paint_layout). A .TARGET intermediária do filtro é sempre per-frame.
     cacheable := node != nil
     if cacheable {
-        if old, ok := g_layer_cache[node]; ok && old.used == g_frame do cacheable = false
+        if old, ok := cache^[node]; ok && old.used == g_frame do cacheable = false
     }
     if cacheable {
-        if old, ok := g_layer_cache[node]; ok do sdl2.DestroyTexture(old.tex) // stale, substitui
-        g_layer_cache[node] = Layer_Cache{tex = comp_tex, hash = h, fx = fx, fy = fy, iw = iw, ih = ih, used = g_frame, custom = custom, premul = premul}
+        if old, ok := cache^[node]; ok do sdl2.DestroyTexture(old.tex) // stale, substitui
+        cache^[node] = Layer_Cache{tex = comp_tex, hash = h, fx = fx, fy = fy, iw = iw, ih = ih, used = g_frame, custom = custom, premul = premul}
     } else {
         append(&g_layer_textures, comp_tex)
     }
@@ -7541,6 +7563,12 @@ paint_layout :: proc(s: ^State, root: ^Box) {
     for k in stale {
         sdl2.DestroyTexture(g_layer_cache[k].tex)
         delete_key(&g_layer_cache, k)
+    }
+    clear(&stale)
+    for k, e in g_round_clip_cache do if e.used < g_frame - 1 do append(&stale, k)
+    for k in stale {
+        sdl2.DestroyTexture(g_round_clip_cache[k].tex)
+        delete_key(&g_round_clip_cache, k)
     }
     g_layer_count = 0
     g_backdrop_count = 0
@@ -8554,6 +8582,25 @@ paint_subtree_has_overflow_clip :: proc(b: ^Box) -> bool {
     return false
 }
 
+emit_overflow_clip :: proc(pt: ^Painter, b: ^Box, lo, hi: im.Vec2, rounded: bool) {
+    if rounded {
+        r := image_rounding(b.w, b.h, b.border_radius, b.border_radius_pct, b.border_w)
+        emit(pt, PC_RoundClipBegin{rawptr(b.node), lo, hi, r})
+    }
+    emit(pt, PC_PushClip{lo, hi})
+}
+
+end_overflow_clip :: proc(pt: ^Painter, rounded: bool) {
+    emit(pt, PC_PopClip{})
+    if rounded do emit(pt, PC_LayerEnd{})
+}
+
+rounded_overflow_clip :: proc(b: ^Box) -> bool {
+    if !b.overflow_hidden || !b.ovf_clip_x || !b.ovf_clip_y || g_renderer == nil do return false
+    r := image_rounding(b.w, b.h, b.border_radius, b.border_radius_pct, b.border_w)
+    return image_has_rounding(r)
+}
+
 paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, in_xform := false, scope: ^Stacking_Scope = nil, stacked := false, abs_origin: im.Vec2 = {}) {
     if scope != nil && !stacked && b in scope.deferred do return
     if b.inline_parent_effect != nil {
@@ -9010,6 +9057,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // Hoisted p/ fora do `if` porque o .Block reusa o retângulo ao religar o clip
     // entre filhos posicionados que escapam e os que são recortados.
     cx0, cy0, cx1, cy1: f32
+    round_clip := rounded_overflow_clip(b)
     if b.overflow_hidden {
         BIG :: f32(1e6)
         // overflow recorta na PADDING box (dentro das bordas), não na border box —
@@ -9019,16 +9067,16 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         cx1 = b.ovf_clip_x ? screen.x + b.w - b.border_w[1] : screen.x + b.w + BIG
         cy0 = b.ovf_clip_y ? screen.y + b.border_w[0] : screen.y - BIG
         cy1 = b.ovf_clip_y ? screen.y + b.h - b.border_w[2] : screen.y + b.h + BIG
-        emit(pt, PC_PushClip{{cx0, cy0}, {cx1, cy1}})
+        emit_overflow_clip(pt, b, {cx0, cy0}, {cx1, cy1}, round_clip)
     }
     // scroll de elemento: desloca o conteúdo pra cima por scroll_y (clipado acima)
     child_oy := b.overflow_scroll ? oy2 - b.scroll_y : oy2
     if owns_scope {
-        if b.overflow_hidden do emit(pt, PC_PopClip{})
+        if b.overflow_hidden do end_overflow_clip(pt, round_clip)
         collect_stacking(active_scope, b, ox2, oy2, -1, abs_origin)
         sort_stacking(active_scope.entries[:])
         paint_stacking(pt, s, active_scope, true, screen.x - b.x - ox2, screen.y - b.y - oy2, eff, in_xform || b.has_transform || b.has_xform_matrix)
-        if b.overflow_hidden do emit(pt, PC_PushClip{{cx0, cy0}, {cx1, cy1}})
+        if b.overflow_hidden do emit_overflow_clip(pt, b, {cx0, cy0}, {cx1, cy1}, round_clip)
     }
     if b.is_inline {
         // recolore o texto: animação (se ativa) tem prioridade sobre :hover
@@ -9041,7 +9089,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         hdeco := b.hover.deco
         if b.href != "" && !b.hover.deco_set do hdeco.underline = true // default de link do UA
         paint_inline(pt, s, b, ox2, child_oy, eff, oc, ot, in_xform || b.has_transform || b.has_xform_matrix, hdeco, b.hover.has_deco && hovering, active_scope) // per-item visibility lets descendants become visible
-        if b.overflow_hidden do emit(pt, PC_PopClip{})
+        if b.overflow_hidden do end_overflow_clip(pt, round_clip)
     } else {
         switch b.kind {
         case .Image:
@@ -9062,19 +9110,19 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
                     emit(pt, PC_Image{b.img_url, cs, b.img_dw, b.img_dh, b.obj_fit, eff, b.obj_pos_x, b.obj_pos_y, b.img_deco, rounding})
                 }
             }
-            if b.overflow_hidden do emit(pt, PC_PopClip{})
+            if b.overflow_hidden do end_overflow_clip(pt, round_clip)
         case .Block:
             // Contextos e posicionados são pintados pelo contexto ancestral.
             clip_on := b.overflow_hidden
             for child in stacking_children(b) {
                 if b.overflow_hidden {
                     esc := overflow_escapes(b, child)
-                    if      esc && clip_on  { emit(pt, PC_PopClip{});  clip_on = false }
-                    else if !esc && !clip_on { emit(pt, PC_PushClip{{cx0, cy0}, {cx1, cy1}}); clip_on = true }
+                    if      esc && clip_on  { end_overflow_clip(pt, round_clip); clip_on = false }
+                    else if !esc && !clip_on { emit_overflow_clip(pt, b, {cx0, cy0}, {cx1, cy1}, round_clip); clip_on = true }
                 }
                 emit_stacked(pt, s, child, ox2, child_oy, eff, in_xform || b.has_transform || b.has_xform_matrix, active_scope)
             }
-            if clip_on do emit(pt, PC_PopClip{})
+            if clip_on do end_overflow_clip(pt, round_clip)
         }
     }
 
@@ -9085,7 +9133,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // overflow:hidden + raio: o clip do ImGui é retangular, então os filhos que
     // chegam aos cantos (ex.: um topo em gradiente) saem quadrados. Recorta os
     // cantos arredondados preenchendo o entalhe com a cor de trás e redesenha a borda.
-    if b.overflow_hidden && radius > 0.5 {
+    if b.overflow_hidden && radius > 0.5 && !round_clip {
         // ⚠️ o entalhe EXTERNO (PC_MaskCorners, abaixo) não basta quando há BORDA:
         // ele só limpa o que passa da curva externa, e o canto QUADRADO do filho
         // continua cobrindo a faixa entre a curva INTERNA (padding-box) e a
