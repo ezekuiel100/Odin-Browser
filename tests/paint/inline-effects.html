@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+body { margin:0; background:white; font:30px/1 monospace; }
+.row { position:absolute; left:10px; width:300px; height:45px; }
+.red { background:red; color:red; }
+</style></head><body>
+<div style="position:absolute;left:400px;top:20px;width:200px;height:50px"><span style="position:relative"><span style="position:absolute;left:5px;top:5px;width:40px;height:20px;background:lime"></span></span></div>
+<div class="row" style="top:10px"><span class="red" style="opacity:0">MMMM</span></div>
+<div class="row" style="top:70px"><span class="red" style="visibility:hidden">HH<span style="visibility:visible;background:blue;color:blue">VV</span></span></div>
+<div class="row" style="top:150px"><span class="red" style="opacity:.5">MMMM<span style="position:absolute;left:5px;top:5px;width:40px;height:20px;background:blue"></span></span></div>
+<div class="row" style="top:210px"><span style="opacity:.5"><span style="opacity:.5;background:black;color:black">MMMM</span></span></div>
+<div class="row" style="top:270px"><span style="opacity:0"><span style="display:inline-block;position:relative;width:70px;height:30px;background:red"></span></span></div>
+<div class="row" style="top:330px"><span style="opacity:0"><span style="position:absolute;left:0;top:0;width:70px;height:30px;background:red"></span></span></div>
+<div style="position:absolute;left:400px;top:230px"><button style="position:relative;width:150px;height:50px;border:0;padding:0;margin:0;background:white"><span style="position:absolute;left:10px;top:10px;width:40px;height:20px;background:lime"></span><span style="position:fixed;left:600px;top:300px;width:40px;height:20px;background:lime"></span></button></div>
+</body></html>
