@@ -10490,7 +10490,10 @@ l_pick_font :: proc(size: f32, weight: Font_Weight, fam_id: u8, family: Font_Fam
     if fam_id != 0 {
         fem: f32
         f, fem = fontface_pick(fam_id, fw_css(weight), italic, best)
-        if f != nil do return f, size / g_font_sizes[best], fem
+        if f != nil {
+            f = native_font_pick(f, render_px(size, fem))
+            return f, size / f.FontSize, fem
+        }
     }
     switch family {
     case .Mono:
@@ -10505,6 +10508,8 @@ l_pick_font :: proc(size: f32, weight: Font_Weight, fam_id: u8, family: Font_Fam
         if f == nil do f = bold ? g_bold[best] : g_reg[best]
     }
     if f == nil { f = bold ? g_bold[best] : g_reg[best]; em = g_em_sans } // fallback se a TTF não carregou
+    f = native_font_pick(f, render_px(size, em))
+    if f != nil && f.FontSize > 0 do return f, size / f.FontSize, em
     return f, size / g_font_sizes[best], em
 }
 

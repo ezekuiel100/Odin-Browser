@@ -256,12 +256,9 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     tab.dom_fp = dompkg.fingerprint(tab.dom)
 }
 
-// Config das fontes de conteúdo. Como quase todo texto é renderizado num tamanho
-// DIFERENTE do rasterizado (a escada {16,20,25,32,40} é escalada p/ o px do CSS),
-// a nitidez vem de: (1) RasterizerDensity 2 = rasteriza o glifo em 2× e desenha
-// reduzido (supersampling, mata o embaçado do downscale); (2) oversampling nos
-// dois eixos; (3) PixelSnapH desligado — snap ao pixel só ajuda no tamanho nativo
-// e atrapalha quando o glifo é escalado.
+// Bootstrap/fallback do conteúdo. font_raster.odin acrescenta rasterizações no
+// tamanho pedido pelo layout; esta escada atende o primeiro frame e os pedidos
+// que excedem o orçamento do cache. Densidade 1.5 suaviza apenas esse fallback.
 content_font_cfg :: proc() -> im.FontConfig {
     return im.FontConfig{
         FontDataOwnedByAtlas = true,
@@ -270,7 +267,7 @@ content_font_cfg :: proc() -> im.FontConfig {
         PixelSnapH           = false,
         GlyphMaxAdvanceX     = 3.4028235e38,
         RasterizerMultiply   = 1.0,
-        RasterizerDensity    = 1.5, // supersampling: texto nítido em qualquer escala
+        RasterizerDensity    = 1.5,
         EllipsisChar         = 0xFFFF,
     }
 }
@@ -449,6 +446,7 @@ push_col :: proc(idx: im.Col, hex: u32) {
 // Carrega as fontes (UI + ícones + escada de conteúdo) no atlas do ImGui.
 // Compartilhado entre run() e o modo headless (headless.odin).
 setup_fonts :: proc(io: ^im.IO) {
+    native_fonts_reset()
     g_font_ui = im.FontAtlas_AddFontFromFileTTF(io.Fonts, "C:\\Windows\\Fonts\\segoeui.ttf", 17, nil, &g_text_ranges[0])
 
     // mescla os ícones da Segoe MDL2 Assets no mesmo handle de fonte

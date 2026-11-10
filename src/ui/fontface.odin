@@ -693,7 +693,7 @@ fontface_resolve_waiters :: proc(now: time.Tick) {
 fontface_poll :: proc() -> bool {
     io := im.GetIO()
     if io == nil || io.Fonts == nil do return false
-    added := false
+    added := native_fonts_add(io.Fonts)
 
     sync.mutex_lock(&g_face_lock)
     active := 0
@@ -863,6 +863,7 @@ fontface_derive :: proc(parent: int, weight: int) {
 // 1ª prova ponta-a-ponta (o worker só imprimiu DEPOIS do último poll).
 // Mesmo papel do `images_pending()` para imagens.
 fontface_pending :: proc() -> bool {
+    if native_fonts_pending() do return true
     sync.mutex_lock(&g_face_lock)
     defer sync.mutex_unlock(&g_face_lock)
     for &f in g_faces {
