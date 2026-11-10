@@ -213,7 +213,9 @@ headless_paint :: proc(url: string, url2: string = "", frames: int = 150) -> boo
         // bombeia timers e fetches do JS (como o draw_content faz no navegador
         // vivo); se algum disparou, re-estiliza a página mutada
         if len(s.tabs) > 0 && s.tabs[0].vm != nil {
-            if jspkg.vm_pump_timers(s.tabs[0].vm, 1000.0 / 60.0) {
+            anim_fired := animation_dispatch(s.tabs[0].layout, s.tabs[0].vm)
+            timer_fired := jspkg.vm_pump_timers(s.tabs[0].vm, 1000.0 / 60.0)
+            if anim_fired || timer_fired {
                 restyle_tab(&s.tabs[0], 1280, 900)
             }
         }
@@ -924,7 +926,8 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
             // timer disparou ≠ DOM mudou: só re-estiliza se mudou (ver
             // dompkg.fingerprint e o guarda equivalente no browser_ui)
             when UIPROF { tf = time.tick_now() }
-            disparou := jspkg.vm_pump_timers(s.tabs[0].vm, 1000.0 / 60.0)
+            disparou := animation_dispatch(s.tabs[0].layout, s.tabs[0].vm)
+            if jspkg.vm_pump_timers(s.tabs[0].vm, 1000.0 / 60.0) do disparou = true
             // IntersectionObserver: mesmo passo por frame do headless_render. Sem
             // ele o --diagnose mediria uma página em que o observador nunca correu,
             // e os contadores js_io_* seriam sempre zero.
@@ -1088,9 +1091,11 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
         if g_container_dirty {
             g_container_dirty = false
             free_styles(styles)
-            free_layout(layout)
+            old_layout := layout
             styles, page_bg = compute_styles(dom, &rules, f32(width), f32(height), kf[:])
             layout = build_layout(dom, styles, base_url)
+            animation_restore_tree(layout, old_layout)
+            free_layout(old_layout)
             js_style_source_set(styles, layout, f32(width), f32(height))
         }
     }
@@ -1171,15 +1176,18 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
         // `||`), e o observador só rodaria em frame com timer vencido.
         js_fired := false
         if !draining && page_vm != nil {
+            if animation_dispatch(layout, page_vm) do js_fired = true
             if jspkg.vm_pump_timers(page_vm, 1000.0 / 60.0) do js_fired = true
             if jspkg.vm_frame_step(page_vm)                 do js_fired = true
         }
         if fonts_changed || (js_fired && dompkg.fingerprint(dom) != dom_fp) {
             rt, kt := csspkg.parse(css_text)
             free_styles(styles)
-            free_layout(layout)
+            old_layout := layout
             styles, page_bg = compute_styles(dom, &rt, f32(width), f32(height), kt[:])
             layout = build_layout(dom, styles, base_url) // base REAL: senão URLs relativas (/static, ../) viram https:/// e as imagens falham
+            animation_restore_tree(layout, old_layout)
+            free_layout(old_layout)
             csspkg.free_rules(&rt)
             csspkg.free_keyframes(&kt)
             s.tabs[0].styles = styles
@@ -1219,9 +1227,11 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
                     // re-parseando o css_text (rules com seletores frescos)
                     rules2, kf2 := csspkg.parse(css_text)
                     free_styles(styles)
-                    free_layout(layout)
+                    old_layout := layout
                     styles, page_bg = compute_styles(dom, &rules2, f32(width), f32(height), kf2[:])
                     layout = build_layout(dom, styles, base_url) // base REAL (ver rebuild por timer)
+                    animation_restore_tree(layout, old_layout)
+                    free_layout(old_layout)
                     csspkg.free_rules(&rules2)
                     csspkg.free_keyframes(&kf2)
                     s.tabs[0].styles = styles

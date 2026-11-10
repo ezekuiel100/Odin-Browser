@@ -32,7 +32,8 @@ animation_names_case_sensitive :: proc(t: ^testing.T) {
 @(test)
 animation_zero_iterations :: proc(t: ^testing.T) {
     c := test_compute_anim(".x{animation:fade 2s 0}@keyframes fade{from{opacity:0}to{opacity:1}}", "div", "x")
-    testing.expect(t, !c.anim.active, "zero iterations must not loop forever")
+    testing.expect(t, c.anim.active && c.anim.zero_iterations, "zero iterations retains a zero-length lifecycle")
+    testing.expect(t, !test_eval_anim(&c.anim, 1).has_op, "zero iterations without fill has no effect")
 }
 
 @(test)

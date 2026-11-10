@@ -1,0 +1,19 @@
+﻿<!doctype html><style>
+html,body{margin:0;background:white}div{position:absolute;width:60px;height:60px;top:20px;background:black}
+#a{left:20px;animation:fade 2s linear -1s paused both,tint 2s linear -1s paused both}
+#b{left:100px;animation:fade 2s linear -1s paused both,high 2s linear -1s paused both}
+#c{left:180px;animation:shrink 2s linear -1s paused both,identity 2s linear -1s paused both}
+#d{left:260px;background:red;animation:fade 1s -5s paused}
+#d[data-events="animationstart:fade:1,animationend:fade:1"]{background:lime}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes high{from{opacity:.75}to{opacity:.75}}
+@keyframes tint{from{background-color:blue}to{background-color:blue}}
+@keyframes shrink{from{transform:scale(0)}to{transform:scale(0)}}
+@keyframes identity{from{transform:scale(1)}to{transform:scale(1)}}
+</style><div id="a"></div><div id="b"></div><div id="c"></div><div id="d"></div>
+<script>
+var events=[];
+function record(e){events.push(e.type+':'+e.animationName+':'+e.elapsedTime);document.getElementById('d').setAttribute('data-events',events.join(','));}
+document.getElementById('d').addEventListener('animationstart',record);
+document.getElementById('d').addEventListener('animationend',record);
+</script>

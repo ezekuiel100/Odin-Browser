@@ -124,10 +124,12 @@ paint_stacking :: proc(pt: ^Painter, s: ^State, scope: ^Stacking_Scope, negative
 }
 
 stacking_animation_context :: proc(b: ^Box) -> bool {
-    if !b.anim.active do return false
-    for i in 0 ..< b.anim.n {
-        stop := b.anim.stops[i]
-        if stop.has_opacity || stop.has_rot || stop.has_scale do return true
+    for &p in b.animations {
+        if !p.anim.active do continue
+        for i in 0 ..< p.anim.n {
+            stop := p.anim.stops[i]
+            if stop.has_opacity || stop.has_rot || stop.has_scale do return true
+        }
     }
     return false
 }

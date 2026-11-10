@@ -957,6 +957,8 @@ Anim_Stop :: struct {
     has_timing: bool, timing: Timing,
 }
 Anim :: struct {
+    name: string,
+    zero_iterations: bool,
     active:    bool,
     dur:       f32,  // segundos
     delay:     f32,  // segundos
@@ -1020,6 +1022,7 @@ Computed :: struct {
     bg:            u32,
     has_bg:        bool,
     hover:         Hover_Style, // overrides de :hover (não herda)
+    anim_more: []Anim, // temporary list; Box owns playback copies
     anim:          Anim,        // animation/@keyframes resolvido (não herda)
     weight:        Font_Weight, // font-weight (Regular/Semi/Bold; ver Font_Weight)
     italic:        bool, // font-style: italic/oblique (herda)
@@ -1847,6 +1850,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.obj_pos_x = 0.5; comp.obj_pos_y = 0.5 // object-position não herda; padrão centro
     comp.valign = .Baseline // vertical-align não herda
     comp.trans = {} // transition não herda
+    comp.anim_more = nil
     comp.anim = {}          // animation não herda
     // comp.cursor NÃO é resetado: herda do pai (comportamento CSS)
     comp.scroll_smooth = false // scroll-behavior não herda
@@ -2228,6 +2232,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     child_inherit.deco_set = false // "autor definiu text-decoration" é por-elemento
     child_inherit.display_none = false
     child_inherit.hover = {} // :hover pertence só a este nó (não herda)
+    child_inherit.anim_more = nil
     child_inherit.anim = {}  // animation não herda
     // Os pseudo-elementos ::before/::after pertencem SÓ a este nó. Sem isto, os
     // filhos herdam os ponteiros ^Computed do pai; nós que não são Element pulam
@@ -7999,6 +8004,31 @@ first_animation_value :: proc(v: string) -> string {
 
 resolve_animation :: proc(comp: ^Computed, decls: map[string]string, kf: []csspkg.Keyframe_Set, vars: map[string]string, vw, vh: f32) {
     if len(kf) == 0 do return
+    if _, ok := decls["animation"]; !ok {
+        if _, named := decls["animation-name"]; !named do return
+    }
+    sh := split_commas_paren(resolve_var(decls["animation"], vars))
+    count := len(sh)
+    if v, ok := decls["animation-name"]; ok do count = len(split_commas_paren(resolve_var(v, vars)))
+    if count == 0 do return
+    if count > 1 do comp.anim_more = make([]Anim, count - 1, context.temp_allocator)
+    for i in 0 ..< count {
+        one := make(map[string]string, context.temp_allocator)
+        if len(sh) > 0 do one["animation"] = sh[i % len(sh)]
+        for prop, raw in decls {
+            if !strings.has_prefix(prop, "animation-") do continue
+            vals := split_commas_paren(resolve_var(raw, vars))
+            if len(vals) > 0 do one[prop] = vals[i % len(vals)]
+        }
+        tmp := comp^
+        tmp.anim = {}; tmp.anim_more = nil
+        resolve_animation_one(&tmp, one, kf, vars, vw, vh)
+        if i == 0 { comp.anim = tmp.anim } else { comp.anim_more[i - 1] = tmp.anim }
+    }
+}
+
+resolve_animation_one :: proc(comp: ^Computed, decls: map[string]string, kf: []csspkg.Keyframe_Set, vars: map[string]string, vw, vh: f32) {
+    if len(kf) == 0 do return
     name := ""
     dur, delay: f32 = 0, 0
     iter: f32 = 1
@@ -8009,7 +8039,6 @@ resolve_animation :: proc(comp: ^Computed, decls: map[string]string, kf: []csspk
 
     if v, ok := decls["animation"]; ok {
         rv := resolve_var(v, vars)
-        // só a 1ª animação (antes da 1ª vírgula) — não suportamos várias por elemento
         rv = first_animation_value(rv)
         time_seen := 0
         for raw_tok in fields_paren(rv) {
@@ -8065,11 +8094,13 @@ resolve_animation :: proc(comp: ^Computed, decls: map[string]string, kf: []csspk
     }
     if v, ok := decls["animation-play-state"]; ok do paused = strings.trim_space(first_animation_value(resolve_var(v, vars))) == "paused"
 
-    if name == "" || name == "none" || dur <= 0 || (!infinite && iter <= 0) do return
+    if name == "" || name == "none" || dur < 0 || (!infinite && iter < 0) do return
     set: ^csspkg.Keyframe_Set
     for &s in kf do if s.name == name { set = &s; break }
     if set == nil do return
 
+    comp.anim.zero_iterations = !infinite && iter == 0
+    comp.anim.name = name
     comp.anim.dur = dur; comp.anim.delay = delay; comp.anim.iter = iter; comp.anim.alternate = alt
     comp.anim.reverse = rev; comp.anim.fill_before = before; comp.anim.fill_after = after
     comp.anim.timing = timing; comp.anim.paused = paused
@@ -8097,8 +8128,8 @@ resolve_animation :: proc(comp: ^Computed, decls: map[string]string, kf: []csspk
         if tv, ok := st.decls["transform"]; ok {
             tmp := Computed{transform_sx = 1, transform_sy = 1}
             parse_transform(&tmp, resolve_var(tv, vars), comp.font_size, vw, vh)
-            if tmp.transform_rot != 0 { as.has_rot = true; as.rot = tmp.transform_rot }
-            if tmp.transform_sx != 1 || tmp.transform_sy != 1 { as.has_scale = true; as.sx = tmp.transform_sx; as.sy = tmp.transform_sy }
+            as.has_rot = true; as.rot = tmp.transform_rot
+            as.has_scale = true; as.sx = tmp.transform_sx; as.sy = tmp.transform_sy
         }
         comp.anim.stops[comp.anim.n] = as
         comp.anim.n += 1

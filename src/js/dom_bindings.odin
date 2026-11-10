@@ -830,6 +830,21 @@ native_remove_event_listener :: proc(vm: ^Interp, this: Value, args: []Value) ->
 // e.target, e.currentTarget, e.preventDefault(), e.stopPropagation()) passado
 // como 1º argumento; `this` do handler = elemento atual (currentTarget).
 // A UI chama no clique com o nó MAIS PROFUNDO. true se algum handler disparou.
+dispatch_animation_event :: proc(vm: ^Interp, node: ^dom.Node, kind, name: string, elapsed: f64) -> bool {
+    ev := new_object(vm)
+    ev.proto = vm.event_proto
+    ev.props["type"] = kind
+    ev.props["bubbles"] = true
+    ev.props["cancelable"] = false
+    owned_name := strings.clone(name)
+    append(&vm.owned_strings, owned_name)
+    ev.props["animationName"] = owned_name
+    ev.props["elapsedTime"] = elapsed
+    ev.props["pseudoElement"] = ""
+    fired, _ := dispatch_event_obj(vm, node, kind, ev)
+    return fired
+}
+
 dispatch_event :: proc(vm: ^Interp, node: ^dom.Node, type: string) -> bool {
     fired, _ := dispatch_event_obj(vm, node, type, nil)
     return fired
@@ -935,7 +950,9 @@ event_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 event_prevent_default :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if o, ok := this.(^Object); ok do o.props["defaultPrevented"] = true
+    if o, ok := this.(^Object); ok {
+        if c, has := o.props["cancelable"]; !has || truthy(c) do o.props["defaultPrevented"] = true
+    }
     return nil
 }
 

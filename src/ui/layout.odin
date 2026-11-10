@@ -356,8 +356,7 @@ Box :: struct {
     hover: Hover_Style, // overrides de :hover aplicados quando o mouse está sobre
     trans: [Trans_Chan]Transition, // transition por canal (dur/delay/curva); ver transition.odin
     hover_t: f32,        // progresso da animação 0..1 (estado; persiste entre frames)
-    anim: Anim,          // animation/@keyframes resolvido
-    anim_t: f32,         // tempo decorrido da animação em segundos (estado; persiste)
+    animations: []Animation_Player,
 
     // transform: translate (offset visual sem afetar o layout)
     transform_tx, transform_ty:         f32,
@@ -2314,7 +2313,12 @@ apply_box :: proc(b: ^Box, comp: Computed) {
     b.backdrop_filters = comp.backdrop_filters; b.n_backdrop = comp.n_backdrop
     b.hover = comp.hover
     b.trans = comp.trans
-    b.anim = comp.anim
+    if comp.anim.active || len(comp.anim_more) > 0 {
+        b.animations = make([]Animation_Player, 1 + len(comp.anim_more))
+        b.animations[0].anim = comp.anim
+        for a, i in comp.anim_more do b.animations[i + 1].anim = a
+        for &p in b.animations do p.anim.name = strings.clone(p.anim.name)
+    }
     b.transform_tx = comp.transform_tx; b.transform_ty = comp.transform_ty
     b.transform_tx_pct = comp.transform_tx_pct; b.transform_ty_pct = comp.transform_ty_pct
     b.transform_rot = comp.transform_rot
@@ -7355,6 +7359,7 @@ paint_layout :: proc(s: ^State, root: ^Box) {
     g_click_seq = -1
     // libera as texturas de layer per-frame do frame ANTERIOR (já lidas pelo
     // RenderDrawData de fim-de-frame) e zera o orçamento de layers deste frame.
+    animation_step_tree(root, im.GetIO().DeltaTime)
     g_frame += 1
     for t in g_layer_textures do sdl2.DestroyTexture(t)
     clear(&g_layer_textures)
@@ -7506,16 +7511,17 @@ Anim_Eval :: struct {
 // iteration-count, alternate), acha os stops vizinhos e interpola opacity/cor/fundo.
 @(private="file")
 eval_anim :: proc(a: ^Anim, t_elapsed: f32) -> Anim_Eval {
-    if a.n < 2 || a.dur <= 0 do return {}
+    if a.n < 2 do return {}
     tt := t_elapsed - a.delay
+    before := tt < 0
     if tt < 0 && !a.fill_before do return {}
     if tt < 0 do tt = 0
     cycles := a.dur > 0 ? tt / a.dur : 0
     prog: f32
-    if a.iter > 0 && cycles >= a.iter {
+    if !before && (a.dur == 0 || a.zero_iterations || (a.iter > 0 && cycles >= a.iter)) {
         if !a.fill_after do return {}
-        whole := int(math.ceil(a.iter)) - 1
-        prog = a.iter - f32(whole)
+        whole := max(int(math.ceil(a.iter)) - 1, 0)
+        prog = a.zero_iterations ? 0 : a.iter - f32(whole)
         if a.alternate && whole % 2 == 1 do prog = 1 - prog
     } else {
         w := int(cycles)
@@ -8481,9 +8487,9 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
 
     // animation/@keyframes: avança o relógio e sobrepõe as props animadas.
     anim_col: u32; anim_col_on := false
-    if b.anim.active {
-        if !b.anim.paused do b.anim_t += im.GetIO().DeltaTime
-        ev := eval_anim(&b.anim, b.anim_t)
+    for &player in b.animations {
+        if !player.anim.active do continue
+        ev := eval_anim(&player.anim, player.elapsed)
         if ev.has_op    do eff = opa * ev.op
         if ev.has_bg    { eff_bg = ev.bg; eff_has_bg = true }
         if ev.has_col   { anim_col = ev.col; anim_col_on = true }
@@ -10220,6 +10226,8 @@ free_layout :: proc(b: ^Box) {
     if b == nil do return
     for c in b.children do free_layout(c)
     delete(b.children)
+    for &p in b.animations { delete(p.anim.name); delete(p.pending) }
+    delete(b.animations)
     for &it in b.inlines {
         if it.text != ""    do delete(it.text)
         if it.href != ""    do delete(it.href)

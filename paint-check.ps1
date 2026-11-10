@@ -1060,6 +1060,33 @@ try {
     Assert "controle: translate(0) cria o mesmo contexto" (Px3d $x3d 550 150 0 128 0) ("pixel="+$x3d.GetPixel(550,150))
 } finally { $x3d.Dispose(); $x3o.Dispose() }
 
+# Listas: canais independentes, ultima animacao vence, identidade e eventos DOM.
+$listPng = Join-Path $outDir "animation-lists.png"
+if (Test-Path $listPng) { Remove-Item -LiteralPath $listPng -Force }
+& $Browser --render (Join-Path $PSScriptRoot "tests\paint\animation-lists.html") $listPng 360 100 0 0 3 | Out-Null
+if (-not (Test-Path $listPng)) { throw "animation-lists: sem PNG" }
+$listBmp = New-Object System.Drawing.Bitmap $listPng
+try {
+    Assert "animation lista combina opacidade e fundo" (Px3d $listBmp 50 50 127 127 255) ("pixel="+$listBmp.GetPixel(50,50))
+    Assert "animation posterior vence na mesma propriedade" (Px3d $listBmp 130 50 64 64 64) ("pixel="+$listBmp.GetPixel(130,50))
+    Assert "animation transform identidade substitui escala zero" (Px3d $listBmp 210 50 0 0 0) ("pixel="+$listBmp.GetPixel(210,50))
+    Assert "animationstart/end entregam nome e tempo e atualizam DOM" (Px3d $listBmp 290 50 0 255 0) ("pixel="+$listBmp.GetPixel(290,50))
+} finally { $listBmp.Dispose() }
+
+# Pausar por clique precisa conservar o instante, inclusive no --render.
+$liveRef = Join-Path $outDir "animation-live-reference.png"
+$livePause = Join-Path $outDir "animation-live-paused.png"
+foreach ($f in @($liveRef,$livePause)) { if(Test-Path $f) { Remove-Item -LiteralPath $f -Force } }
+& $Browser --render (Join-Path $PSScriptRoot "tests\paint\animation-live.html") $liveRef 1040 620 0 0 179 | Out-Null
+& $Browser --render (Join-Path $PSScriptRoot "tests\paint\animation-live.html") $livePause 1040 620 100 180 180 0 0 1 | Out-Null
+if (-not (Test-Path $liveRef) -or -not (Test-Path $livePause)) { throw "animation-live: sem PNG" }
+$refBmp=New-Object System.Drawing.Bitmap $liveRef
+$pauseBmp=New-Object System.Drawing.Bitmap $livePause
+try {
+    $fade=$refBmp.GetPixel(134,300); $combo=$refBmp.GetPixel(818,300)
+    Assert "animation pausa por clique preserva os relogios" ((Px3d $pauseBmp 134 300 $fade.R $fade.G $fade.B) -and (Px3d $pauseBmp 818 300 $combo.R $combo.G $combo.B)) ("antes="+$combo+", pausa="+$pauseBmp.GetPixel(818,300))
+} finally { $refBmp.Dispose(); $pauseBmp.Dispose() }
+
 # Contextos: a mesma fixture roda sozinha para comparacao antes/depois.
 & (Join-Path $PSScriptRoot "tools/check-stacking.ps1") -Browser $Browser
 Assert "24 casos de contexto de empilhamento" ($LASTEXITCODE -eq 0) "ver casos acima"

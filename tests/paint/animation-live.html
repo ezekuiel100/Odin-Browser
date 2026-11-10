@@ -1,0 +1,38 @@
+﻿<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Teste de animacoes - Odin Browser</title>
+<style>
+html,body{margin:0;background:#101827;color:#eef3ff;font-family:Arial,sans-serif}
+main{padding:32px;max-width:920px}h1{font-size:30px;margin:0 0 12px}p{line-height:1.5}
+button{padding:10px 18px;margin:10px 10px 16px 0;background:#dce8ff;color:#14213b;border:0;font-size:16px}
+.row{display:flex;gap:24px;flex-wrap:wrap}.panel{width:170px;background:#1d2a40;padding:16px;border:1px solid #40516c}
+.stage{height:130px;display:flex;align-items:center;justify-content:center;background:#101827}
+.shape{width:64px;height:64px;background:#69b7ff}.label{font-size:18px;margin:14px 0 4px}.hint{font-size:14px;color:#bfcee6}
+#fade{animation:fade 2s linear infinite alternate}
+#turn{border-top:10px solid #f776b6;animation:turn 4s linear infinite}
+#pulse{animation:pulse 1.5s ease-in-out infinite alternate}
+#combo{animation:pulse 1.5s ease-in-out infinite alternate,tint 3s linear infinite alternate}
+body.paused .shape{animation-play-state:paused}
+@keyframes fade{from{opacity:.15}to{opacity:1}}
+@keyframes turn{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes pulse{from{transform:scale(.6)}to{transform:scale(1.2)}}
+@keyframes tint{from{background-color:#70e6b3}to{background-color:#f776b6}}
+#status{margin-top:20px;padding:12px;background:#1d2a40}#events{font-family:monospace;color:#70e6b3}
+</style></head><body><main>
+<h1>Animacoes em movimento</h1>
+<p>Os quatro quadrados comecam sozinhos. Nao precisa de internet.<br>Recarregue a pagina para reiniciar os contadores.</p>
+<button id="pause">Pausar / continuar</button><button id="mutate">Alterar DOM durante a animacao</button>
+<div class="row">
+<div class="panel"><div class="stage"><div class="shape" id="fade"></div></div><p class="label">Opacidade</p><p class="hint">Clareia e escurece.</p></div>
+<div class="panel"><div class="stage"><div class="shape" id="turn"></div></div><p class="label">Rotacao</p><p class="hint">Gira continuamente.</p></div>
+<div class="panel"><div class="stage"><div class="shape" id="pulse"></div></div><p class="label">Escala</p><p class="hint">Cresce e encolhe.</p></div>
+<div class="panel"><div class="stage"><div class="shape" id="combo"></div></div><p class="label">Duas animacoes</p><p class="hint">Escala e cor juntas.</p></div>
+</div>
+<div id="status">Estado: executando</div><p id="events">Eventos: aguardando primeiro frame...</p>
+</main><script>
+var starts=0,iterations=0,changes=0,paused=false;
+function showEvents(){document.getElementById('events').textContent='Eventos: '+starts+' inicios / '+iterations+' iteracoes';}
+document.body.addEventListener('animationstart',function(e){starts++;showEvents();});
+document.body.addEventListener('animationiteration',function(e){iterations++;showEvents();});
+document.getElementById('pause').addEventListener('click',function(){paused=!paused;document.body.className=paused?'paused':'';document.getElementById('status').textContent=paused?'Estado: pausado':'Estado: executando';});
+document.getElementById('mutate').addEventListener('click',function(){changes++;document.getElementById('status').textContent='DOM alterado '+changes+' vez(es). O movimento deve continuar sem reiniciar.';});
+</script></body></html>

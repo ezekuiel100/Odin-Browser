@@ -231,7 +231,7 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     // regras numa thread, então o registro das faces mora aqui. Idempotente.
     fontface_scan(tab.css_text, tab.url)
     if tab.styles != nil do free_styles(tab.styles)
-    if tab.layout != nil do free_layout(tab.layout)
+    old_layout := tab.layout
     // S3: os 534 ms de restyle medidos no github são compute_styles + build_layout
     // JUNTOS. A divisão decide se a família de achados de estilo (Computed de
     // 5.936 B por valor, 201 resets manuais, ~210 lookups em apply_decls) vale
@@ -243,6 +243,8 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
         t_bl := time.tick_now()
     }
     tab.layout = build_layout(tab.dom, tab.styles, tab.url)
+    animation_restore_tree(tab.layout, old_layout)
+    free_layout(old_layout)
     when UIPROF { g_uiprof.ms_buildlay += time.duration_milliseconds(time.tick_since(t_bl)) }
     tab.zoom_applied = g_zoom
     // getComputedStyle lê daqui. Tem de ser DEPOIS do compute_styles: o free_styles
@@ -1176,7 +1178,8 @@ draw_content :: proc(s: ^State) {
                 // que faz o observador reagir ao SCROLL, que não passa por funil
                 // nenhum. Junto do pump porque as duas são "JS do frame" e caem no
                 // mesmo guarda de re-estilizar só se o DOM mudou.
-                fired := jspkg.vm_pump_timers(atab.vm, f64(io.DeltaTime) * 1000)
+                fired := animation_dispatch(atab.layout, atab.vm)
+                if jspkg.vm_pump_timers(atab.vm, f64(io.DeltaTime) * 1000) do fired = true
                 if jspkg.vm_frame_step(atab.vm) do fired = true
                 if fired {
                     // Um timer DISPAROU — o que não quer dizer que ele mexeu no
