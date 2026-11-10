@@ -109,13 +109,13 @@ m135_sem_estouro_o_max_content_e_respeitado :: proc(t: ^testing.T) {
 
 @(test)
 m135_trilha_fixa_nao_cede_espaco :: proc(t: ^testing.T) {
-    // NÃO-REGRESSÃO: só trilhas .Auto devolvem excesso. Uma coluna em px é rígida —
-    // o excesso todo tem que sair da coluna max-content ao lado.
+    // Both a fixed track and a bare max-content track preserve their minima.
+    // The former expectation (~179px) encoded the old lossy Auto approximation.
     root := lay(BODY + `<div style="display:grid;grid-template-columns:400px max-content">
         <div id="a"></div>
         <div id="b"><div style="width:500px"></div></div></div></div></body>`)
     a, b := find_id(root, "a"), find_id(root, "b")
     if a == nil || b == nil { testing.fail(t); return }
     testing.expectf(t, a.w == 400, "a coluna fixa continua com 400px (w=%.0f)", a.w)
-    testing.expectf(t, b.w > 170 && b.w < 190, "a max-content cedeu tudo (w=%.0f, esperado ~179)", b.w)
+    testing.expectf(t, b.w == 500, "max-content preserves 500px and overflows (w=%.0f)", b.w)
 }

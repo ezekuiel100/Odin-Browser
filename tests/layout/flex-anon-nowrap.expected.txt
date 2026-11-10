@@ -25,6 +25,6 @@
             <anon# .> inline x=8 y=62 w=92 h=21
         <div# .comer> inline x=97 y=62 w=163 h=21
       <div# .gnw> grid x=0 y=83 w=60 h=21 cols=0 rows=0 gap=0
-        <anon# .> inline x=0 y=83 w=60 h=21
+        <anon# .> inline x=0 y=83 w=92 h=21
       <div# .gwr> grid x=0 y=104 w=60 h=42 cols=0 rows=0 gap=0
         <anon# .> inline x=0 y=104 w=60 h=42

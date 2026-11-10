@@ -115,7 +115,7 @@ test_sizing_min_max_fit_content :: proc(t: ^testing.T) {
 
 @(test)
 test_sizing_grid_row_measures_wrapped_intrinsic_item :: proc(t: ^testing.T) {
-    grid := Box{is_grid = true, grid_track_n = 1, gap = 8}
+    grid := Box{is_grid = true, grid_track_n = 1, gap = 8, row_gap = 8}
     grid.grid_tracks[0] = {kind = .Fixed, value = 220}
     item := Box{is_inline = true, width_mc = true, width_minc = true}
     append(&item.inlines, Inline_Item{kind = .Word, text_w = 40, fsize = 20, lh = 1})

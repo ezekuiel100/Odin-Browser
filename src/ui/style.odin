@@ -927,7 +927,12 @@ Grid_Track_Kind :: enum u8 { Fixed, Fr, Pct, Auto }
 // tailwindcss.com pede `minmax(0, var(--breakpoint-2xl))` = minmax(0, 1536px)
 // numa grade de 1280 e o Chrome resolve a trilha em 1185, enquanto nós dávamos
 // os 1536 inteiros — a coluna transbordava e o <h1> saía 30% largo demais.
-Grid_Track :: struct { kind: Grid_Track_Kind, value: f32, min_px: f32, min_pct: f32, de_minmax: bool }
+Grid_Intrinsic :: enum u8 { Auto, MinContent, MaxContent, Fixed, FitContent }
+Grid_Track :: struct {
+    kind: Grid_Track_Kind, value: f32, min_px: f32, min_pct: f32, de_minmax: bool,
+    min_kind, max_kind: Grid_Intrinsic,
+    fit_pct: bool,
+}
 // 24: o grid GEL da BBC (e vários design systems de notícia) usa 24 colunas —
 // com 16, itens em grid-column: 19/25 eram clampados p/ colunas já ocupadas e
 // as regiões (left 1-6 / center 7-18 / right 19-24) SE SOBREPUNHAM. O array é
@@ -1175,6 +1180,7 @@ Computed :: struct {
     flex_dir:     Flex_Dir,
     flex_reverse: bool,     // row-reverse / column-reverse: inverte a ordem no eixo principal
     flex_wrap:    bool,
+    flex_wrap_reverse: bool,
     justify:      Flex_Just,
     align_items:  Flex_Align,
     align_content: Flex_Just, // distribuição das LINHAS no eixo cruzado (flex-wrap)
@@ -1816,6 +1822,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.flex_dir = .Row
     comp.flex_reverse = false
     comp.flex_wrap = false
+    comp.flex_wrap_reverse = false
     comp.justify = .Start
     comp.align_items = .Stretch
     comp.align_content = .Start
@@ -4752,6 +4759,7 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     if v, ok := decls["flex-wrap"]; ok {
         lv := strings.to_lower(strings.trim_space(v), context.temp_allocator)
         comp.flex_wrap = lv == "wrap" || lv == "wrap-reverse"
+        comp.flex_wrap_reverse = lv == "wrap-reverse"
     }
     if v, ok := decls["justify-content"]; ok {
         switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
@@ -6419,13 +6427,24 @@ parse_grid_track :: proc(tok: string, fs: f32, vw: f32 = 1280, vh: f32 = 720) ->
             mx := strings.trim_space(inner[comma + 1:])
             tr := parse_grid_track(mx, fs, vw, vh) // a parte "max" define o tipo
             tr.de_minmax = true // o `max` é TETO de crescimento, não largura pedida
+            tr.min_kind = .Auto
+            if mn == "min-content" do tr.min_kind = .MinContent
+            if mn == "max-content" do tr.min_kind = .MaxContent
             if px, is_pct, k := parse_len(mn, fs, vw, vh); k {
+                tr.min_kind = .Fixed
                 if is_pct { tr.min_pct = px } else { tr.min_px = px } // px aqui é FRAÇÃO se %
             }
             return tr
         }
     }
     if t == "auto" do return Grid_Track{kind = .Auto}
+    if t == "min-content" do return Grid_Track{kind = .Auto, min_kind = .MinContent, max_kind = .MinContent}
+    if t == "max-content" do return Grid_Track{kind = .Auto, min_kind = .MaxContent, max_kind = .MaxContent}
+    if strings.has_prefix(t, "fit-content(") && strings.has_suffix(t, ")") {
+        if px, pct, ok := parse_len(strings.trim_space(t[12:len(t)-1]), fs, vw, vh); ok {
+            return Grid_Track{kind = .Auto, max_kind = .FitContent, value = px, fit_pct = pct}
+        }
+    }
     if strings.has_suffix(t, "fr") {
         if f, k := strconv.parse_f64(strings.trim_space(t[:len(t) - 2])); k {
             return Grid_Track{kind = .Fr, value = f32(f)}
