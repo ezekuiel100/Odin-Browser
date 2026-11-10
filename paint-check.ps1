@@ -1098,6 +1098,12 @@ Assert "7 casos de estilos e pseudo-elementos inline" ($LASTEXITCODE -eq 0) "ver
 & (Join-Path $PSScriptRoot "tools/check-stacking.ps1") -Browser $Browser
 Assert "24 casos de contexto de empilhamento" ($LASTEXITCODE -eq 0) "ver casos acima"
 
+& (Join-Path $PSScriptRoot "tools/check-image-rounding.ps1") -Browser $Browser
+Assert "imagens com border-radius" ($LASTEXITCODE -eq 0) "ver casos acima"
+
+& (Join-Path $PSScriptRoot "tools/check-hover-transform-clip.ps1") -Browser $Browser
+Assert "recorte acompanha transform no hover" ($LASTEXITCODE -eq 0) "ver casos acima"
+
 if (-not $Keep) { Remove-Item -Recurse -Force $outDir -ErrorAction SilentlyContinue }
 
 Write-Host ""

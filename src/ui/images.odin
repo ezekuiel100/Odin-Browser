@@ -320,6 +320,9 @@ images_poll :: proc(renderer: ^sdl2.Renderer) {
                 if tex != nil {
                     sdl2.UpdateTexture(tex, nil, img.pixels, c.int(img.pw * 4))
                     sdl2.SetTextureBlendMode(tex, .BLEND)
+                    // Set explicitly: headless and interactive renderers must
+                    // sample photos alike, independently of SDL's global hint.
+                    sdl2.SetTextureScaleMode(tex, .Linear)
                     img.tex   = tex
                     img.w     = img.pw
                     img.h     = img.ph

@@ -22,6 +22,78 @@ import "core:testing"
 import htmlp "../html"
 import csspkg "../css"
 
+@(test)
+img_famosos_flex_percentage_overrides_html_height :: proc(t: ^testing.T) {
+    // Exact structure and dimensions from Famosos-BR's index.astro/index.css:
+    // the HTML reserves 80x90; CSS makes it fill a square 80x80 flex container.
+    root := layout_from_html(`<body style="margin:0"><div style="display:flex;align-items:center;gap:24px">
+        <div style="display:flex;align-items:center;justify-content:center;width:80px;height:80px;border-radius:50%">
+            <img id="foto" width="80" height="90" style="width:100%;height:100%;border-radius:50%;object-fit:cover">
+        </div><div>Nome</div></div></body>`)
+    defer free_layout(root)
+    f := acha(root, "foto")
+    if !testing.expect(t, f != nil) do return
+    testing.expectf(t, f.w == 80 && f.h == 80, "avatar box must be 80x80, got %vx%v", f.w, f.h)
+    testing.expectf(t, f.img_dw == 80 && f.img_dh == 80, "photo must paint 80x80, got %vx%v", f.img_dw, f.img_dh)
+}
+
+@(test)
+flex_percentage_height_is_not_stretched_or_resolved_against_line :: proc(t: ^testing.T) {
+    root := layout_from_html(`<body style="margin:0"><div style="display:flex;flex-wrap:wrap;align-items:stretch;align-content:space-between;width:100px;height:200px">
+        <div id="foto" style="width:100px;flex-shrink:0;height:25%"></div>
+        <div style="width:100px;flex-shrink:0;height:20px"></div></div></body>`)
+    defer free_layout(root)
+    f := acha(root, "foto")
+    if !testing.expect(t, f != nil) do return
+    testing.expectf(t, f.h == 50, "25%% of the 200px container, not of the flex line: %v", f.h)
+}
+
+@(test)
+flex_percentage_height_indefinite_remains_auto :: proc(t: ^testing.T) {
+    root := layout_from_html(`<body style="margin:0"><div style="display:flex;align-items:center;width:80px">
+        <img id="foto" width="80" height="90" style="width:100%;height:100%">
+        </div></body>`)
+    defer free_layout(root)
+    f := acha(root, "foto")
+    if !testing.expect(t, f != nil) do return
+    testing.expect(t, f.h == 90, "a percentage against an auto-height parent must keep the intrinsic height")
+}
+
+@(test)
+flex_percentage_height_accounts_for_box_sizing_and_limits :: proc(t: ^testing.T) {
+    root := layout_from_html(`<body style="margin:0"><div style="display:flex;align-items:center;width:300px;height:100px">
+        <div id="content" style="width:40px;height:50%;padding:5px;border:5px solid black"></div>
+        <div id="border" style="box-sizing:border-box;width:40px;height:50%;padding:5px;border:5px solid black"></div>
+        <div id="limited" style="width:40px;height:100%;max-height:60px"></div></div></body>`)
+    defer free_layout(root)
+    c := acha(root, "content"); b := acha(root, "border"); l := acha(root, "limited")
+    if !testing.expect(t, c != nil && b != nil && l != nil) do return
+    testing.expectf(t, c.h == 70 && b.h == 50 && l.h == 60, "content-box/border-box/max-height: got %v/%v/%v", c.h, b.h, l.h)
+}
+
+@(test)
+img_flex_uses_final_content_dimensions :: proc(t: ^testing.T) {
+    root := layout_from_html(`<body style="margin:0"><div style="display:flex;width:170px;align-items:center">
+        <img id="foto" width="200" height="300" style="width:90px;height:80px;min-width:0;object-fit:cover;border-radius:50%">
+        <div style="width:90px;flex-shrink:0"></div></div></body>`)
+    defer free_layout(root)
+    f := acha(root, "foto")
+    if !testing.expect(t, f != nil) do return
+    testing.expect(t, abs(f.w-80) < 0.01 && abs(f.h-80) < 0.01, "used avatar box is square after flex shrink")
+    testing.expect(t, abs(f.img_dw-80) < 0.01 && abs(f.img_dh-80) < 0.01, "paint dimensions must match the square clip, independent of the portrait source")
+}
+
+@(test)
+img_percentage_width_is_not_resolved_twice :: proc(t: ^testing.T) {
+    root := layout_from_html(`<body style="margin:0"><div style="width:160px">
+        <img id="foto" width="200" height="300" style="display:block;width:50%;height:80px;object-fit:cover;border-radius:50%">
+        <div></div></div></body>`)
+    defer free_layout(root)
+    f := acha(root, "foto")
+    if !testing.expect(t, f != nil) do return
+    testing.expect(t, f.w == 80 && f.h == 80 && f.img_dw == 80 && f.img_dh == 80, "50% resolves against the container once, not against the image's own width")
+}
+
 @(private = "file")
 layout_from_html :: proc(html: string, vw: f32 = 800, vh: f32 = 600) -> ^Box {
     dom := htmlp.parse(html)

@@ -557,6 +557,10 @@ Inline_Item :: struct {
     hov_deco: Deco,
     img_url: string, // Image (owned)
     img_deco: bool,  // idem Box.img_deco
+    img_radius: [4]f32,
+    img_radius_pct: [4]bool,
+    img_fit: Obj_Fit,
+    img_pos_x, img_pos_y: f32,
     req_w, req_h: f32, // Image: width/height do CSS (0 = auto → tamanho intrínseco)
     // medida/posição
     text_w: f32,        // largura intrínseca (medida 1x)
@@ -615,26 +619,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
             // descartava, e o `<img>` caía no placeholder cinza.
             // <picture>: o <source> vencedor SUBSTITUI o src do fallback, e é dele
             // que sai a proporção intrínseca até a imagem chegar (ver image_dims).
-            alvo := g_viewport_w > 0 ? g_viewport_w : 1280
-            if sn := picture_source_for(node); sn != nil {
-                u := ""
-                if ss, ok := sn.attrs["srcset"]; ok do u = srcset_pick(ss, alvo)
-                if u == "" { if s, ok := sn.attrs["src"]; ok do u = strings.trim_space(s) }
-                if u != "" {
-                    b.img_url = netpkg.resolve_url(base, u, context.allocator)
-                    b.img_src_node = sn
-                }
-            } else if ss, ok := node.attrs["srcset"]; ok && strings.trim_space(ss) != "" {
-                // `<img srcset>` SEM <picture>: mesma escolha, sem media/type
-                if u := srcset_pick(ss, alvo); u != "" {
-                    b.img_url = netpkg.resolve_url(base, u, context.allocator)
-                }
-            }
-            if b.img_url == "" {
-                if src, ok := node.attrs["src"]; ok && src != "" {
-                    b.img_url = netpkg.resolve_url(base, src, context.allocator)
-                }
-            }
+            b.img_url, b.img_src_node = image_source_for(node, base)
             b.img_deco = img_is_decorative(node)
             return b
         }
@@ -1543,9 +1528,11 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
             }
         }
         if node.tag == "img" {
-            it := Inline_Item{kind = .Image, effect = inline_st.effect, invisible = inline_st.invisible, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^}
+            it := Inline_Item{kind = .Image, effect = inline_st.effect, invisible = inline_st.invisible, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^, img_pos_x = 0.5, img_pos_y = 0.5}
             if comp, ok := &styles[node]; ok {
                 it.valign = comp.valign
+                it.img_radius = comp.border_radius; it.img_radius_pct = comp.border_radius_pct
+                it.img_fit = comp.obj_fit; it.img_pos_x = comp.obj_pos_x; it.img_pos_y = comp.obj_pos_y
                 // width/height do CSS dimensionam o replaced inline (senão usa o
                 // intrínseco — comum: logos sized por CSS que ficariam gigantes).
                 if comp.has_width  && !comp.width_pct do it.req_w = comp.width
@@ -1555,9 +1542,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
             if it.req_w == 0 { if v := attr_num(node, "width");  v > 0 do it.req_w = v }
             if it.req_h == 0 { if v := attr_num(node, "height"); v > 0 do it.req_h = v }
             // idem ao <img> de bloco: `data:` segue pelo caminho normal (M192)
-            if src, ok := node.attrs["src"]; ok && src != "" {
-                it.img_url = netpkg.resolve_url(base, src, context.allocator)
-            }
+            it.img_url, _ = image_source_for(node, base)
             it.img_deco = img_is_decorative(node)
             append(items, it)
             started^ = true; pending^ = false
@@ -2742,7 +2727,10 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
             // razão de aspecto (ex.: logo `height:120px; width:auto` — antes o img de
             // BLOCO ignorava o CSS e renderizava no tamanho natural, gigante).
             css_w: f32 = -1
-            if b.has_width do css_w = b.width_pct ? pct_resolve(b.width, b.width_pct_off, cw, b.width_bd) : b.width
+            // cw is the USED content width, after flex/grid and min/max-width.
+            // Re-reading the CSS width here scales the image's height a second
+            // time when flex shrinks its width, separating the paint and clip boxes.
+            if b.has_width || force_w >= 0 do css_w = cw
             // A altura da caixa pode vir de TRÊS lugares: `height:<px>` (b.height),
             // `height:<%>` — que quem resolve é o PAI, entregando por force_h — e os
             // INSETS de um absoluto (top+bottom), resolvidos em place_absolute, também
@@ -2904,6 +2892,11 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
         if content_h < 0 do content_h = 0
     }
     b.h = content_h + p[0] + p[2] + bwt + bwb
+    if b.kind == .Image {
+        // min/max-height and aspect-ratio can change the used height after the
+        // intrinsic-size calculation. object-fit and border-radius use this box.
+        b.img_dh = content_h
+    }
 
     // position:sticky — teto do deslocamento p/ baixo dos filhos sticky: podem
     // descer até a base do conteúdo DESTE pai (bloco contendor), nunca além.
@@ -3477,6 +3470,20 @@ layout_inline :: proc(b: ^Box, wrap_w: f32 = -1, nlines: ^int = nil) -> f32 {
 }
 
 // ── <picture> / srcset ───────────────────────────────────────────────────────
+// Share source selection between block images and replaced inline items.
+// Otherwise an inline avatar always loads src, even when srcset has a sharper image.
+image_source_for :: proc(node: ^dompkg.Node, base: string) -> (string, ^dompkg.Node) {
+    target := g_viewport_w > 0 ? g_viewport_w : 1280
+    source := picture_source_for(node)
+    candidate := source != nil ? source : node
+    url := ""
+    if ss, ok := candidate.attrs["srcset"]; ok do url = srcset_pick(ss, target)
+    if url == "" { if src, ok := candidate.attrs["src"]; ok do url = strings.trim_space(src) }
+    if url == "" && candidate != node { if src, ok := node.attrs["src"]; ok do url = strings.trim_space(src) }
+    if url == "" do return "", nil
+    return netpkg.resolve_url(base, url, context.allocator), source
+}
+
 //
 // O `<img>` dentro de um `<picture>` é só o FALLBACK: quem manda são os `<source>`
 // irmãos ANTERIORES, em ordem de documento — vence o primeiro cujo `type` a gente
@@ -3746,7 +3753,7 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     if single || !has_h {
         cross_y := b.content_y
         for ln, idx in lines {
-            lc := flex_row_line(b, kids, ln[0], ln[1], cw, gap, cross_y, bases, grows, shrinks, mins, maxs, single ? cross_h : 0)
+            lc := flex_row_line(b, kids, ln[0], ln[1], cw, gap, cross_y, bases, grows, shrinks, mins, maxs, single ? cross_h : 0, avail_h)
             cross_y += lc
             if idx < len(lines) - 1 do cross_y += gap
         }
@@ -3758,7 +3765,7 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     line_h := make([]f32, len(lines), context.temp_allocator)
     cy := b.content_y
     for ln, idx in lines {
-        line_h[idx] = flex_row_line(b, kids, ln[0], ln[1], cw, gap, cy, bases, grows, shrinks, mins, maxs, 0)
+        line_h[idx] = flex_row_line(b, kids, ln[0], ln[1], cw, gap, cy, bases, grows, shrinks, mins, maxs, 0, avail_h)
         cy += line_h[idx]
         if idx < len(lines) - 1 do cy += gap
     }
@@ -3769,7 +3776,7 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     off, between := flex_justify(b.align_content, free, gap, len(lines))
     cy2 := b.content_y + off
     for ln, idx in lines {
-        flex_row_line(b, kids, ln[0], ln[1], cw, gap, cy2, bases, grows, shrinks, mins, maxs, 0)
+        flex_row_line(b, kids, ln[0], ln[1], cw, gap, cy2, bases, grows, shrinks, mins, maxs, 0, avail_h)
         cy2 += line_h[idx] + between
     }
     return cross_h
@@ -3778,7 +3785,7 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
 // Distribui, mede e posiciona os itens [s,e) de uma linha flex row em cross_y.
 // Devolve a altura (cross) usada pela linha.
 @(private="file")
-flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, bases, grows, shrinks, mins, maxs: []f32, cross_h: f32 = 0) -> f32 {
+flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, bases, grows, shrinks, mins, maxs: []f32, cross_h: f32 = 0, percent_h: f32 = -1) -> f32 {
     cnt := e - s
     if cnt <= 0 do return 0
 
@@ -3792,7 +3799,17 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
     line: f32 = 0
     for i in s ..< e {
         c := kids[i]; f := finals[i - s]
-        layout_box(c, b.content_x, cross_y, f, f, -1)
+        // A percentage height resolves against the definite CONTENT height of
+        // the flex container, even with align-items:center. It is not the line's
+        // cross size (especially with wrap). Without this, an img falls back to
+        // its HTML height: Famosos-BR's 80x90 photo inside an 80x80 avatar.
+        fh: f32 = -1
+        if c.has_height_pct && percent_h >= 0 {
+            fh = max(0, pct_resolve(c.height_pct, c.height_pct_off, percent_h, c.height_bd))
+            if c.box_sizing == .Content do fh += c.padding[0] + c.padding[2] + bw_y(c)
+            fh = stretch_clamp(c, .Column, fh, percent_h)
+        }
+        layout_box(c, b.content_x, cross_y, f, f, fh)
         cmt, cmb := node_margins(c)
         oc := c.h + cmt + cmb
         if oc > line do line = oc
@@ -3833,7 +3850,8 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
         // stretch só se aplica quando o cross-size (altura, numa row) é AUTO;
         // com altura definida OU intrínseca (min/max/fit-content) o stretch é
         // ignorado (o item fica no flex-start com sua altura própria).
-        fh: f32 = (ai == .Stretch && !c.has_height && !c.height_mc) ? line - cmt - cmb : -1
+        pct_resolved := c.has_height_pct && percent_h >= 0
+        fh: f32 = (ai == .Stretch && !c.has_height && !c.height_mc && !pct_resolved) ? line - cmt - cmb : -1
         // min/max-height limitam o esticado — e o limite pode DIMINUIR a caixa
         // (max-height menor que a linha), não só aumentá-la.
         // ⚠️ `limitou` estreita a mudança de propósito: fora do caso em que o limite
@@ -6146,7 +6164,7 @@ PC_Border      :: struct { screen: im.Vec2, b: ^Box, cols: [4]u32, eff, radius: 
 // decisão só pode ser tomada na PINTURA, que é onde o cache de imagem responde.
 PC_BorderImage :: struct { screen: im.Vec2, b: ^Box, cols: [4]u32, eff, radius: f32, flags: im.DrawFlags }
 PC_ControlMark :: struct { screen: im.Vec2, b: ^Box, radius, eff: f32 }
-PC_Image       :: struct { url: string, pos: im.Vec2, w, h: f32, fit: Obj_Fit, opa, px, py: f32, deco: bool }
+PC_Image       :: struct { url: string, pos: im.Vec2, w, h: f32, fit: Obj_Fit, opa, px, py: f32, deco: bool, rounding: Image_Rounding }
 PC_TextInput   :: struct { b: ^Box, screen: im.Vec2, eff: f32 }
 PC_Select      :: struct { b: ^Box, screen: im.Vec2, eff: f32 }
 PC_MaskCorners :: struct { x0, y0, x1, y1, radius: f32, flags: im.DrawFlags, col: u32 }
@@ -6342,7 +6360,7 @@ replay_seg :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, cull := fals
         case PC_Border:      paint_border(dl, v.screen, v.b, v.cols, v.eff, v.radius, v.flags)
         case PC_BorderImage: paint_border_image(dl, v.screen, v.b, v.cols, v.eff, v.radius, v.flags)
         case PC_ControlMark: paint_control_mark(dl, v.screen, v.b, v.radius, v.eff)
-        case PC_Image:       paint_image(dl, v.url, v.pos, v.w, v.h, v.fit, v.opa, v.px, v.py, v.deco)
+        case PC_Image:       paint_image(dl, v.url, v.pos, v.w, v.h, v.fit, v.opa, v.px, v.py, v.deco, v.rounding)
         case PC_TextInput:   paint_text_input(v.b, v.screen, v.eff)
         case PC_Select:      paint_select(v.b, v.screen, v.eff)
         case PC_MaskCorners: mask_round_corners(dl, v.x0, v.y0, v.x1, v.y1, v.radius, v.flags, v.col)
@@ -8467,6 +8485,15 @@ paint_resize_grip :: proc(pt: ^Painter, b: ^Box, screen: im.Vec2, eff: f32) {
     }
 }
 
+// Only queried for a non-identity transform that has no layer yet.
+@(private="file")
+paint_subtree_has_overflow_clip :: proc(b: ^Box) -> bool {
+    if b.overflow_hidden do return true
+    for child in b.children do if paint_subtree_has_overflow_clip(child) do return true
+    for it in b.inlines do if it.box != nil && paint_subtree_has_overflow_clip(it.box) do return true
+    return false
+}
+
 paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0, in_xform := false, scope: ^Stacking_Scope = nil, stacked := false, abs_origin: im.Vec2 = {}) {
     if scope != nil && !stacked && b in scope.deferred do return
     if b.inline_parent_effect != nil {
@@ -8658,6 +8685,20 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     g_p3d_back = b.preserve_3d && back
     defer g_p3d_back = p3d_salvo
 
+    // transform rotate/scale: aplicado aos vértices da subárvore no fim do paint.
+    // Matriz linear 2×2 a aplicar: skew/matrix usam xf_* (estáticos); senão deriva
+    // de rot/scale efetivos (permite transition/animação animarem rotate/scale).
+    // rot+scale: p' = R·S·(p−C) → [cos·sx, −sin·sy; sin·sx, cos·sy].
+    xa, xb, xc, xd: f32
+    if b.has_xform_matrix {
+        xa, xb, xc, xd = b.xf_a, b.xf_b, b.xf_c, b.xf_d
+    } else {
+        cs, sn := f32(math.cos(eff_rot)), f32(math.sin(eff_rot))
+        xa = cs * eff_sx; xb = -sn * eff_sy; xc = sn * eff_sx; xd = cs * eff_sy
+    }
+    // Gatilha se a matriz não é identidade (estático OU animado).
+    do_xform := xa != 1 || xb != 0 || xc != 0 || xd != 1
+
     // group-opacity: se a opacidade PRÓPRIA (own_a = eff/opa) < 1 e o box tem
     // filhos (onde o double-darken de sobreposição apareceria), embrulha a
     // subárvore numa LAYER — o conteúdo é desenhado OPACO (eff←opa) e o dimming
@@ -8675,6 +8716,10 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // clip-path exige layer: o clip do ImGui é RETANGULAR, então a forma é aplicada
     // como máscara alpha na CPU sobre a textura da layer (mesmo caminho dos filtros).
     want_layer := (own_a < 1 && (len(b.children) > 0 || len(b.inlines) > 0)) || b.blend_mode != .Normal || b.n_filters > 0 || (b.isolate && (len(b.children) > 0 || len(b.inlines) > 0)) || b.clip_path.kind != .None || b.mask_grad.active
+    // Scissor rectangles do not follow transform_vertices. Rasterize local clips
+    // before transforming the group, so a scaled/rotated card and its contents
+    // share the same transformed edge (including clips in nested wrappers).
+    if !want_layer && do_xform do want_layer = paint_subtree_has_overflow_clip(b)
     do_layer := want_layer && g_renderer != nil && g_layer_count < LAYER_BUDGET
     if do_layer {
         g_layer_count += 1
@@ -8690,19 +8735,6 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         emit(pt, PC_BackdropFilter{screen.x, screen.y, screen.x + b.w, screen.y + b.h, br, b.backdrop_filters, b.n_backdrop})
     }
 
-    // transform rotate/scale: aplicado aos vértices da subárvore no fim do paint.
-    // Matriz linear 2×2 a aplicar: skew/matrix usam xf_* (estáticos); senão deriva
-    // de rot/scale efetivos (permite transition/animação animarem rotate/scale).
-    // rot+scale: p' = R·S·(p−C) → [cos·sx, −sin·sy; sin·sx, cos·sy].
-    xa, xb, xc, xd: f32
-    if b.has_xform_matrix {
-        xa, xb, xc, xd = b.xf_a, b.xf_b, b.xf_c, b.xf_d
-    } else {
-        cs, sn := f32(math.cos(eff_rot)), f32(math.sin(eff_rot))
-        xa = cs * eff_sx; xb = -sn * eff_sy; xc = sn * eff_sx; xd = cs * eff_sy
-    }
-    // Gatilha se a matriz não é identidade (estático OU animado).
-    do_xform := xa != 1 || xb != 0 || xc != 0 || xd != 1
     // marca o início do range de vértices desta subárvore (o vtx0 real é lido
     // no replay, quando os vértices existem); PC_XformEnd fecha o range.
     if do_xform do emit(pt, PC_XformBegin{})
@@ -8959,7 +8991,10 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
                     // <img src=".svg">: documento externo baixado+parseado no cache.
                     paint_svg_node(pt, sroot, b.svg_fg, cs, b.img_dw, b.img_dh, eff)
                 } else {
-                    emit(pt, PC_Image{b.img_url, cs, b.img_dw, b.img_dh, b.obj_fit, eff, b.obj_pos_x, b.obj_pos_y, b.img_deco})
+                    inset: [4]f32
+                    for i in 0..<4 do inset[i] = b.border_w[i] + b.padding[i]
+                    rounding := image_rounding(b.w, b.h, b.border_radius, b.border_radius_pct, inset)
+                    emit(pt, PC_Image{b.img_url, cs, b.img_dw, b.img_dh, b.obj_fit, eff, b.obj_pos_x, b.obj_pos_y, b.img_deco, rounding})
                 }
             }
             if b.overflow_hidden do emit(pt, PC_PopClip{})
@@ -9311,7 +9346,8 @@ paint_inline_content :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa:
                 fg := it.color != 0 ? it.color : DEFAULT_TEXT
                 paint_svg_node(pt, sroot, fg, {px, py}, it.w, it.h, opa) // currentColor = cor do texto do contexto
             } else {
-                emit(pt, PC_Image{it.img_url, {px, py}, it.w, it.h, .Fill, opa, 0.5, 0.5, it.img_deco})
+                rounding := image_rounding(it.w, it.h, it.img_radius, it.img_radius_pct)
+                emit(pt, PC_Image{it.img_url, {px, py}, it.w, it.h, it.img_fit, opa, it.img_pos_x, it.img_pos_y, it.img_deco, rounding})
             }
         case .InlineBox:
             // a caixa foi disposta a partir de (0,0); desloca-a p/ a posição do
@@ -9441,7 +9477,7 @@ draw_image_clipped :: proc(dl: ^im.DrawList, tex: im.TextureID, ix0, iy0, ix1, i
 }
 
 @(private="file")
-paint_image :: proc(dl: ^im.DrawList, url: string, pos: im.Vec2, w, h: f32, fit := Obj_Fit.Fill, opa: f32 = 1.0, pos_fx: f32 = 0.5, pos_fy: f32 = 0.5, deco := false) {
+paint_image :: proc(dl: ^im.DrawList, url: string, pos: im.Vec2, w, h: f32, fit := Obj_Fit.Fill, opa: f32 = 1.0, pos_fx: f32 = 0.5, pos_fy: f32 = 0.5, deco := false, rounding: Image_Rounding = {}) {
     tint := imgui_mul_alpha(0xFFFFFFFF, opa) // full white tinted by opacity
     cmin := im.DrawList_GetClipRectMin(dl)
     cmax := im.DrawList_GetClipRectMax(dl)
@@ -9450,7 +9486,11 @@ paint_image :: proc(dl: ^im.DrawList, url: string, pos: im.Vec2, w, h: f32, fit 
             tex := im.TextureID(uintptr(img.tex))
             iw, ih := f32(img.w), f32(img.h)
             if fit == .Fill || iw <= 0 || ih <= 0 || w <= 0 || h <= 0 {
-                draw_image_clipped(dl, tex, pos.x, pos.y, pos.x + w, pos.y + h, tint, cmin, cmax)
+                if image_has_rounding(rounding) {
+                    draw_image_rounded(dl, tex, pos, {pos.x+w, pos.y+h}, pos.x, pos.y, pos.x+w, pos.y+h, tint, cmin, cmax, rounding)
+                } else {
+                    draw_image_clipped(dl, tex, pos.x, pos.y, pos.x + w, pos.y + h, tint, cmin, cmax)
+                }
             } else {
                 dw, dh: f32
                 switch fit {
@@ -9465,7 +9505,11 @@ paint_image :: proc(dl: ^im.DrawList, url: string, pos: im.Vec2, w, h: f32, fit 
                 // clip = interseção do retângulo do elemento com o clip atual
                 ecmin := im.Vec2{max(pos.x, cmin.x), max(pos.y, cmin.y)}
                 ecmax := im.Vec2{min(pos.x + w, cmax.x), min(pos.y + h, cmax.y)}
-                draw_image_clipped(dl, tex, x, y, x + dw, y + dh, tint, ecmin, ecmax)
+                if image_has_rounding(rounding) {
+                    draw_image_rounded(dl, tex, pos, {pos.x+w, pos.y+h}, x, y, x+dw, y+dh, tint, ecmin, ecmax, rounding)
+                } else {
+                    draw_image_clipped(dl, tex, x, y, x + dw, y + dh, tint, ecmin, ecmax)
+                }
             }
             return
         }
@@ -9484,7 +9528,13 @@ paint_image :: proc(dl: ^im.DrawList, url: string, pos: im.Vec2, w, h: f32, fit 
     // laranja — `--imgdiff` 11,7 → 25,2. O defeito era ANTIGO; a altura só o revelou.
     if deco && url != "" && image_get(url).state == .Failed do return
     // placeholder (retângulo respeita o clip do ImGui normalmente)
-    im.DrawList_AddRectFilled(dl, pos, {pos.x + w, pos.y + h}, col_o(0xe8e8ec, opa), 4)
+    if image_has_rounding(rounding) {
+        points: [160]im.Vec2
+        n := image_round_polygon(pos, {pos.x+w, pos.y+h}, rounding, cmin, cmax, &points)
+        if n >= 3 do im.DrawList_AddConvexPolyFilled(dl, &points[0], i32(n), col_o(0xe8e8ec, opa))
+    } else {
+        im.DrawList_AddRectFilled(dl, pos, {pos.x + w, pos.y + h}, col_o(0xe8e8ec, opa), 4)
+    }
 }
 
 // Pinta um linear-gradient em faixas: um retângulo bicolor por par de stops

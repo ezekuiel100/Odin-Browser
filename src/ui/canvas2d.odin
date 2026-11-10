@@ -93,7 +93,7 @@ paint_canvas :: proc(pt: ^Painter, s: ^State, b: ^Box, origin: im.Vec2, dw, dh: 
             // havia. Não há medida que justifique mudar o canvas junto — a regra
             // nova é do `<img alt="">`, e aqui não existe elemento nem `alt`.
             emit(pt, PC_Image{cmd.text, {origin.x + lo.x * sx, origin.y + lo.y * sy}, w, h,
-                              .Fill, eff, 0.5, 0.5, false})
+                              .Fill, eff, 0.5, 0.5, false, {}})
         }
     }
 }

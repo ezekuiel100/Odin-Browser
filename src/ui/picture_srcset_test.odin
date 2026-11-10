@@ -21,6 +21,26 @@ import htmlp "../html"
 import csspkg "../css"
 import dompkg "../dom"
 
+@(test)
+inline_image_uses_high_resolution_source :: proc(t: ^testing.T) {
+    dom, styles := prep(`<body><div><img src="small.png" srcset="small.png 80w, large.png 1200w" style="width:80px;height:80px;border-radius:50%"></div></body>`, 1000, 600)
+    root := build_layout(dom, styles, "https://example.com/")
+    defer free_layout(root)
+    found := false
+    visit :: proc(b: ^Box, t: ^testing.T, found: ^bool) {
+        for it in b.inlines {
+            if it.kind == .Image {
+                found^ = true
+                testing.expect_value(t, it.img_url, "https://example.com/large.png")
+            }
+            if it.kind == .InlineBox && it.box != nil do visit(it.box, t, found)
+        }
+        for child in b.children do visit(child, t, found)
+    }
+    visit(root, t, &found)
+    testing.expect(t, found, "exercise the inline image path, not a block image")
+}
+
 @(private = "file")
 PIC := `<body><picture>
     <source type="image/avif" media="(min-width: 800px)" srcset="d.avif 3795w" width="3795" height="993">
