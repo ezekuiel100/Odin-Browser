@@ -38,7 +38,7 @@ test_m237_font_shorthand_peso :: proc(t: ^testing.T) {
     }
     for k in casos {
         c := test_compute_one(fmt.tprintf(".i{{%s}}", k.css), "div", "i")
-        got := c.weight == .Bold
+        got := fw_class(c.weight) == .Bold
         testing.expectf(t, got == k.bold,   "%s → bold=%v; veio %v",   k.css, k.bold,   c.weight)
         testing.expectf(t, c.italic == k.italic, "%s → italic=%v; veio %v", k.css, k.italic, c.italic)
     }
@@ -49,7 +49,7 @@ test_m237_font_shorthand_reseta :: proc(t: ^testing.T) {
     // O shorthand devolve ao inicial o que NÃO foi dito (spec). Aqui o peso vem
     // do PAI (herdado) e o `font:` sem peso tem de zerá-lo.
     c := test_compute_child(".g{font-weight:700} .i{font: 14px serif}")
-    testing.expectf(t, c.weight == .Regular, "font: sem peso reseta p/ normal; veio %v", c.weight)
+    testing.expectf(t, fw_class(c.weight) == .Regular, "font: sem peso reseta p/ normal; veio %v", c.weight)
 
     c2 := test_compute_child(".g{font-style:italic} .i{font: 14px serif}")
     testing.expectf(t, !c2.italic, "font: sem estilo reseta p/ normal; veio %v", c2.italic)
@@ -57,11 +57,11 @@ test_m237_font_shorthand_reseta :: proc(t: ^testing.T) {
     // …mas o LONGHAND explícito no MESMO conjunto continua vencendo (o decls é
     // plano e não guarda ordem por-declaração — convenção do `background`).
     c3 := test_compute_one(".i{font: 14px serif; font-weight: 700}", "div", "i")
-    testing.expectf(t, c3.weight == .Bold, "longhand vence o reset do shorthand; veio %v", c3.weight)
+    testing.expectf(t, fw_class(c3.weight) == .Bold, "longhand vence o reset do shorthand; veio %v", c3.weight)
 
     // sem TAMANHO não é um `font` válido → não reseta nada
     c4 := test_compute_child(".g{font-weight:700} .i{font: inherit}")
-    testing.expectf(t, c4.weight == .Bold, "`font: inherit` não pode zerar o peso; veio %v", c4.weight)
+    testing.expectf(t, fw_class(c4.weight) == .Bold, "`font: inherit` não pode zerar o peso; veio %v", c4.weight)
 }
 
 // ── 2. background-color: transparent ────────────────────────────────────────
@@ -108,7 +108,7 @@ test_m237_shorthand_vence_longhand_por_especificidade :: proc(t: ^testing.T) {
 
     // e o mesmo para font/font-weight (o reset do fix 1)
     c5 := test_compute_one("div{font-weight:700} .i{font: 14px serif}", "div", "i")
-    testing.expectf(t, c5.weight == .Regular, "shorthand font de spec maior reseta o peso; veio %v", c5.weight)
+    testing.expectf(t, fw_class(c5.weight) == .Regular, "shorthand font de spec maior reseta o peso; veio %v", c5.weight)
 }
 
 // ── 3. pseudo-classe de estado não suportada ────────────────────────────────

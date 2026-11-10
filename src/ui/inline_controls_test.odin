@@ -20,7 +20,7 @@ inline_pseudo_inherits_visibility_and_weight :: proc(t: ^testing.T) {
             testing.expect(t, c.before != nil)
             if c.before != nil {
                 testing.expect(t, c.before.invisible)
-                testing.expect_value(t, c.before.weight, Font_Weight.Bold)
+                testing.expect_value(t, fw_class(c.before.weight), Weight_Class.Bold)
             }
         }
         if n.attrs["id"] == "b" {
@@ -28,7 +28,7 @@ inline_pseudo_inherits_visibility_and_weight :: proc(t: ^testing.T) {
             testing.expect(t, c.before != nil)
             if c.before != nil {
                 testing.expect(t, !c.before.invisible)
-                testing.expect_value(t, c.before.weight, Font_Weight.Regular)
+                testing.expect_value(t, fw_class(c.before.weight), Weight_Class.Regular)
             }
         }
     }

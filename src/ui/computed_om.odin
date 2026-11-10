@@ -459,12 +459,8 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
         return css_color(c.bg)
     case "font-size": return px(c.font_size)
     case "font-weight":
-        switch c.weight {
-        case .Regular: return "400"
-        case .Semi:    return "600"
-        case .Bold:    return "700"
-        }
-        return "400"
+        // o NÚMERO computado (`bolder` sobre 400 dá "700"; `450` fica "450")
+        return fmt.tprintf("%d", fw_css(c.weight))
     case "font-style":  return c.italic ? "italic" : "normal"
     case "font-kerning":
         switch c.font_kerning { case .Auto: return "auto"; case .Normal: return "normal"; case .None: return "none" }

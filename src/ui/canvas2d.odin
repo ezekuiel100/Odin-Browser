@@ -56,7 +56,7 @@ paint_canvas :: proc(pt: ^Painter, s: ^State, b: ^Box, origin: im.Vec2, dw, dh: 
         case .Fill_Text:
             if cmd.text == "" do continue
             px := cmd.font_px * sy
-            font, fscale, _ := l_pick_font(px, .Regular, 0, .Sans, false)
+            font, fscale, _ := l_pick_font(px, FW_NORMAL, 0, .Sans, false)
             if font == nil do continue
             emit(pt, PC_InlineText{
                 font    = font,
@@ -109,7 +109,7 @@ js_canvas_color :: proc(sp: string) -> (u32, bool) {
 // measureText com a fonte REAL (a mesma escada de tamanhos do texto da página).
 js_canvas_measure :: proc(text: string, px: f32) -> f32 {
     aprox := f32(len(text)) * px * 0.5
-    font, fscale, _ := l_pick_font(px, .Regular, 0, .Sans, false)
+    font, fscale, _ := l_pick_font(px, FW_NORMAL, 0, .Sans, false)
     if font == nil do return aprox
     cs := strings.clone_to_cstring(text, context.temp_allocator)
     sz := im.Font_CalcTextSizeA(font, font.FontSize * fscale, 1e9, 0, cs)

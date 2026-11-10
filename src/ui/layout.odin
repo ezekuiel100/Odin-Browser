@@ -597,7 +597,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
         if dompkg.find_first(node, "body") == nil {
             b.padding = {8 * g_zoom, 8 * g_zoom, 8 * g_zoom, 8 * g_zoom}
         }
-        build_block_children(node, b, styles, base, 16, .Regular, false, DEFAULT_TEXT, .Left, Deco{}, .Normal, 1.3, .Sans, 0, 0, .None)
+        build_block_children(node, b, styles, base, 16, FW_NORMAL, false, DEFAULT_TEXT, .Left, Deco{}, .Normal, 1.3, .Sans, 0, 0, .None)
         return b
 
     case .Element:
@@ -767,7 +767,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
                 b.edit_color = eff_color // cor do texto do CSS (herdada/definida)
                 b.caret_color = comp.caret_color; b.has_caret = comp.has_caret
                 apply_placeholder_style(b, comp)
-                b.edit_font, _, b.edit_em = l_pick_font(eff_size, .Regular, comp.font_fam_id, eff_family) // fonte da página
+                b.edit_font, _, b.edit_em = l_pick_font(eff_size, FW_NORMAL, comp.font_fam_id, eff_family) // fonte da página
                 // altura de uma linha com a fonte REAL (pós-CSS); CSS height sobrescreve.
                 // Com box-sizing:border-box a altura inclui padding+borda — soma-os,
                 // senão o conteúdo colapsa a 0 (campo achatado).
@@ -1891,7 +1891,7 @@ inject_list_marker :: proc(b: ^Box, node: ^dompkg.Node, size: f32, color: u32, f
     if ls == .None do return // list-style:none — sem marcador
     marker, ok := list_marker(node, ls)
     if !ok do return
-    font, scale, fem := l_pick_font(size, .Regular, fam_id, family)
+    font, scale, fem := l_pick_font(size, FW_NORMAL, fam_id, family)
     it := Inline_Item{
         kind = .Word, text = strings.clone(marker), invisible = b.invisible,
         font = font, fsize = size, scale = scale, em = fem, color = color,
@@ -2028,7 +2028,7 @@ set_select_control :: proc(b: ^Box, node: ^dompkg.Node, comp: Computed) {
 
     size := comp.has_font_size ? comp.font_size : 16
     b.edit_color = comp.color != 0 ? comp.color : DEFAULT_TEXT
-    b.edit_font, _, b.edit_em = l_pick_font(size, .Regular, comp.font_fam_id, comp.font_family)
+    b.edit_font, _, b.edit_em = l_pick_font(size, FW_NORMAL, comp.font_fam_id, comp.font_family)
 
     // altura de UMA linha, como no campo de texto de linha única; com
     // box-sizing:border-box a altura inclui padding+borda, senão o conteúdo
@@ -2086,7 +2086,7 @@ set_textarea_control :: proc(b: ^Box, node: ^dompkg.Node, comp: Computed) {
     eff_size   := comp.has_font_size ? comp.font_size : 16
     eff_family := comp.font_family
     b.edit_color = comp.color != 0 ? comp.color : DEFAULT_TEXT
-    b.edit_font, _, b.edit_em = l_pick_font(eff_size, .Regular, comp.font_fam_id, eff_family)
+    b.edit_font, _, b.edit_em = l_pick_font(eff_size, FW_NORMAL, comp.font_fam_id, eff_family)
 
     // dimensões padrão (cols=20, rows=2 na spec), só se o CSS não definiu. São
     // content-box (largura ≈ cols × 0.5em; altura ≈ rows × line_height); o layout
@@ -2121,7 +2121,7 @@ inject_input_label :: proc(b: ^Box, node: ^dompkg.Node, size: f32, color: u32, f
     label := input_button_label(node)
     if label == "" do return
     if !b.is_inline { b.is_inline = true }
-    font, scale, fem := l_pick_font(size, .Regular, fam_id, family)
+    font, scale, fem := l_pick_font(size, FW_NORMAL, fam_id, family)
     append(&b.inlines, Inline_Item{
         kind = .Word, text = strings.clone(label), invisible = b.invisible,
         font = font, fsize = size, scale = scale, em = fem, color = color,
@@ -10429,27 +10429,29 @@ l_pick_font :: proc(size: f32, weight: Font_Weight, fam_id: u8, family: Font_Fam
     // ⚠️ degradação anotada: serif/mono do sistema (Georgia/Consolas) não têm
     // semibold, e não carregamos o semibold ITÁLICO — nesses casos cai no
     // NEGRITO, que dista 100 do alvo (600→700) em vez dos 200 do regular.
-    bold := weight == .Bold
+    // ⚠️ os 3 degraus (`fw_class`) valem SÓ p/ a face embutida: a @font-face
+    // recebe o número inteiro — uma fonte variável instancia o 300 e o 900.
+    cls := fw_class(weight)
+    bold := cls == .Bold
     f: ^im.Font
     // @font-face primeiro: uma face declarada pelo autor VENCE a genérica. Só
     // quando não há face pronta (ainda baixando, formato não suportado, teto de
     // faces) cai na pilha embutida — que é o comportamento anterior ao M224.
     if fam_id != 0 {
-        css_w := weight == .Bold ? 700 : (weight == .Semi ? 600 : 400)
         fem: f32
-        f, fem = fontface_pick(fam_id, css_w, italic, best)
+        f, fem = fontface_pick(fam_id, fw_css(weight), italic, best)
         if f != nil do return f, size / g_font_sizes[best], fem
     }
     switch family {
     case .Mono:
-        if italic do f = weight != .Regular ? g_mono_z[best] : g_mono_i[best]
-        if f == nil do f = weight != .Regular ? g_mono_b[best] : g_mono[best]
+        if italic do f = cls != .Regular ? g_mono_z[best] : g_mono_i[best]
+        if f == nil do f = cls != .Regular ? g_mono_b[best] : g_mono[best]
     case .Serif:
-        if italic do f = weight != .Regular ? g_serif_z[best] : g_serif_i[best]
-        if f == nil do f = weight != .Regular ? g_serif_b[best] : g_serif[best]
+        if italic do f = cls != .Regular ? g_serif_z[best] : g_serif_i[best]
+        if f == nil do f = cls != .Regular ? g_serif_b[best] : g_serif[best]
     case .Sans:
-        if italic do f = weight != .Regular ? g_ital_b[best] : g_ital[best]
-        if f == nil && weight == .Semi do f = g_semi[best]
+        if italic do f = cls != .Regular ? g_ital_b[best] : g_ital[best]
+        if f == nil && cls == .Semi do f = g_semi[best]
         if f == nil do f = bold ? g_bold[best] : g_reg[best]
     }
     if f == nil { f = bold ? g_bold[best] : g_reg[best]; em = g_em_sans } // fallback se a TTF não carregou

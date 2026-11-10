@@ -402,9 +402,9 @@ test_apply_object_fit :: proc(t: ^testing.T) {
 @(test)
 test_apply_font_weight :: proc(t: ^testing.T) {
     c := test_apply("font-weight: bold")
-    testing.expect(t, c.weight == .Bold, "font-weight:bold deve setar bold")
+    testing.expect(t, fw_class(c.weight) == .Bold, "font-weight:bold deve setar bold")
     c2 := test_apply("font-weight: 700")
-    testing.expect(t, c2.weight == .Bold, "font-weight:700 deve setar bold")
+    testing.expect(t, fw_class(c2.weight) == .Bold, "font-weight:700 deve setar bold")
 }
 
 @(test)
@@ -1462,7 +1462,7 @@ test_combinador_irmao_pipeline :: proc(t: ^testing.T) {
     testing.expect(t, len(ps) == 2, "2 <p> no DOM")
     testing.expect(t, styles[ps[0]].color == 0xff0000, "h1 + p casa só o primeiro p")
     testing.expect(t, styles[ps[1]].color != 0xff0000, "h1 + p NÃO casa o segundo p")
-    testing.expect(t, styles[ps[0]].weight == .Bold && styles[ps[1]].weight == .Bold, "h1 ~ p casa os dois")
+    testing.expect(t, fw_class(styles[ps[0]].weight) == .Bold && fw_class(styles[ps[1]].weight) == .Bold, "h1 ~ p casa os dois")
 }
 
 // ── :not() (pipeline) ───────────────────────────────────────────────────────────
@@ -1779,9 +1779,9 @@ test_ui_state_pipeline :: proc(t: ^testing.T) {
     testing.expect(t, len(ins) == 3, "3 inputs")
     testing.expect(t, styles[ins[0]].color == 0xff0000, "checkbox[checked] → :checked (vermelho)")
     testing.expect(t, styles[ins[1]].color == 0x0000ff, "input[disabled] → :disabled (azul)")
-    testing.expect(t, styles[ins[0]].weight == .Bold, "checkbox não-disabled → :enabled (bold)")
-    testing.expect(t, styles[ins[1]].weight != .Bold, "input[disabled] não é :enabled")
-    testing.expect(t, styles[ins[2]].weight == .Bold, "input normal → :enabled (bold)")
+    testing.expect(t, fw_class(styles[ins[0]].weight) == .Bold, "checkbox não-disabled → :enabled (bold)")
+    testing.expect(t, fw_class(styles[ins[1]].weight) != .Bold, "input[disabled] não é :enabled")
+    testing.expect(t, fw_class(styles[ins[2]].weight) == .Bold, "input normal → :enabled (bold)")
 }
 
 // ── visibility ───────────────────────────────────────────────────────────────────

@@ -158,6 +158,34 @@ test_var_faixa_deriva_a_instancia_do_peso_pedido :: proc(t: ^testing.T) {
     testing.expect_value(t, len(g_faces), 2)
 }
 
+// O peso NUMÉRICO tem de chegar inteiro do layout à @font-face. Era o elo que
+// faltava: o `l_pick_font` só sabia 400/600/700 (enum de 3 degraus), então numa
+// face `font-weight: 100 900` o 300 servia a instância de 400 e o 900 a de 700.
+// Sabotagem conferida: devolver `css_w` quantizado reprova as 2 asserções.
+@(test)
+test_var_l_pick_font_entrega_300_e_900_a_face_de_faixa :: proc(t: ^testing.T) {
+    sf, sn := with_faces()
+    defer restore(sf, sn)
+    raw := make([]byte, 16)
+    defer delete(raw)
+    fonts := [1]im.Font{}
+    append(&g_faces, Loaded_Face{fam_id = 1, weight = 400, wmin = 100, wmax = 900, url = "U",
+        state = .Ready, raw = raw, is_var = true})
+    // o l_pick_font escolhe o DEGRAU de tamanho pelo px: preenche todos
+    for &p in g_faces[0].fonts do p = &fonts[0]
+    defer for &f in g_faces do if f.derived do delete(f.url)
+
+    for w in ([?]int{300, 900, 450}) {
+        f, _, _ := l_pick_font(16, Font_Weight(w), 1, .Sans, false)
+        testing.expectf(t, f == &fonts[0], "%d: a mãe serve enquanto a instância não entra no atlas", w)
+    }
+    pesos: [dynamic]int
+    defer delete(pesos)
+    for f in g_faces do if f.derived do append(&pesos, f.weight)
+    testing.expectf(t, len(pesos) == 3 && pesos[0] == 300 && pesos[1] == 900 && pesos[2] == 450,
+        "instâncias derivadas: %v (esperado [300, 900, 450])", pesos[:])
+}
+
 // Os casos em que NÃO se deriva: fonte que não é variável (instanciar não muda
 // nada e gastaria atlas) e pesos únicos estilo Google Fonts (400 e 700 já são
 // faces próprias; um pedido de 600 casa com a de 700, como no CSS).

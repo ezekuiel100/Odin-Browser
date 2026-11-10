@@ -102,7 +102,7 @@ is_indent :: proc(tag: string) -> bool {
 g_styles: map[^dompkg.Node]Computed
 
 @(private="file") sc_color  :: proc(n: ^dompkg.Node) -> u32  { if c, ok := g_styles[n]; ok do return c.color; return DEFAULT_TEXT }
-@(private="file") sc_bold   :: proc(n: ^dompkg.Node) -> bool { if c, ok := g_styles[n]; ok do return c.weight != .Regular; return false }
+@(private="file") sc_bold   :: proc(n: ^dompkg.Node) -> bool { if c, ok := g_styles[n]; ok do return fw_class(c.weight) != .Regular; return false }
 @(private="file") sc_hidden :: proc(n: ^dompkg.Node) -> bool { if c, ok := g_styles[n]; ok do return c.display_none; return false }
 @(private="file") sc_size   :: proc(n: ^dompkg.Node) -> (f32, bool) { if c, ok := g_styles[n]; ok && c.has_font_size do return c.font_size, true; return 16, false }
 @(private="file") sc_bg     :: proc(n: ^dompkg.Node) -> (u32, bool)  { if c, ok := g_styles[n]; ok && c.has_bg do return c.bg, true; return 0, false }

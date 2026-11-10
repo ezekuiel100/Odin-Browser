@@ -828,13 +828,37 @@ Position   :: enum u8 { Static, Relative, Absolute, Fixed, Sticky }
 // p/ Left/Right conforme a direção do elemento antes do layout (que só vê físico).
 Float_Side :: enum u8 { None, Left, Right, InlineStart, InlineEnd }
 Clear_Side :: enum u8 { None, Left, Right, Both, InlineStart, InlineEnd }
-// font-weight. Cabe em 1 byte (o mesmo do `bold: bool` que substituiu) e o
-// zero-value é Regular = o default do CSS.
-// ⚠️ os pesos do CSS são 100..900; mapeamos p/ as faces que o sistema tem:
-// 500/600 → Semi (Segoe UI Semibold), 700+ → Bold, o resto → Regular. `100..300`
-// (light) cai em Regular — não carregamos a face light (é rara em texto de site
-// e cada face custa ~4 MB de atlas).
-Font_Weight :: enum u8 { Regular, Semi, Bold }
+// font-weight: o NÚMERO do CSS (1..1000). ⚠️ zero-value = `normal` (400): todo
+// Computed nasce zerado, então LEIA SEMPRE por `fw_css`, nunca o campo cru.
+//
+// Era `enum {Regular, Semi, Bold}` — 3 degraus que bastavam p/ as faces do
+// SISTEMA, mas jogavam fora o peso pedido antes de ele chegar à @font-face:
+// numa fonte VARIÁVEL (`font-weight: 100 900`) o 300 saía igual ao 400 e o 900
+// igual ao 700 (animate.style, 10/11/2026). Agora o número vai inteiro até o
+// `fontface_pick`; só a escolha da face EMBUTIDA quantiza, por `fw_class`.
+Font_Weight :: distinct u16
+FW_NORMAL :: Font_Weight(400)
+FW_BOLD   :: Font_Weight(700)
+
+fw_css :: #force_inline proc "contextless" (w: Font_Weight) -> int {
+    return w == 0 ? 400 : int(w)
+}
+
+// Face EMBUTIDA que serve um peso. A Segoe UI tem 400/600/700 carregadas (a
+// Light/Black existem no Windows mas custam ~4 MB de atlas cada e são raras em
+// texto de site). Regra de matching do CSS (Fonts 4 §5.2.1) sobre {400,600,700}:
+//   ≤500 → 400  (alvo 400..500 procura até 500 subindo e, não achando, DESCE;
+//                abaixo de 400 desce e, sem face light, sobe p/ a 400)
+//   501..600 → 600   (acima de 500: o menor peso ≥ alvo)
+//   >600 → 700       (e acima de 700 desce p/ a mais pesada que há)
+// Verificado lado a lado com o Chrome: 300/400/500 idênticos, só o 600 engrossa.
+Weight_Class :: enum u8 { Regular, Semi, Bold }
+fw_class :: proc "contextless" (w: Font_Weight) -> Weight_Class {
+    v := fw_css(w)
+    if v <= 500 do return .Regular
+    if v <= 600 do return .Semi
+    return .Bold
+}
 Bg_Size    :: enum u8 { Auto, Cover, Contain }
 Bg_Clip    :: enum u8 { Border, Padding, Content } // área de pintura do fundo (default border-box)
 // Uma camada de `background-image` (a propriedade aceita LISTA separada por
@@ -1576,7 +1600,7 @@ apply_ua_defaults :: proc(n: ^dompkg.Node, comp: ^Computed) {
         // layout: assim `h3{font-weight:500}` VENCE, como no Chrome. Antes o
         // layout fazia `comp.bold || is_heading`, então o peso do autor era
         // ignorado e todo heading saía 700.
-        comp.weight = .Bold
+        comp.weight = FW_BOLD
     case "em", "i", "cite", "dfn", "var", "address":
         comp.italic = true // itálico por padrão (herda; font-style:normal desliga)
     case "pre":
@@ -2019,8 +2043,16 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         // mais o peso herdado — só `inherit.weight` tem. É o reset que TODO
         // preflight moderno faz (`h1,…,h6 { font-weight: inherit }`, Tailwind
         // incluso): sem isto, todo heading dentro de card/lista sai em negrito.
-        if v, ok := merged["font-weight"]; ok && strings.equal_fold(strings.trim_space(v), "inherit") {
-            comp.weight = inherit.weight
+        if v, ok := merged["font-weight"]; ok {
+            fw := strings.trim_space(v)
+            if strings.equal_fold(fw, "inherit") do comp.weight = inherit.weight
+            // `bolder`/`lighter` são relativos ao peso do PAI — pelo mesmo
+            // agravante do h1..h6 (o apply_decls só viu o 700 do UA).
+            for kw in ([?]string{"bolder", "lighter"}) {
+                if strings.equal_fold(fw, kw) {
+                    if w, k := font_weight_token(kw, inherit.weight); k do comp.weight = w
+                }
+            }
         }
         // ── palavras-chave CSS-wide (Values §7.3) que precisam do PAI ou do INICIAL ──
         //
@@ -4115,16 +4147,13 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         // nenhum case, o peso herdado permanece e TODO `font-bold`/`font-semibold` do
         // site vira texto normal (o ticker e o preço do card do tradebig).
         lv := strings.to_lower(resolve_var(v, vars), context.temp_allocator)
-        // 500/600 ganharam face PRÓPRIA (semibold): é o peso que todo design
-        // moderno usa em título/botão, e antes caía em REGULAR — os headings
-        // saíam finos demais perto do Chrome.
-        // ⚠️ 500 fica REGULAR, não semibold. É a regra de font-matching do CSS
-        // (Fonts 4 §5.2.1): p/ um alvo entre 400 e 500, procura-se primeiro
-        // ATÉ 500 em ordem crescente e, não achando, DESCE. A Segoe UI tem
-        // 400/600/700 — logo 500 → 400. Verificado lado a lado com o Chrome:
-        // ele renderiza 300/400/500 idênticos e só engrossa no 600.
-        if w, k := font_weight_token(strings.trim_space(lv)); k do comp.weight = w
-        // `lighter` e valores inválidos: mantém o herdado (como antes)
+        // Guarda o NÚMERO; a face embutida que o serve (500 → regular, 600 →
+        // semibold…) é decisão do `fw_class`, no layout.
+        // `bolder`/`lighter` aqui são relativos ao `comp.weight` — que é o
+        // herdado, EXCETO em h1..h6 (o UA já pôs 700). O compute_node refaz o
+        // relativo contra o peso do PAI de verdade.
+        if w, k := font_weight_token(strings.trim_space(lv), comp.weight); k do comp.weight = w
+        // valores inválidos: mantém o herdado
     }
     if v, ok := decls["font-style"]; ok {
         // idem font-weight: o valor pode vir de custom property.
@@ -4184,7 +4213,7 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         lv := strings.to_lower(resolve_var(v, vars), context.temp_allocator)
         toks := split_top_level(lv)
         sh_italic := false
-        sh_weight := Font_Weight.Regular
+        sh_weight := FW_NORMAL
         saw_size  := false
         scan: for tok in toks {
             t := tok
@@ -4193,7 +4222,7 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
             switch {
             case t == "italic" || t == "oblique": sh_italic = true
             case:
-                if w, k := font_weight_token(t); k do sh_weight = w
+                if w, k := font_weight_token(t, comp.weight); k do sh_weight = w
             }
         }
         // Reset da spec: o shorthand devolve ao INICIAL todo sub-valor omitido —
@@ -6179,25 +6208,41 @@ parse_list_style_type :: proc(tok: string) -> (List_Style, bool) {
     return .Auto, false
 }
 
-// Peso de fonte a partir de UM token (`bold`, `700`, `normal`…). ok=false para
-// token que não é peso — é o que deixa o shorthand `font` ROTEAR os tokens antes
-// do tamanho, e o que faz `lighter`/valor inválido manter o peso herdado.
+// Peso de fonte a partir de UM token (`bold`, `700`, `450`, `bolder`…). ok=false
+// para token que não é peso — é o que deixa o shorthand `font` ROTEAR os tokens
+// antes do tamanho, e o que faz valor inválido manter o peso herdado.
 //
-// ⚠️ 500 fica REGULAR, não semibold. É a regra de font-matching do CSS
-// (Fonts 4 §5.2.1): p/ um alvo entre 400 e 500, procura-se primeiro ATÉ 500 em
-// ordem crescente e, não achando, DESCE. A Segoe UI tem 400/600/700 — logo
-// 500 → 400. Verificado lado a lado com o Chrome: ele renderiza 300/400/500
-// idênticos e só engrossa no 600.
+// Guarda o NÚMERO (o degrau da face embutida é do `fw_class`, no layout).
+// `base` = peso do PAI, p/ os relativos (Fonts 4 §2.2, tabela de bolder/lighter).
+// Antes `bolder` valia 700 fixo e `lighter` era ignorado.
 @(private="file")
-font_weight_token :: proc(tok: string) -> (Font_Weight, bool) {
+font_weight_token :: proc(tok: string, base: Font_Weight) -> (Font_Weight, bool) {
     switch tok {
-    // 500/600 ganharam face PRÓPRIA (semibold): é o peso que todo design moderno
-    // usa em título/botão, e antes caía em REGULAR — os headings saíam finos.
-    case "bold", "bolder", "700", "800", "900":       return .Bold, true
-    case "600":                                       return .Semi, true
-    case "normal", "100", "200", "300", "400", "500": return .Regular, true
+    case "normal": return FW_NORMAL, true
+    case "bold":   return FW_BOLD, true
+    case "bolder":
+        b := fw_css(base)
+        switch {
+        case b < 350: return 400, true
+        case b < 550: return 700, true
+        case b < 900: return 900, true
+        }
+        return Font_Weight(b), true
+    case "lighter":
+        b := fw_css(base)
+        switch {
+        case b < 100: return Font_Weight(b), true
+        case b < 550: return 100, true
+        case b < 750: return 400, true
+        }
+        return 700, true
     }
-    return .Regular, false
+    // <number [1,1000]> (Fonts 4 aceita qualquer número, não só as centenas:
+    // `font-weight: 450` é comum em fonte variável). Sem unidade — `12px` não é peso.
+    if len(tok) == 0 || !(tok[0] >= '0' && tok[0] <= '9' || tok[0] == '.') do return 0, false
+    n, ok := strconv.parse_f64(tok)
+    if !ok || n < 1 || n > 1000 do return 0, false
+    return Font_Weight(n + 0.5), true
 }
 
 // Este token do shorthand `font` é o TAMANHO? Só conta com UNIDADE (ou palavra-

@@ -142,10 +142,10 @@ m172_font_weight_inherit :: proc(t: ^testing.T) {
     testing.expect(t, alvo != nil && ctrl != nil, "fixture montada")
     if alvo == nil || ctrl == nil do return
 
-    testing.expectf(t, styles[alvo].weight == .Regular,
+    testing.expectf(t, fw_class(styles[alvo].weight) == .Regular,
         "h3 com font-weight:inherit herda do pai (Regular), tem %v", styles[alvo].weight)
     // guarda: sem o reset, o h3 TEM de continuar negrito (senão o teste não prova nada)
-    testing.expectf(t, styles[ctrl].weight == .Bold,
+    testing.expectf(t, fw_class(styles[ctrl].weight) == .Bold,
         "h3 SEM reset segue negrito do UA, tem %v", styles[ctrl].weight)
 }
 
@@ -158,7 +158,7 @@ m172_font_weight_inherit_de_pai_negrito :: proc(t: ^testing.T) {
     alvo := m172_find_class(dom, "alvo")
     testing.expect(t, alvo != nil, "fixture montada")
     if alvo == nil do return
-    testing.expectf(t, styles[alvo].weight == .Bold,
+    testing.expectf(t, fw_class(styles[alvo].weight) == .Bold,
         "pai 700 -> inherit = Bold, tem %v", styles[alvo].weight)
 }
 
@@ -185,18 +185,18 @@ m172_text_decoration_cor_funcional :: proc(t: ^testing.T) {
 @(test)
 m172_font_weight_via_var :: proc(t: ^testing.T) {
     c := test_apply("font-weight: var(--font-weight-bold)", "--font-weight-bold: 700")
-    testing.expectf(t, c.weight == .Bold, "var(--font-weight-bold)=700 -> Bold, tem %v", c.weight)
+    testing.expectf(t, fw_class(c.weight) == .Bold, "var(--font-weight-bold)=700 -> Bold, tem %v", c.weight)
 
     c2 := test_apply("font-weight: var(--w)", "--w: 600")
-    testing.expectf(t, c2.weight == .Semi, "var 600 -> Semi, tem %v", c2.weight)
+    testing.expectf(t, fw_class(c2.weight) == .Semi, "var 600 -> Semi, tem %v", c2.weight)
 
     // fallback do var() quando a custom property não existe
     c3 := test_apply("font-weight: var(--nao-existe, 700)")
-    testing.expectf(t, c3.weight == .Bold, "fallback do var -> Bold, tem %v", c3.weight)
+    testing.expectf(t, fw_class(c3.weight) == .Bold, "fallback do var -> Bold, tem %v", c3.weight)
 
     // número literal segue funcionando (não-regressão)
     c4 := test_apply("font-weight: 700")
-    testing.expectf(t, c4.weight == .Bold, "700 literal -> Bold, tem %v", c4.weight)
+    testing.expectf(t, fw_class(c4.weight) == .Bold, "700 literal -> Bold, tem %v", c4.weight)
 
     c5 := test_apply("font-style: var(--s)", "--s: italic")
     testing.expect(t, c5.italic, "font-style por var -> italico")

@@ -48,11 +48,36 @@ Além disso, o registro de fontes passou a fazer **um download por URL**: a 2ª 
 
 **Limites desta parte:**
 
-- O estilo computado guarda o peso em 3 degraus (`Font_Weight`: Regular/Semi/Bold). Então 300 é pedido como 400, 500 como 600, e 800/900 como 700. Instâncias de 100–300 e 800–900 dependem de levar o peso numérico até a pintura.
+- ~~O estilo computado guarda o peso em 3 degraus~~ — consertado em seguida, ver "Peso numérico" abaixo.
 - Só o eixo `wght`, só contornos TrueType (CFF2 cai na instância padrão, com `[FONT] ... variation=Unsupported`), sem `HVAR`/`MVAR`.
 - Cada instância ocupa uma vaga no teto de 32 faces.
 
 **Portões (10/11):** `test.ps1` com todos os pacotes verdes (`src/varfont` entrou na lista: 8 testes; `src/ui` 876; `src/css` 175), paint-check 109/109, layout-golden 19/19, `tools/check-font-loading.ps1` 6/6. WPT: 352/129/0 (481). O diff nomeado contra `wpt-baseline-fails.txt` acusa 3 `css-tables/absolute-tables-*` a mais e 2 a menos. O `browser.exe` do HEAD sem esta mudança dá **as mesmas falhas por nome** nas três categorias, então é deriva anterior da lista (sem atualização desde o primeiro commit), não efeito desta mudança. Sabotagens provadas: IUP desligado (bbox do `[`), derivação desligada, guarda de bytes compartilhados desligada (`panic: Bad free` no teste nomeado).
+
+### Peso numérico: 300 e 900 de verdade (10/11/2026)
+
+O peso morria antes de chegar à @font-face: `Font_Weight` era `enum {Regular, Semi, Bold}`, e o `l_pick_font` só pedia 400/600/700. Numa face `font-weight: 100 900`, o 300 saía igual ao 400 e o 900 igual ao 700.
+
+- `Font_Weight` agora é o **número** do CSS (`distinct u16`, 1..1000). ⚠️ O zero-value significa `normal`: leia sempre por `fw_css(w)` (0 → 400), nunca o campo cru.
+- A quantização ficou só onde é necessária: `fw_class(w)` escolhe a face **embutida** (Segoe UI 400/600/700: ≤500 → regular, ≤600 → semibold, acima → negrito, a mesma regra de antes). A @font-face recebe o número inteiro, e a variável deriva a instância exata (300, 900, 450…).
+- Junto vieram:
+  - qualquer `<number>` em [1,1000] (`450`, `1000`); antes só as centenas eram aceitas;
+  - `bolder`/`lighter` **relativos ao pai**, pela tabela do Fonts 4. Antes `bolder` valia 700 fixo e `lighter` era ignorado. O h1..h6 refaz o relativo contra o pai no `compute_node`, porque o UA já pôs 700 no próprio heading;
+  - `getComputedStyle().fontWeight` devolve o número computado.
+- Medido (fixture com Work Sans `100 900`, linhas em 300/400/700/900):
+
+  | | tinta 300/400 | tinta 900/700 | borda direita (px), 300/400/700/900 |
+  |---|---|---|---|
+  | Edge | 0,649 | 1,262 | 372/387/391/394 |
+  | nós | 0,650 | 1,256 | 373/389/392/394 |
+  | antes | 1,000 | 1,000 | 389/389/392/392 |
+
+  As linhas de 400 e 700 não mudaram entre os binários (controle).
+- Testes:
+  - `font_weight_test.odin` reescrito para afirmar números, faixa, inválidos, classe da face embutida e bolder/lighter, incluindo o heading.
+  - `test_var_l_pick_font_entrega_300_e_900_a_face_de_faixa` cobre o elo layout → @font-face. Sabotagem (quantizar o `css_w` de novo) reprova: só sai a instância de 700.
+- Portões: `test.ps1` todo verde (`src/ui` 880), paint-check 109/109, layout-golden 19/19. WPT 352/129/0 com **as mesmas 129 falhas por nome** do binário anterior.
+- Continua aberto: a face embutida não tem light/black. `font-weight: 300` sem @font-face segue em Segoe UI regular. O Chrome usaria a Segoe UI Light, mas ela custa ~4 MB de atlas.
 
 ## Resultado desta atualização (09–10/11, commit d3017dc)
 
