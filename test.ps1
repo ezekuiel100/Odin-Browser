@@ -3,7 +3,7 @@ $ErrorActionPreference = "Continue"
 $odin = "C:\Odin\dist\odin.exe"
 $root = $PSScriptRoot
 
-$pacotes = @("src/css", "src/ui", "src/js", "src/html", "src/net", "src/brotli", "src/woff2")
+$pacotes = @("src/css", "src/ui", "src/js", "src/html", "src/net", "src/brotli", "src/woff2", "src/varfont")
 $falhou = $false
 
 foreach ($p in $pacotes) {

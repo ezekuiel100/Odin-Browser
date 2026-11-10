@@ -30,8 +30,31 @@ O script renderiza Arial regular, negrito e itálico por `@font-face` e compara 
 
 O teto continua sendo por sessão: após 32 faces vivas distintas, novas faces podem cair no fallback e o log registra a causa. Não houve remoção de faces já usadas pelo atlas, pois exigiria reconstruir e religar todos os ponteiros de fontes e layouts.
 
-Esta correção não força texto normal a usar uma face normal ausente e não altera a seleção de estilo quando só uma variante está disponível. A indisponibilidade específica da Work Sans em animate.style ainda precisa ser confirmada numa sessão com acesso ao site/Google Fonts; o ambiente da investigação retornou falha de conexão/timeout.
-## Resultado desta atualização
+Esta correção não força texto normal a usar uma face normal ausente e não altera a seleção de estilo quando só uma variante está disponível.
+
+## Work Sans do animate.style (10/11/2026): timeout de rede e fonte variável
+
+O timeout que a seção acima atribuía ao ambiente **era nosso**, e reproduzia sempre. Eram dois defeitos, um atrás do outro.
+
+**1. Requisições simultâneas ao mesmo host travavam 10 s (`src/net/net.odin`).** Com UA de navegador, o Google Fonts serve a Work Sans como **uma** fonte variável em woff2: as `@font-face` de 400 e 700 apontam para a **mesma URL**. As duas faces baixavam ao mesmo tempo, e o `PIPEWAIT` fazia o 2º handle esperar a conexão do 1º, que pertence ao `easy_perform` de outra thread. Ninguém acordava esse handle até o `CONNECTTIMEOUT` de 10 s. Medido com uma página de 2 faces na mesma URL + 30 imagens do wikimedia, 3 rodadas por variante: com `PIPEWAIT`, 1 falha por rodada travada em 10 001 ms; sem `PIPEWAIT`, sem compartilhar conexões, ou sem os dois: 0 falhas, 0 respostas 429 e maior requisição < 510 ms. Ficou a variante que só tira o `PIPEWAIT` (preserva o reuso de conexão sequencial). A sonda `-define:NETPROBE=true` imprime tempo e resultado de cada fetch.
+
+Além disso, o registro de fontes passou a fazer **um download por URL**: a 2ª face com a mesma URL espera a 1ª (`waiting_on`) e empresta os bytes decodificados (`raw`, `raw_borrowed`). A falha do download compartilhado propaga para quem espera, inclusive a re-tentativa.
+
+**2. O 700 da fonte variável saía igual ao 400 (`src/varfont`).** O stb_truetype não lê variação: desenhava a instância padrão para todos os pesos. O pacote novo `src/varfont` instancia o eixo `wght` (normalização + `avar`, deltas do `gvar` com IUP, pontos fantasmas → `hmtx`) e regrava `glyf`/`loca`/`hmtx`. Cada face recebe a instância no seu peso.
+
+- Oráculo: as instâncias **estáticas** que o próprio Google Fonts serve (sem UA, um TTF por peso). A nossa instância de 700 bate **exatamente** (avanço e bbox de toda letra ASCII) com o TTF estático de 700, e a de 400 com o de 400. Controle: a instância padrão comparada ao 700 diverge em mais da metade das letras. Sabotagem do IUP derruba o teste (bbox do `[`).
+- `font-weight: 100 900` (faixa) agora guarda as duas pontas. A face de faixa entra instanciada no 400 trazido para dentro dela; um peso pedido dentro da faixa gera, sob demanda, uma instância **derivada** (sem novo download), que vence assim que entra no atlas.
+- No animate.style, "Documentation", o título e os cabeçalhos da lista saem em negrito e terminam no mesmo x que no Edge.
+
+**Limites desta parte:**
+
+- O estilo computado guarda o peso em 3 degraus (`Font_Weight`: Regular/Semi/Bold). Então 300 é pedido como 400, 500 como 600, e 800/900 como 700. Instâncias de 100–300 e 800–900 dependem de levar o peso numérico até a pintura.
+- Só o eixo `wght`, só contornos TrueType (CFF2 cai na instância padrão, com `[FONT] ... variation=Unsupported`), sem `HVAR`/`MVAR`.
+- Cada instância ocupa uma vaga no teto de 32 faces.
+
+**Portões (10/11):** `test.ps1` com todos os pacotes verdes (`src/varfont` entrou na lista: 8 testes; `src/ui` 876; `src/css` 175), paint-check 109/109, layout-golden 19/19, `tools/check-font-loading.ps1` 6/6. WPT: 352/129/0 (481). O diff nomeado contra `wpt-baseline-fails.txt` acusa 3 `css-tables/absolute-tables-*` a mais e 2 a menos. O `browser.exe` do HEAD sem esta mudança dá **as mesmas falhas por nome** nas três categorias, então é deriva anterior da lista (sem atualização desde o primeiro commit), não efeito desta mudança. Sabotagens provadas: IUP desligado (bbox do `[`), derivação desligada, guarda de bytes compartilhados desligada (`panic: Bad free` no teste nomeado).
+
+## Resultado desta atualização (09–10/11, commit d3017dc)
 
 - UI: 869 testes passaram.
 - Fontes: 6 verificações visuais passaram.

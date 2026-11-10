@@ -13,6 +13,7 @@ import "core:sync"
 import "core:bytes"
 import "core:compress/gzip"
 import "core:encoding/base64"
+import "core:time"
 
 @(private) g_inited: bool
 
@@ -209,14 +210,31 @@ fetch_opts :: proc(url: string) -> Response {
     curl.easy_setopt(h, .USERAGENT,      cstring(CHROME_UA))
     curl.easy_setopt(h, .CONNECTTIMEOUT, c.long(10))           // p/ fallback https→http rápido
     curl.easy_setopt(h, .TIMEOUT,        c.long(30))
-    // Pool compartilhado + HTTP/2: reusa/multiplexa conexões entre threads (menos
-    // handshakes, menos rajada de conexões p/ o mesmo host). PIPEWAIT faz o handle
-    // ESPERAR uma conexão existente ficar pronta p/ multiplexar em vez de abrir nova.
+    // Pool compartilhado + HTTP/2: REUSA conexões entre fetches (menos handshakes,
+    // menos rajada de conexões p/ o mesmo host).
+    //
+    // ⚠️ SEM `PIPEWAIT`, de propósito. Cada fetch é um `easy_perform` na SUA thread
+    // (um multi interno próprio), e a libcurl não multiplexa numa conexão presa ao
+    // multi de OUTRA thread. Com PIPEWAIT o 2º handle não abria conexão nova:
+    // ficava ESPERANDO a do 1º, sem ninguém para acordá-lo, até o CONNECTTIMEOUT
+    // (10 s) — e falhava. Medido (10/11/2026, página com 2 `@font-face` na MESMA
+    // URL + 30 imagens do wikimedia, 3 rodadas): com PIPEWAIT, 1 falha por rodada
+    // travada em 10 001 ms (a Work Sans do animate.style morria assim); sem ele,
+    // 0 falhas, maior requisição < 300 ms, 0 respostas 429. Requisições
+    // simultâneas ao mesmo host abrem conexões próprias, como num navegador
+    // HTTP/1.1; as SEQUENCIAIS continuam reusando o pool.
     if g_share != nil do curl.easy_setopt(h, .SHARE, g_share)
     curl.easy_setopt(h, .HTTP_VERSION, curl.HTTP_VERSION_2TLS)
-    curl.easy_setopt(h, .PIPEWAIT,     c.long(1))
 
+    // Sonda de rede: tempo e resultado de CADA fetch (`-define:NETPROBE=true`).
+    // Foi o que mostrou o travamento acima — a falha só aparecia como "fonte errada".
+    when #config(NETPROBE, false) { t0 := time.tick_now() }
     res := curl.easy_perform(h)
+    when #config(NETPROBE, false) {
+        st_p: c.long
+        curl.easy_getinfo(h, .RESPONSE_CODE, &st_p)
+        fmt.eprintfln("[NET] %dms res=%v status=%d %s", i64(time.duration_milliseconds(time.tick_since(t0))), res, st_p, url[:min(len(url), 120)])
+    }
     if res != .E_OK {
         delete(body)
         return {err = fmt.aprintf("erro de rede (%v)", res)}

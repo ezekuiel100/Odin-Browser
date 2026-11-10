@@ -27,7 +27,8 @@ Font_Src :: struct {
 
 Font_Face :: struct {
     family: string, // owned, MINÚSCULAS (o casamento com font-family é case-insensitive)
-    weight: int,    // 400 = normal, 700 = bold; faixa `100 900` guarda o 1º
+    weight: int,    // 400 = normal, 700 = bold; numa faixa `100 900`, o INÍCIO
+    weight_max: int, // fim da faixa (`100 900` → 900); 0 = peso único
     italic: bool,
     latin:  bool,   // o `unicode-range` cobre o latim básico? (sem descritor = true)
     srcs:   [dynamic]Font_Src,
@@ -85,22 +86,34 @@ split_src_list :: proc(s: string) -> []string {
     return out[:]
 }
 
-// `font-weight` do descritor: número, palavra-chave, ou faixa `100 900` (fontes
-// variáveis — guardamos o PRIMEIRO valor; não temos eixos de variação).
+// `font-weight` do descritor: número, palavra-chave, ou faixa `100 900`. A faixa
+// é o que uma fonte VARIÁVEL declara ("sirvo qualquer peso entre estes"); quem
+// registra a face usa as duas pontas para casar o peso pedido e instanciar o
+// eixo `wght` nele (ver src/varfont). `hi` = 0 quando não há faixa.
 @(private = "file")
-face_weight :: proc(v: string) -> int {
+face_weight :: proc(v: string) -> (lo: int, hi: int) {
     t := strings.to_lower(strings.trim_space(v), context.temp_allocator)
-    if t == "" do return 400
-    first := t
-    if sp := strings.index_byte(t, ' '); sp > 0 do first = t[:sp]
-    switch first {
-    case "normal": return 400
-    case "bold":   return 700
-    case "lighter": return 300
-    case "bolder":  return 700
+    one :: proc(s: string) -> int {
+        switch s {
+        case "normal":  return 400
+        case "bold":    return 700
+        case "lighter": return 300
+        case "bolder":  return 700
+        }
+        if n, ok := strconv.parse_int(s); ok do return n
+        if f, ok := strconv.parse_f64(s); ok do return int(f + 0.5) // `font-weight: 350.5`
+        return 400
     }
-    if n, ok := strconv.parse_int(first); ok do return n
-    return 400
+    if t == "" do return 400, 0
+    parts := strings.fields(t, context.temp_allocator)
+    if len(parts) == 0 do return 400, 0
+    lo = one(parts[0])
+    if len(parts) >= 2 {
+        hi = one(parts[1])
+        if hi < lo do lo, hi = hi, lo // css-fonts-4: faixa invertida é trocada
+        if hi == lo do hi = 0
+    }
+    return
 }
 
 // Varre um texto CSS colhendo SÓ as `@font-face`, sem montar regra nenhuma.
@@ -196,7 +209,7 @@ parse_font_face :: proc(body: string, out: ^[dynamic]Font_Face) {
     // UMA face por combinação, ficar com a primeira significava ficar com o
     // cirílico — uma fonte sem nenhuma letra do texto da página.
     if ur, ok := decls["unicode-range"]; ok do face.latin = range_cobre_latim(ur)
-    if w, ok := decls["font-weight"]; ok do face.weight = face_weight(w)
+    if w, ok := decls["font-weight"]; ok do face.weight, face.weight_max = face_weight(w)
     if s, ok := decls["font-style"]; ok {
         st := strings.to_lower(strings.trim_space(s), context.temp_allocator)
         face.italic = strings.has_prefix(st, "italic") || strings.has_prefix(st, "oblique")

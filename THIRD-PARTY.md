@@ -37,6 +37,12 @@ invariantes/CRC que a própria spec publica e se recusa a escrever se divergir.
 `src/woff2/testdata/roboto.woff2` é a fonte **Roboto** (Google Fonts), sob
 Apache License 2.0 — está aqui porque um teste afirma que ela declara 18 tabelas.
 
+`src/varfont/testdata/worksans-*` é a fonte **Work Sans** (Google Fonts), sob a
+SIL Open Font License 1.1 (texto em `src/varfont/testdata/OFL.txt`): a versão
+VARIÁVEL em woff2 (o arquivo que o animate.style recebe) e as instâncias
+estáticas de 400 e 700 que o próprio Google Fonts serve — estas são o oráculo
+contra o qual o instanciador é testado.
+
 ## Dependências de build (não versionadas — ver [docs/BUILD.md](docs/BUILD.md))
 
 | Dependência | Papel | Licença declarada pelo upstream |

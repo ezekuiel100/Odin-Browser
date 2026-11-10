@@ -31,9 +31,18 @@ test_m224_peso_e_estilo :: proc(t: ^testing.T) {
     testing.expect(t, f.weight == 700 && f.italic, "700 + itálico")
     f2, _ := one(`@font-face{font-family:X;src:url(a.ttf);font-weight:bold}`)
     testing.expect(t, f2.weight == 700, "palavra-chave bold")
-    // fonte VARIÁVEL declara faixa: guardamos o 1º (não temos eixos de variação)
+    testing.expect(t, f.weight_max == 0 && f2.weight_max == 0, "peso único não tem faixa")
+    // fonte VARIÁVEL declara faixa: guardamos as DUAS pontas (o registro casa o
+    // peso pedido contra a faixa e instancia o eixo `wght` nele)
     f3, _ := one(`@font-face{font-family:X;src:url(a.ttf);font-weight:100 900}`)
-    testing.expectf(t, f3.weight == 100, "faixa `100 900` guarda o 1º; veio %d", f3.weight)
+    testing.expectf(t, f3.weight == 100 && f3.weight_max == 900, "faixa `100 900`; veio %d..%d", f3.weight, f3.weight_max)
+    // faixa invertida é trocada (css-fonts-4), e faixa degenerada é peso único
+    f4, _ := one(`@font-face{font-family:X;src:url(a.ttf);font-weight:700 300}`)
+    testing.expectf(t, f4.weight == 300 && f4.weight_max == 700, "`700 300` → 300..700; veio %d..%d", f4.weight, f4.weight_max)
+    f5, _ := one(`@font-face{font-family:X;src:url(a.ttf);font-weight:500 500}`)
+    testing.expectf(t, f5.weight == 500 && f5.weight_max == 0, "`500 500` é peso único; veio %d..%d", f5.weight, f5.weight_max)
+    f6, _ := one(`@font-face{font-family:X;src:url(a.ttf);font-weight:normal bold}`)
+    testing.expectf(t, f6.weight == 400 && f6.weight_max == 700, "palavras-chave na faixa; veio %d..%d", f6.weight, f6.weight_max)
 }
 
 @(test)

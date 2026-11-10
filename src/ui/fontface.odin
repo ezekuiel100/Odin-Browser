@@ -46,6 +46,7 @@ import imgui_sdlr "../../vendor/imgui/imgui_impl_sdlrenderer2"
 import csspkg     "../css"
 import netpkg     "../net"
 import woff2pkg   "../woff2"
+import varfontpkg "../varfont"
 
 // Teto de faces carregadas ou em download por sessão. Falhas não contam.
 // Cada face ocupa FONT_N tamanhos no atlas
@@ -60,7 +61,12 @@ Face_Failure :: enum u8 { None, Network, Http, Empty, Decode, No_Glyphs, Thread 
 
 Loaded_Face :: struct {
     fam_id: u8,  // índice+1 em g_face_families
-    weight: int,
+    weight: int, // chave do registro E peso em que a face é instanciada
+    // Faixa declarada (`font-weight: 100 900`, fonte variável). 0/0 = peso único.
+    // Numa face de faixa, `weight` é o 400 trazido para dentro dela (o peso que
+    // a 1ª instância usa); pesos pedidos pela página geram instâncias DERIVADAS
+    // sob demanda (ver `fontface_pick`).
+    wmin, wmax: int,
     italic: bool,
     url:    string, // owned (resolvida)
     state:  Face_State,
@@ -71,7 +77,18 @@ Loaded_Face :: struct {
 
     // handoff worker → main
     done:    b32,
-    payload: []byte, // SFNT já pronto p/ o stb (owned; liberado no free)
+    // SFNT DECODIFICADO, antes de instanciar. Várias faces podem apontar para o
+    // MESMO buffer: as `@font-face` de 400 e 700 de uma fonte variável têm a
+    // mesma URL, e só uma delas baixa (ver `fontface_start`). `raw_borrowed`
+    // marca quem não é dona.
+    raw:          []byte,
+    raw_borrowed: bool,
+    waiting_on:   int,  // índice+1 da face cujo download esta aguarda (0 = nenhum)
+    is_var:       bool, // o `raw` tem eixo `wght` instanciável
+    derived:      bool, // instância criada pelo `fontface_pick`, sem download próprio
+    // O que vai para o atlas: a instância no `weight` (owned) ou o próprio `raw`
+    // quando não há o que instanciar (fonte estática, ou o peso é o default).
+    payload: []byte,
 
     fonts: [FONT_N]^im.Font, // preenchido no poll, um por degrau da escada
     // Razão em-square DESTA face, MEDIDA no atlas (ver em_ratio_medido). A webfont do
@@ -394,7 +411,7 @@ fontface_reserve :: proc(fid: u8, weight: int, italic: bool, url: string, now: t
         old := &g_faces[idx]
         if old.url == url && retry >= 0 do attempts = old.attempts + 1
         delete(old.url)
-        delete(old.payload) // safe: this entry never entered the atlas
+        face_release_bytes(idx) // safe: this entry never entered the atlas
     } else {
         idx = len(g_faces)
         append(&g_faces, Loaded_Face{})
@@ -404,6 +421,38 @@ fontface_reserve :: proc(fid: u8, weight: int, italic: bool, url: string, now: t
         state = .Loading, attempts = attempts, last_attempt = now,
     }
     return idx, .Start
+}
+
+// Libera os bytes de uma entrada que NUNCA entrou no atlas (o atlas guarda
+// ponteiro para o payload das que entraram). A instância é sempre da entrada;
+// o `raw` só se ninguém mais o estiver usando — outra face com a mesma URL pode
+// tê-lo emprestado.
+@(private)
+face_release_bytes :: proc(idx: int) {
+    f := &g_faces[idx]
+    if f.payload != nil && raw_data(f.payload) != raw_data(f.raw) do delete(f.payload)
+    f.payload = nil
+    if f.raw != nil && !f.raw_borrowed {
+        shared := false
+        for o, j in g_faces do if j != idx && o.raw != nil && raw_data(o.raw) == raw_data(f.raw) { shared = true; break }
+        if !shared do delete(f.raw)
+    }
+    f.raw = nil
+    f.raw_borrowed = false
+}
+
+// Empresta o `raw` já decodificado da face `src` para `dst` (mesma URL).
+@(private)
+face_borrow :: proc(dst, src: int) {
+    d := &g_faces[dst]
+    s := &g_faces[src]
+    d.raw = s.raw
+    d.raw_borrowed = true
+    d.is_var = s.is_var
+    d.waiting_on = 0
+    d.failure = .None
+    d.state = .Ready
+    sync.atomic_store(&d.done, true) // o poll instancia e põe no atlas
 }
 
 @(private = "file")
@@ -416,8 +465,27 @@ fontface_retry_due :: proc(f: ^Loaded_Face, now: time.Tick) -> bool {
 }
 
 // Caller holds g_face_lock; job URLs stay alive until the worker publishes done.
-@(private = "file")
+//
+// UMA URL, UM download. Fonte variável servida pelo Google Fonts tem a MESMA
+// URL em todas as `@font-face` de pesos diferentes; antes cada face baixava a
+// sua cópia, em paralelo — e era essa rajada simultânea ao mesmo host que caía
+// no travamento do PIPEWAIT (ver net.odin). Se outra face já baixou, empresta;
+// se está baixando, espera por ela (`waiting_on`, resolvido no poll).
+@(private)
 fontface_start :: proc(idx: int) {
+    me := &g_faces[idx]
+    for &o, j in g_faces {
+        if j == idx || o.url != me.url do continue
+        if o.state == .Ready && o.raw != nil {
+            face_borrow(idx, j)
+            return
+        }
+        if o.state == .Loading && o.waiting_on == 0 && !o.derived && !sync.atomic_load(&o.done) {
+            me.waiting_on = j + 1
+            return
+        }
+    }
+    me.waiting_on = 0
     job := new(Face_Job)
     job.idx = idx
     job.url = g_faces[idx].url
@@ -450,6 +518,13 @@ face_worker :: proc(t: ^thread.Thread) {
         payload = to_sfnt(transmute([]byte)resp.body)
         if payload == nil do failure = .Decode
     }
+    // Fonte variável? Só lê o `fvar` (barato); a instância é feita no poll, por
+    // face, porque cada peso que compartilha este arquivo quer a sua.
+    is_var := false
+    if payload != nil {
+        _, _, _, v := varfontpkg.weight_axis(payload)
+        is_var = v
+    }
     when #config(FONTPROBE, false) {
         fmt.eprintfln("[FF] worker %s: err=%q status=%d bytes=%d -> sfnt=%d",
             font_log_url(job.url), resp.err, resp.status, len(resp.body), payload != nil ? len(payload) : -1)
@@ -458,7 +533,9 @@ face_worker :: proc(t: ^thread.Thread) {
     sync.mutex_lock(&g_face_lock)
     if job.idx < len(g_faces) {
         f := &g_faces[job.idx]
-        f.payload = payload
+        f.raw = payload
+        f.raw_borrowed = false
+        f.is_var = is_var
         f.state = payload != nil ? .Ready : .Failed
         f.failure = failure
         f.retryable = failure == .Network || (failure == .Http && (resp.status == 408 || resp.status == 429 || resp.status >= 500))
@@ -561,12 +638,18 @@ fontface_register :: proc(faces: []csspkg.Font_Face, base: string) {
 
         fid := fam_id_of(face.family)
         if fid == 0 { delete(url); continue }
-        idx, reservation := fontface_reserve(fid, face.weight, face.italic, url, time.tick_now())
+        // Faixa (`100 900`): a chave/instância inicial é o 400 trazido para dentro
+        // dela — o peso de texto corrido, que é o que quase toda página pede.
+        wmin, wmax := face.weight, face.weight
+        if face.weight_max > face.weight do wmax = face.weight_max
+        key := clamp(400, wmin, wmax)
+        idx, reservation := fontface_reserve(fid, key, face.italic, url, time.tick_now())
         delete(url)
         if reservation == .Limit {
-            fmt.eprintfln("[FONT] family=%q weight=%d italic=%v skipped=atlas-limit limit=%d", face.family, face.weight, face.italic, MAX_FACES)
+            fmt.eprintfln("[FONT] family=%q weight=%d italic=%v skipped=atlas-limit limit=%d", face.family, key, face.italic, MAX_FACES)
         }
         if reservation != .Start do continue
+        g_faces[idx].wmin, g_faces[idx].wmax = wmin, wmax
 
         when #config(FONTPROBE, false) { fmt.eprintfln("[FF] registra family=%q weight=%d italic=%v attempt=%d url=%s", face.family, face.weight, face.italic, g_faces[idx].attempts, font_log_url(g_faces[idx].url)) }
         fontface_start(idx)
@@ -574,6 +657,34 @@ fontface_register :: proc(faces: []csspkg.Font_Face, base: string) {
 }
 
 // ── injeção no atlas (thread principal) ─────────────────────────────────────
+
+// Faces que aguardam o download de OUTRA (mesma URL) herdam o resultado dela:
+// os bytes (emprestados) ou a falha. Caller holds g_face_lock.
+@(private)
+fontface_resolve_waiters :: proc(now: time.Tick) {
+    for &f, i in g_faces {
+        if f.waiting_on == 0 || f.state != .Loading do continue
+        j := f.waiting_on - 1
+        if j < 0 || j >= len(g_faces) || j == i || g_faces[j].url != f.url {
+            fontface_start(i) // a fonte foi reciclada: baixa por conta própria
+            continue
+        }
+        src := &g_faces[j]
+        switch src.state {
+        case .Loading: // segue esperando
+        case .Ready:
+            if src.raw != nil { face_borrow(i, j) } else { fontface_start(i) }
+        case .Failed:
+            f.waiting_on = 0
+            f.state = .Failed
+            f.failure = src.failure
+            f.retryable = src.retryable
+            f.last_attempt = now
+            fmt.eprintfln("[FONT] family=%q weight=%d italic=%v failure=%v shared-download url=%s",
+                g_face_families[int(f.fam_id)-1], f.weight, f.italic, src.failure, font_log_url(f.url))
+        }
+    }
+}
 
 // 1×/frame: promove faces baixadas para o atlas e reconstrói se preciso.
 // Devolve true quando o atlas mudou (o chamador não precisa fazer nada — a
@@ -600,10 +711,26 @@ fontface_poll :: proc() -> bool {
         fontface_start(i)
         active += 1
     }
+    fontface_resolve_waiters(now)
     for &f, i in g_faces {
         if !sync.atomic_load(&f.done) do continue
         sync.atomic_store(&f.done, false)
-        if f.state != .Ready || f.payload == nil do continue
+        if f.state != .Ready || f.raw == nil do continue
+        // Instância no peso DESTA face. Fonte estática, CFF2 ou peso = default
+        // → o próprio `raw` (comportamento de antes deste marco).
+        f.payload = f.raw
+        if f.is_var {
+            inst, e := varfontpkg.instantiate_weight(f.raw, f32(f.weight))
+            if e == .None {
+                f.payload = inst
+            } else if e != .Default {
+                fmt.eprintfln("[FONT] family=%q weight=%d italic=%v variation=%v (usando a instância padrão) url=%s",
+                    g_face_families[int(f.fam_id)-1], f.weight, f.italic, e, font_log_url(f.url))
+            }
+            when #config(FONTPROBE, false) {
+                fmt.eprintfln("[FF] instancia weight=%d -> %v (%d bytes)", f.weight, e, len(f.payload))
+            }
+        }
         // ⚠️ ver `face_glyph_count_in_ranges`: face com ZERO glifo aborta o
         // processo lá embaixo, DENTRO do FontAtlas_Build. Esta entrada nunca
         // entra no atlas: seu payload pode ser reciclado no próximo registro.
@@ -669,9 +796,23 @@ fontface_pick :: proc(fam_id: u8, weight: int, italic: bool, step: int) -> (^im.
     for f, i in g_faces {
         if f.fam_id != fam_id || f.state != .Ready do continue
         if f.fonts[step] == nil do continue
-        cost := abs(f.weight - weight) * 2
+        // Distância à FAIXA da face (css-fonts §5.2: peso dentro da faixa casa).
+        lo, hi := f.weight, f.weight
+        if f.wmax > f.wmin do lo, hi = f.wmin, f.wmax
+        dist := weight < lo ? lo - weight : (weight > hi ? weight - hi : 0)
+        cost := dist * 4
+        // Dentro da faixa mas instanciada noutro peso: serve agora, e a instância
+        // EXATA (derivada abaixo) ganha quando ficar pronta.
+        if dist == 0 && f.weight != weight do cost += 1
         if f.italic != italic do cost += 2000 // itálico errado é pior que peso errado
         if cost < best_cost { best_cost = cost; best = i }
+    }
+    if best >= 0 {
+        b := g_faces[best]
+        if b.is_var && b.wmax > b.wmin && b.italic == italic && b.weight != weight &&
+           weight >= b.wmin && weight <= b.wmax {
+            fontface_derive(best, weight)
+        }
     }
     when #config(FONTPROBE, false) {
         // Log changes rather than just the first five calls (often made before
@@ -694,6 +835,28 @@ fontface_pick :: proc(fam_id: u8, weight: int, italic: bool, step: int) -> (^im.
     return g_faces[best].fonts[step], g_faces[best].em
 }
 
+// Cria (se ainda não existe) a instância de `weight` de uma face variável de
+// FAIXA. Não baixa nada: empresta o `raw` da mãe; o poll seguinte instancia e
+// põe no atlas, e o relayout que ele provoca passa a escolher a derivada.
+// Teto: o mesmo MAX_FACES — estourou, segue com a instância da mãe, calado
+// (isto roda por item de texto; um log aqui inundaria o stderr).
+@(private)
+fontface_derive :: proc(parent: int, weight: int) {
+    sync.mutex_lock(&g_face_lock)
+    defer sync.mutex_unlock(&g_face_lock)
+    p := g_faces[parent]
+    if p.state != .Ready || p.raw == nil do return
+    idx, r := fontface_reserve(p.fam_id, weight, p.italic, p.url, time.tick_now())
+    if r != .Start do return
+    d := &g_faces[idx]
+    d.wmin, d.wmax = weight, weight
+    d.derived = true
+    face_borrow(idx, parent)
+    when #config(FONTPROBE, false) {
+        fmt.eprintfln("[FF] deriva weight=%d da faixa %d..%d url=%s", weight, p.wmin, p.wmax, font_log_url(p.url))
+    }
+}
+
 // Alguma face ainda baixando? O `--render` headless não tem tempo de parede:
 // ele pinta N frames e sai. Sem isto o laço termina ANTES de a fonte chegar e a
 // página é capturada com a família genérica — foi exatamente o que aconteceu na
@@ -704,6 +867,9 @@ fontface_pending :: proc() -> bool {
     defer sync.mutex_unlock(&g_face_lock)
     for &f in g_faces {
         if f.state == .Loading && !sync.atomic_load(&f.done) do return true
+        // pronta mas ainda não promovida ao atlas (emprestada/derivada: o poll
+        // seguinte a instancia) — o `--render` não pode sair antes disso
+        if sync.atomic_load(&f.done) do return true
         if f.state == .Failed && f.retryable && f.attempts < FONT_MAX_ATTEMPTS do return true
     }
     return false
