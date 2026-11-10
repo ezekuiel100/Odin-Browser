@@ -51,7 +51,7 @@ supports_declaration :: proc(prop, value: string, fn: Prop_Supported_Fn) -> bool
 // `:focus-visible`, `:nth-child(2n+1)` passam, que é a verdade.
 supports_selector :: proc(sel: string) -> bool {
     s := strings.trim_space(sel)
-    if s == "" do return false
+    if s == "" || !selectors_valid(s) do return false
     sels := parse_selectors(s)
     defer {
         for &x in sels do free_selector(&x)
@@ -149,7 +149,11 @@ sup_paren_inner :: proc(inner0: string, fn: Prop_Supported_Fn) -> (val: bool, ok
 @(private = "file")
 sup_match_paren :: proc(s: string, open: int) -> int {
     depth := 0
+    quote: u8
     for i := open; i < len(s); i += 1 {
+        if s[i] == '\\' { i += 1; continue }
+        if quote != 0 { if s[i] == quote do quote = 0; continue }
+        if s[i] == '"' || s[i] == '\'' { quote = s[i]; continue }
         switch s[i] {
         case '(': depth += 1
         case ')':
@@ -164,7 +168,11 @@ sup_match_paren :: proc(s: string, open: int) -> int {
 @(private = "file")
 sup_index_top :: proc(s: string, b: u8) -> int {
     depth := 0
+    quote: u8
     for i := 0; i < len(s); i += 1 {
+        if s[i] == '\\' { i += 1; continue }
+        if quote != 0 { if s[i] == quote do quote = 0; continue }
+        if s[i] == '"' || s[i] == '\'' { quote = s[i]; continue }
         switch s[i] {
         case '(': depth += 1
         case ')': depth -= 1
@@ -180,7 +188,11 @@ sup_index_top :: proc(s: string, b: u8) -> int {
 @(private = "file")
 sup_find_top_kw :: proc(s, kw: string) -> int {
     depth := 0
+    quote: u8
     for i := 0; i < len(s); i += 1 {
+        if s[i] == '\\' { i += 1; continue }
+        if quote != 0 { if s[i] == quote do quote = 0; continue }
+        if s[i] == '"' || s[i] == '\'' { quote = s[i]; continue }
         switch s[i] {
         case '(': depth += 1; continue
         case ')': depth -= 1; continue

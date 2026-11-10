@@ -7232,34 +7232,35 @@ parse_font_family :: proc(value: string) -> (Font_Family, u8, bool) {
 
 // Casa um seletor complexo contra um nó, subindo pela cadeia de ancestrais.
 @(private="file")
-selector_matches_node :: proc(sel: csspkg.Selector, n: ^dompkg.Node) -> bool {
+selector_matches_node :: proc(sel: csspkg.Selector, n: ^dompkg.Node, scope0: ^dompkg.Node = nil) -> bool {
+    scope := scope0
     np := len(sel.parts)
     if np == 0 do return false
     // alvo (composto mais à direita) casa contra o próprio nó
-    if !compound_matches_node(sel.parts[np - 1], n) do return false
-    return match_left(sel, np - 2, n)
+    if !compound_matches_node(sel.parts[np - 1], n, scope) do return false
+    return match_left(sel, np - 2, n, scope)
 }
 
 // Casa parts[pi] (e o resto da cadeia à esquerda) em relação ao nó à direita já
 // casado. Descendant/Sibling tentam todos os candidatos (backtracking).
 @(private="file")
-match_left :: proc(sel: csspkg.Selector, pi: int, right: ^dompkg.Node) -> bool {
+match_left :: proc(sel: csspkg.Selector, pi: int, right: ^dompkg.Node, scope: ^dompkg.Node = nil) -> bool {
     if pi < 0 do return true
     switch sel.combs[pi] {
     case .Child:
         p := right.parent
-        return p != nil && compound_matches_node(sel.parts[pi], p) && match_left(sel, pi - 1, p)
+        return p != nil && compound_matches_node(sel.parts[pi], p, scope) && match_left(sel, pi - 1, p, scope)
     case .Descendant:
         for a := right.parent; a != nil; a = a.parent {
-            if compound_matches_node(sel.parts[pi], a) && match_left(sel, pi - 1, a) do return true
+            if compound_matches_node(sel.parts[pi], a, scope) && match_left(sel, pi - 1, a, scope) do return true
         }
         return false
     case .Adjacent: // '+': irmão elemento imediatamente anterior
         s := prev_elem_sibling(right)
-        return s != nil && compound_matches_node(sel.parts[pi], s) && match_left(sel, pi - 1, s)
+        return s != nil && compound_matches_node(sel.parts[pi], s, scope) && match_left(sel, pi - 1, s, scope)
     case .Sibling: // '~': qualquer irmão elemento anterior
         for s := prev_elem_sibling(right); s != nil; s = prev_elem_sibling(s) {
-            if compound_matches_node(sel.parts[pi], s) && match_left(sel, pi - 1, s) do return true
+            if compound_matches_node(sel.parts[pi], s, scope) && match_left(sel, pi - 1, s, scope) do return true
         }
         return false
     }
@@ -7346,7 +7347,7 @@ is_ltr_rune :: proc(r: rune) -> bool {
 }
 
 @(private="file")
-compound_matches_node :: proc(c: csspkg.Compound, n: ^dompkg.Node) -> bool {
+compound_matches_node :: proc(c: csspkg.Compound, n: ^dompkg.Node, scope: ^dompkg.Node = nil) -> bool {
     if n == nil || n.kind != .Element do return false
     // ── Caminho QUENTE do motor inteiro ──────────────────────────────────────
     // Esta proc roda uma vez por COMPOSTO, por regra candidata, por nó, por
@@ -7366,6 +7367,14 @@ compound_matches_node :: proc(c: csspkg.Compound, n: ^dompkg.Node) -> bool {
     // A duplicação dos testes de tag/id com csspkg.compound_matches é
     // deliberada: a versão do pacote css continua correta sozinha (é o que os
     // testes de css_test.odin exercitam), aqui eles são só um pré-filtro.
+    if c.scope_req {
+        if scope != nil { if n != scope do return false
+        } else {
+            for a := n.parent; a != nil; a = a.parent {
+                if a.kind == .Element do return false
+            }
+        }
+    }
     if c.pseudo_only do return false
     if c.never do return false // :target/:invalid/:nth-child(bogus)… (ver Compound.never)
     if c.tag != "" && c.tag != "*" && c.tag != n.tag do return false
@@ -7386,14 +7395,17 @@ compound_matches_node :: proc(c: csspkg.Compound, n: ^dompkg.Node) -> bool {
         }
     }
     for ns in c.nots { // :not(X): o nó não pode casar nenhum seletor X
-        if selector_matches_node(ns, n) do return false
+        if selector_matches_node(ns, n, scope) do return false
     }
     if len(c.ors) > 0 { // :is(A, B): precisa casar algum dos seletores (completos)
         any_match := false
-        for os in c.ors {
-            if selector_matches_node(os, n) { any_match = true; break }
+        for os, i in c.ors {
+            if !any_match do any_match = selector_matches_node(os, n, scope)
+            if os.or_group_end || i == len(c.ors)-1 {
+                if !any_match do return false
+                any_match = false
+            }
         }
-        if !any_match do return false
     }
     has_group_match := false
     for h, i in c.has { // OR dentro de uma chamada; AND entre chamadas de :has().
@@ -8377,6 +8389,8 @@ test_pseudo_alias :: proc(css_text: string, tag := "div") -> (n_nodes: int, shar
 @(init)
 install_js_query_hook :: proc "contextless" () {
     jspkg.g_dom_query = js_dom_query
+    jspkg.g_selector_valid = csspkg.selectors_valid
+    jspkg.g_dom_matches = js_dom_matches
     jspkg.g_css_supports = css_supports_decl // CSS.supports (css_om.odin) — mesma razão de ciclo
     jspkg.g_computed_style = js_computed_style // getComputedStyle (computed_om.odin) — idem
     jspkg.g_element_rect   = js_element_rect   // getBoundingClientRect  (idem)
@@ -8497,12 +8511,12 @@ js_dom_query :: proc(scope: ^dompkg.Node, selector: string, all: bool, out: ^[dy
         delete(sels)
     }
     if len(sels) == 0 do return
-    query_walk(scope, sels[:], all, out, true)
+    query_walk(scope, sels[:], all, out, true, scope.kind == .Element ? scope : document_element(scope))
 }
 
 // Devolve true quando deve PARAR (achou o 1º e all=false).
 @(private = "file")
-query_walk :: proc(n: ^dompkg.Node, sels: []csspkg.Selector, all: bool, out: ^[dynamic]^dompkg.Node, is_scope: bool) -> bool {
+query_walk :: proc(n: ^dompkg.Node, sels: []csspkg.Selector, all: bool, out: ^[dynamic]^dompkg.Node, is_scope: bool, scope: ^dompkg.Node) -> bool {
     // Sonda compile-gated (-define:DOMPROBE=true) do crash do wikipedia: o ASAN
     // apontou access-violation em `for c in n.children` com endereço 0x1, ou seja
     // o PONTEIRO DE DADOS do slice de filhos está corrompido. Aqui identificamos
@@ -8543,7 +8557,7 @@ query_walk :: proc(n: ^dompkg.Node, sels: []csspkg.Selector, all: bool, out: ^[d
     }
     if !is_scope && n.kind == .Element {
         for s in sels {
-            if selector_matches_node(s, n) {
+            if query_selector_matches(s, n, scope) {
                 append(out, n)
                 if !all do return true
                 break // já casou; não duplicar por outro seletor da lista
@@ -8551,7 +8565,28 @@ query_walk :: proc(n: ^dompkg.Node, sels: []csspkg.Selector, all: bool, out: ^[d
         }
     }
     for c in n.children {
-        if query_walk(c, sels, all, out, false) do return true
+        if query_walk(c, sels, all, out, false, scope) do return true
     }
     return false
+}
+
+// Direct matching also works for detached elements.
+js_dom_matches :: proc(n: ^dompkg.Node, text: string, scope: ^dompkg.Node) -> bool {
+    sels := csspkg.parse_selectors(text)
+    defer { for &s in sels do csspkg.free_selector(&s); delete(sels) }
+    for s in sels do if query_selector_matches(s, n, scope) do return true
+    return false
+}
+
+document_element :: proc(n: ^dompkg.Node) -> ^dompkg.Node {
+    for c in n.children do if c.kind == .Element do return c
+    return nil
+}
+
+// Generated pseudo-elements are not DOM elements.
+query_selector_matches :: proc(sel: csspkg.Selector, n, scope: ^dompkg.Node) -> bool {
+    for p in sel.parts {
+        if p.pseudo == .Before || p.pseudo == .After || p.pseudo == .FirstLetter || p.pseudo == .Placeholder do return false
+    }
+    return selector_matches_node(sel, n, scope)
 }

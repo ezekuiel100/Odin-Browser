@@ -46,7 +46,7 @@ Element_State :: enum u8 { None, Hover, Focus, Active }
 // Seletor de atributo: [name] (Exists), [name=v], [name~=v] (palavra),
 // [name|=v] (v ou v-…), [name^=v], [name$=v], [name*=v].
 Attr_Op :: enum u8 { Exists, Equals, Includes, Dash, Prefix, Suffix, Substr }
-Attr_Sel :: struct { name: string, op: Attr_Op, val: string }
+Attr_Sel :: struct { name: string, op: Attr_Op, val: string, insensitive: bool }
 
 // Pseudo-classe estrutural exigida pelo composto (posição entre irmãos; a
 // avaliação contra o DOM fica no motor de estilo). Child/Of_Type usam nth_a/b
@@ -105,11 +105,13 @@ Compound :: struct {
     // `:empty` — o elemento não pode ter filho elemento nem texto não-branco.
     // Avaliado no motor de estilo (precisa da ÁRVORE), como :nth-*/:dir.
     empty_req:   bool,
+    scope_req: bool,
 }
 
 // Seletor complexo: cadeia de compostos (esquerda→direita; o último é o alvo)
 // ligados por combinadores. combs[i] liga parts[i] a parts[i+1].
 Selector :: struct {
+    or_group_end: bool, // AND between functional :is/:where groups, OR within one
     parts:   [dynamic]Compound,
     combs:   [dynamic]Combinator,
     spec:    int,               // projeção legada, apenas para sondas/testes
@@ -1266,8 +1268,13 @@ skip_at_rule :: proc(src: string, start: int) -> int {
 split_selector_list_top :: proc(text: string) -> []string {
     parts := make([dynamic]string, context.temp_allocator)
     depth, start := 0, 0
-    for i in 0 ..< len(text) {
-        switch text[i] {
+    quote: u8
+    for i := 0; i < len(text); i += 1 {
+        c := text[i]
+        if c == '\\' { i += 1; continue }
+        if quote != 0 { if c == quote do quote = 0; continue }
+        if c == '"' || c == '\'' { quote = c; continue }
+        switch c {
         case '(', '[': depth += 1
         case ')', ']': if depth > 0 do depth -= 1
         case ',': if depth == 0 { append(&parts, text[start:i]); start = i + 1 }
@@ -1282,17 +1289,24 @@ split_selector_list_top :: proc(text: string) -> []string {
 // cada um com free_selector + delete da lista. ATENÇÃO: os seletores fatiam
 // `text` — case e libere enquanto `text` vive (não retenha).
 parse_selectors :: proc(text: string) -> [dynamic]Selector {
+    if !selectors_valid(text) do return nil
     return parse_selector_list(text)
 }
 
 @(private)
 parse_selector_list :: proc(text: string) -> [dynamic]Selector {
     sels: [dynamic]Selector
+    valid := selectors_valid(text)
     for part in split_selector_list_top(text) {
         s := strings.trim_space(part)
         if s == "" do continue
         sel, ok := parse_complex(s)
-        if ok do append(&sels, sel)
+        if ok {
+            // Keep recovered structures for diagnostics, but an invalid member
+            // invalidates the entire stylesheet selector list (unforgiving).
+            if !valid do sel.parts[len(sel.parts)-1].never = true
+            append(&sels, sel)
+        }
     }
     return sels
 }
@@ -1331,6 +1345,15 @@ parse_complex :: proc(sel: string) -> (Selector, bool) {
         depth := 0
         for i < n {
             ch := sel[i]
+            if ch == '\\' {
+                _, next, ok := layer_escape(sel, i)
+                i = ok ? next : min(i+2, n)
+                continue
+            }
+            if ch == '[' || ch == '(' {
+                end := selector_group_end(sel, i)
+                if end >= 0 { i = end + 1; continue }
+            }
             if ch == '[' || ch == '(' do depth += 1
             else if ch == ']' || ch == ')' { if depth > 0 do depth -= 1 }
             else if depth == 0 && is_sel_boundary(ch) do break
@@ -1379,11 +1402,15 @@ css_unescape :: proc(s: string) -> string {
     i := 0
     for i < len(s) {
         if s[i] == '\\' {
+            cp, next, valid := layer_escape(s, i)
+            if !valid do break
+            if i+1 < len(s) && s[i+1] >= 128 do strings.write_byte(&sb, s[i+1])
+            else do strings.write_rune(&sb, cp)
+            i = next
+        } else {
+            strings.write_byte(&sb, s[i])
             i += 1
-            if i >= len(s) do break
         }
-        strings.write_byte(&sb, s[i])
-        i += 1
     }
     return strings.to_string(sb)
 }
@@ -1397,7 +1424,7 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
     tag_start := i
     for i < n && key[i] != '.' && key[i] != '#' && key[i] != ':' && key[i] != '[' do i += 1
     // OWNED (ver nota de posse em free_compound): antes era fatia do `src` temp.
-    if i > tag_start do out.tag = strings.clone(key[tag_start:i])
+    if i > tag_start do out.tag = css_unescape(key[tag_start:i])
     if out.tag != "" && out.tag != "*" do out.specificity[2] += 1
 
     pseudo := "" // nome do 1º pseudo solto (sem tag/classe/id antes)
@@ -1407,7 +1434,11 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
             i += 1
             name_start := i
             for i < n {
-                if key[i] == '\\' { i += 2; continue } // escape CSS: `\x` faz parte do nome
+                if key[i] == '\\' {
+                    _, next, ok := layer_escape(key, i)
+                    i = ok ? next : min(i+2, n)
+                    continue
+                } // escape CSS: `\x` faz parte do nome
                 if key[i] == '.' || key[i] == '#' || key[i] == ':' || key[i] == '[' do break
                 i += 1
             }
@@ -1424,12 +1455,14 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                 // ID é válido e cada ocorrência contribui especificidade.
                 if out.id != "" && out.id != name do out.never = true
                 delete(out.id)
-                out.id = strings.clone(name)
+                out.id = css_unescape(name)
             }
         } else if c == '[' {
             i += 1
             close := i
-            for close < n && key[close] != ']' do close += 1
+            end := selector_group_end(key, i-1)
+            if end >= 0 do close = end
+            else do close = n
             before := len(out.attrs)
             parse_attr_sel(key[i:close], &out)
             out.specificity[1] += len(out.attrs) - before
@@ -1442,16 +1475,10 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
             for p < n && key[p] != '.' && key[p] != '#' && key[p] != ':' && key[p] != '(' && key[p] != '[' do p += 1
             name := key[ns:p]
             arg := ""
-            if p < n && key[p] == '(' { // argumento entre parênteses balanceados
-                depth := 1
-                q := p + 1
-                for q < n && depth > 0 {
-                    if key[q] == '(' do depth += 1
-                    else if key[q] == ')' do depth -= 1
-                    q += 1
-                }
-                arg = key[p + 1 : depth == 0 ? q - 1 : q]
-                p = q
+            if p < n && key[p] == '(' {
+                q := selector_group_end(key, p)
+                if q >= 0 { arg = key[p+1:q]; p = q+1
+                } else { arg = key[p+1:]; p = n }
             }
             // Um único parse por argumento: matching e especificidade compartilham
             // o Selector. Leia a tupla ANTES de liberar argumentos não avaliáveis.
@@ -1464,13 +1491,14 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                 best: [3]int
                 group: [dynamic]Selector
                 group_ok := true
-                keep_or := is_or && len(out.ors) == 0
+                keep_or := is_or
                 group_start := len(out.has)
-                for part in split_commas_top(arg) {
+                for part in split_selector_list_top(arg) {
                     pt := strings.trim_space(part)
                     lead := Combinator.Descendant
                     if is_has { lead, pt = split_leading_combinator(pt) }
                     if pt == "" do continue
+                    if is_or && !selector_complex_valid(pt, false, 0) do continue
                     sel, ok := parse_complex(pt)
                     if !ok { group_ok = false; continue }
                     if specificity_compare(sel.specificity, best) > 0 do best = sel.specificity
@@ -1481,8 +1509,8 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                     tgt := sel.parts[len(sel.parts) - 1]
                     safe := len(sel.parts) > 1 || tgt.tag != "" || tgt.id != "" ||
                             len(tgt.classes) > 0 || len(tgt.attrs) > 0 ||
-                            tgt.nth_kind != .None || tgt.empty_req || tgt.never ||
-                            tgt.ui_states != {} || len(tgt.nots) > 0 || tgt.dir_req != .None
+                            tgt.nth_kind != .None || tgt.empty_req || tgt.scope_req || tgt.never ||
+                            tgt.ui_states != {} || len(tgt.nots) > 0 || len(tgt.ors) > 0 || tgt.dir_req != .None
                     if is_not && safe {
                         append(&out.nots, sel)
                     } else if keep_or && safe {
@@ -1503,9 +1531,12 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                 }
                 if keep_or {
                     if group_ok && len(group) > 0 {
-                        out.ors = group
+                        group[len(group)-1].or_group_end = true
+                        append(&out.ors, ..group[:])
+                        delete(group)
                     } else {
                         out.is_unresolved = true
+                        out.never = true
                         for &s in group do free_selector(&s)
                         delete(group)
                     }
@@ -1542,6 +1573,11 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                 continue
             }
             // `:empty` — avaliado contra a ÁRVORE no motor de estilo.
+            if strings.equal_fold(name, "scope") {
+                out.scope_req = true
+                i = p
+                continue
+            }
             if strings.equal_fold(name, "empty") {
                 out.empty_req = true
                 i = p
@@ -1647,7 +1683,7 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
             // continua tratado como permissivo naquele caso.)
             out.pseudo_only = true
         } else if out.pseudo == .None && out.nth_kind == .None && out.ui_states == {} && out.dir_req == .None &&
-                  !out.empty_req && !out.never &&
+                  !out.empty_req && !out.scope_req && !out.never &&
                   len(out.ors) == 0 && len(out.nots) == 0 && len(out.has) == 0 && !out.is_unresolved {
             // REDE DE SEGURANÇA da classe "composto vazio casa tudo": chegamos aqui
             // com tag/classe/id/atributo vazios, sem pseudo-elemento (::before/::after
@@ -1696,15 +1732,18 @@ parse_attr_sel :: proc(body: string, out: ^Compound) {
     name = strings.trim_space(name)
     if name == "" do return
     val = strings.trim_space(val)
+    insensitive := false
     // flag de case-sensitivity após o valor: "x" i / "x" s
     if len(val) >= 2 && is_space(val[len(val) - 2]) {
         switch val[len(val) - 1] {
-        case 'i', 'I', 's', 'S': val = strings.trim_space(val[:len(val) - 2])
+        case 'i', 'I', 's', 'S':
+            insensitive = val[len(val)-1] == 'i' || val[len(val)-1] == 'I'
+            val = strings.trim_space(val[:len(val) - 2])
         }
     }
     val = strings.trim(val, "\"'")
     // OWNED (ver free_compound): antes eram fatias do `src` temp
-    append(&out.attrs, Attr_Sel{strings.clone(name), op, strings.clone(val)})
+    append(&out.attrs, Attr_Sel{strings.to_lower(name), op, css_unescape(val), insensitive})
 }
 
 // Reconhece uma pseudo-classe estrutural pelo nome (+ argumento An+B quando
@@ -1795,7 +1834,8 @@ parse_nth :: proc(input: string) -> (a, b: int, ok: bool) {
         if !k do return 0, 0, false
         return 0, v, true
     }
-    switch strings.trim_space(s[:ni]) { // parte A
+    if strings.trim_space(s[:ni]) != s[:ni] do return 0, 0, false
+    switch s[:ni] { // parte A
     case "", "+": a = 1
     case "-":     a = -1
     case:
@@ -1805,6 +1845,10 @@ parse_nth :: proc(input: string) -> (a, b: int, ok: bool) {
     }
     bs := strings.trim_space(s[ni + 1:]) // parte B (pode ter espaços: "2n + 1")
     if bs == "" do return a, 0, true
+    if bs[0] != '+' && bs[0] != '-' do return 0, 0, false
+    digits := strings.trim_space(bs[1:])
+    if digits == "" do return 0, 0, false
+    for c in digits do if c < '0' || c > '9' do return 0, 0, false
     buf := make([dynamic]u8, context.temp_allocator)
     for i in 0 ..< len(bs) {
         if bs[i] != ' ' && bs[i] != '\t' do append(&buf, bs[i])
@@ -2031,23 +2075,28 @@ compound_matches :: proc(c: Compound, tag: string, classes: []string, id: string
     for a in c.attrs {
         got, present := attrs[a.name]
         if !present do return false
+        value := a.val
+        if a.insensitive {
+            got = selector_ascii_lower(got)
+            value = selector_ascii_lower(value)
+        }
         switch a.op {
         case .Exists: // presença basta
-        case .Equals: if got != a.val do return false
+        case .Equals: if got != value do return false
         case .Includes: // valor é uma das palavras (separadas por espaço)
             found := false
             for f in strings.fields(got, context.temp_allocator) {
-                if f == a.val { found = true; break }
+                if f == value { found = true; break }
             }
             if !found do return false
         case .Dash: // exatamente v ou prefixo "v-" (ex.: lang="pt-BR")
-            if got != a.val &&
-               !(len(got) > len(a.val) && strings.has_prefix(got, a.val) && got[len(a.val)] == '-') {
+            if got != value &&
+               !(len(got) > len(value) && strings.has_prefix(got, value) && got[len(value)] == '-') {
                 return false
             }
-        case .Prefix: if a.val == "" || !strings.has_prefix(got, a.val) do return false
-        case .Suffix: if a.val == "" || !strings.has_suffix(got, a.val) do return false
-        case .Substr: if a.val == "" || !strings.contains(got, a.val)   do return false
+        case .Prefix: if value == "" || !strings.has_prefix(got, value) do return false
+        case .Suffix: if value == "" || !strings.has_suffix(got, value) do return false
+        case .Substr: if value == "" || !strings.contains(got, value)   do return false
         }
     }
     // pseudos de estado (:checked/:disabled/…) por presença/ausência de atributo
