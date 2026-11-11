@@ -1087,6 +1087,8 @@ Clip_Shape :: struct {
 }
 
 Computed :: struct {
+    style_fp, style_kids_ver, style_layout_fp: u64, // snapshot for incremental restyle
+
     color:         u32,
     // caret-color (css-ui §4): HERDA, como o `color`. `auto` = a cor do texto,
     // que é o que o ImGui já faz sozinho ⇒ has_caret=false.
@@ -1588,7 +1590,7 @@ shadow_scope_css :: proc(sb: ^strings.Builder, css: string, sid: uintptr) {
 }
 
 // Computa os estilos de toda a árvore. Devolve o mapa por nó e o fundo da página.
-compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewport_w: f32 = 1280, viewport_h: f32 = 720, kf: []csspkg.Keyframe_Set = nil) -> (styles: map[^dompkg.Node]Computed, page_bg: u32) {
+compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewport_w: f32 = 1280, viewport_h: f32 = 720, kf: []csspkg.Keyframe_Set = nil, previous: map[^dompkg.Node]Computed = nil, dirty: map[^dompkg.Node]bool = nil) -> (styles: map[^dompkg.Node]Computed, page_bg: u32) {
     styles = make(map[^dompkg.Node]Computed)
     stamp_shadow_scopes(root) // marcador que dá escopo às regras de cada shadow root
     g_viewport_h = viewport_h // p/ @media (aspect-ratio) em collect_decls
@@ -1613,7 +1615,7 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
         }
     }
     idx := build_rule_index(rules) // índice p/ evitar testar todas as regras por nó
-    compute_node(root, root_inherit, root_vars, rules, &idx, &styles, viewport_w, viewport_h, kf, noinh[:])
+    compute_node(root, root_inherit, root_vars, rules, &idx, &styles, viewport_w, viewport_h, kf, noinh[:], previous, dirty)
     resolve_counters(root, &styles) // preenche content de ::before/::after com counter()
 
     // FUNDO DO CANVAS (css-backgrounds §2.11.2): quem manda é o ELEMENTO RAIZ —
@@ -1623,6 +1625,7 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
     // `html{background:#333}` (php.net e todo tema escuro) ficava BRANCA abaixo
     // do fim do conteúdo, porque o #333 só pintava a caixa do <html>.
     // `contain` no elemento suprime a propagação (css-contain).
+    for _, &c in styles do c.bg_canvas = false
     page_bg = 0xffffff
     src: ^dompkg.Node
     if html := dompkg.find_first(root, "html"); html != nil {
@@ -1798,7 +1801,11 @@ ua_button_look :: proc(comp: ^Computed, disabled: bool) {
 }
 
 @(private="file")
-compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string, rules: ^[dynamic]csspkg.Rule, idx: ^Rule_Index, styles: ^map[^dompkg.Node]Computed, viewport_w: f32, viewport_h: f32 = 720, kf: []csspkg.Keyframe_Set = nil, noinh: []Noinherit_Prop = nil) {
+compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string, rules: ^[dynamic]csspkg.Rule, idx: ^Rule_Index, styles: ^map[^dompkg.Node]Computed, viewport_w: f32, viewport_h: f32 = 720, kf: []csspkg.Keyframe_Set = nil, noinh: []Noinherit_Prop = nil, previous: map[^dompkg.Node]Computed = nil, dirty: map[^dompkg.Node]bool = nil) {
+    if previous != nil && !dirty[n] {
+        reuse_style_subtree(n, previous, styles)
+        return
+    }
     comp := inherit
     if d, ok := n.attrs["dir"]; ok {
         if strings.equal_fold(d, "rtl") { comp.direction = .Rtl }
@@ -2340,6 +2347,9 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         }
     }
 
+    comp.style_layout_fp = dompkg.style_fingerprint(n, true)
+    comp.style_fp = dompkg.style_fingerprint(n)
+    comp.style_kids_ver = n.kids_ver
     styles[n] = comp
 
     child_inherit := comp
@@ -2359,7 +2369,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     child_inherit.placeholder  = nil
     child_inherit.svg_css = nil // mesmo motivo dos ^Computed: alias vira double-free
     for c in n.children {
-        compute_node(c, child_inherit, elem_vars, rules, idx, styles, viewport_w, viewport_h, kf, noinh)
+        compute_node(c, child_inherit, elem_vars, rules, idx, styles, viewport_w, viewport_h, kf, noinh, previous, dirty)
     }
 }
 

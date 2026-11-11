@@ -168,6 +168,16 @@ kids_take :: proc(parent: ^Node) -> [dynamic]^Node {
 FP_OFFSET :: 0xcbf29ce484222325
 FP_PRIME  :: 0x100000001b3
 
+// Local state only; used by selective style invalidation. No child traversal.
+style_fingerprint :: proc(n: ^Node, layout_only := false) -> u64 {
+    h := fp_str(n.tag) + fp_str(n.text) + fp_str(n.ns) + u64(n.kind)
+    for k, v in n.attrs {
+        if layout_only && (k == "class" || k == "style") do continue
+        h += fp_str(k) * 0x9E3779B97F4A7C15 + fp_str(v)
+    }
+    return h
+}
+
 fingerprint :: proc(n: ^Node) -> u64 {
     h: u64 = FP_OFFSET
     fp_walk(n, &h)

@@ -75,6 +75,10 @@ Tab :: struct {
     // de timer que NÃO mudou o DOM não precisa de restyle (ver dompkg.fingerprint).
     // 0 = nunca computada → o 1º tick re-estiliza (o hash praticamente nunca é 0).
     dom_fp: u64,
+    style_vw, style_vh: f32,
+    style_dark: bool,
+    restyle_nodes: int, // diagnostics: nodes whose cascade ran on the last restyle
+    restyle_layout: bool,
 }
 
 // Requisição de rede em andamento, processada numa thread separada.
@@ -217,13 +221,12 @@ tab_drop_rules :: proc(tab: ^Tab) {
     tab.rules_ready = false
 }
 
-// Re-estiliza e reconstrói o layout da aba (após Ctrl +/-, troca de aba, ou
-// mutação do DOM pelo JS no clique). Reusa as rules retidas: as rules
-// retidas em tab.rules são donas das próprias strings, então sobrevivem ao
-// free_all(temp) do topo do frame. O parse só acontece na 1ª vez (ou depois de
-// tab_drop_rules, que a navegação chama ao trocar o css_text). vw/vh = viewport.
+// Recompute invalidated style branches; preserve boxes for supported paint-only
+// changes. Zoom, viewport, stylesheet and structural changes use the full path.
+// Parsed rules own their strings and survive the frame's temporary allocator.
 restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     if tab.dom == nil { tab.zoom_applied = g_zoom; return }
+    rules_changed := !tab.rules_ready
     if !tab.rules_ready {
         tab.rules, tab.kf = csspkg.parse(tab.css_text)
         tab.rules_ready = true
@@ -231,24 +234,59 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     // @font-face na thread PRINCIPAL (dona do atlas): o fetch_worker parseia as
     // regras numa thread, então o registro das faces mora aqui. Idempotente.
     fontface_scan(tab.css_text, tab.url)
-    if tab.styles != nil do free_styles(tab.styles)
+    previous := tab.styles
+    dirty := make(map[^dompkg.Node]bool, context.temp_allocator)
+    incremental := previous != nil && !rules_changed && tab.zoom_applied == g_zoom &&
+        tab.style_vw == vw && tab.style_vh == vh && tab.style_dark == g_prefers_dark
+    // Container measurements can change without a DOM mutation.
+    if incremental {
+        for r in tab.rules do if r.cq_active { incremental = false; break }
+    }
+    if incremental {
+        incremental = plan_style_invalidation(tab.dom, previous, &dirty)
+        if incremental && len(dirty) > 0 && style_cross_dependencies(tab.rules[:]) do incremental = false
+    }
+    tab.restyle_nodes = 0
+    if incremental && len(dirty) == 0 {
+        tab.restyle_layout = false
+        js_style_source_set(tab.styles, tab.layout, vw, vh)
+        return
+    }
     old_layout := tab.layout
     // S3: os 534 ms de restyle medidos no github são compute_styles + build_layout
     // JUNTOS. A divisão decide se a família de achados de estilo (Computed de
     // 5.936 B por valor, 201 resets manuais, ~210 lookups em apply_decls) vale
     // esforço ou zero. Os dois ticks abaixo são a resposta.
     when UIPROF { t_cs := time.tick_now() }
-    tab.styles, tab.page_bg = compute_styles(tab.dom, &tab.rules, vw, vh, tab.kf[:])
+    if incremental {
+        tab.styles, tab.page_bg = compute_styles(tab.dom, &tab.rules, vw, vh, tab.kf[:], previous, dirty)
+        tab.restyle_nodes = len(dirty)
+    } else {
+        tab.styles, tab.page_bg = compute_styles(tab.dom, &tab.rules, vw, vh, tab.kf[:])
+        tab.restyle_nodes = len(tab.styles)
+    }
+    repaint := incremental && old_layout != nil && styles_paint_only(previous, tab.styles, dirty) && paint_boxes_available(old_layout, previous, tab.styles, dirty)
+    tab.restyle_layout = !repaint
     when UIPROF {
         g_uiprof.ms_compute += time.duration_milliseconds(time.tick_since(t_cs))
         t_bl := time.tick_now()
     }
-    tab.layout = build_layout(tab.dom, tab.styles, tab.url)
-    animation_restore_tree(tab.layout, old_layout)
-    scroll_restore_tree(tab.layout, old_layout) // scroll de overflow:auto não volta ao 0
-    free_layout(old_layout)
+    if repaint {
+        refresh_box_paint(tab.layout, previous, tab.styles, dirty)
+    } else {
+        tab.layout = build_layout(tab.dom, tab.styles, tab.url)
+        animation_restore_tree(tab.layout, old_layout)
+        scroll_restore_tree(tab.layout, old_layout)
+    }
+    if incremental {
+        for n in tab.styles do if !dirty[n] do delete_key(&previous, n)
+    }
+    if previous != nil do free_styles(previous)
+    if !repaint do free_layout(old_layout)
     when UIPROF { g_uiprof.ms_buildlay += time.duration_milliseconds(time.tick_since(t_bl)) }
     tab.zoom_applied = g_zoom
+    tab.style_vw, tab.style_vh = vw, vh
+    tab.style_dark = g_prefers_dark
     // getComputedStyle lê daqui. Tem de ser DEPOIS do compute_styles: o free_styles
     // logo acima liberou o mapa anterior, e o hook apontaria p/ memória morta.
     js_style_source_set(tab.styles, tab.layout, vw, vh)
