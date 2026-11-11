@@ -1,5 +1,6 @@
 package ui
 
+import "core:fmt"
 import "core:testing"
 import htmlp  "../html"
 import csspkg "../css"
@@ -116,6 +117,36 @@ scroll_x_pagina_poda_conteudo_clipado_e_fixed :: proc(t: ^testing.T) {
         `<div style="width:300px"><div style="width:2000px;height:10px"></div></div>` +
         `</body></html>`)
     testing.expectf(t, abs(box_scroll_extent_x(root2) - 2000) < 1, "controle: %.1f", box_scroll_extent_x(root2))
+}
+
+@(test)
+scroll_y_pagina_poda_conteudo_clipado :: proc(t: ^testing.T) {
+    // O espaço em branco no fim da página: o alto DENTRO de uma caixa que corta o
+    // Y (menu `max-height:0;overflow:hidden`, rolável interno `overflow:auto`)
+    // estendia a rolagem da página até onde o conteúdo ESCONDIDO terminaria.
+    for ovf in ([]string{"hidden", "auto", "clip"}) {
+        root := lay(fmt.tprintf(`<html><body style="margin:0">` +
+            `<div style="height:100px;overflow-y:%s"><div style="height:5000px"></div></div>` +
+            `</body></html>`, ovf))
+        defer free_layout(root)
+        e := box_scroll_extent(root)
+        testing.expectf(t, e <= 100.5, "overflow-y:%s: esperava ≤ 100, veio %.1f", ovf, e)
+    }
+    // controle: a mesma caixa SEM cortar o Y deixa os 5000 transbordarem (visible
+    // gera área rolável na página, como no Chrome)
+    root2 := lay(`<html><body style="margin:0">` +
+        `<div style="height:100px"><div style="height:5000px"></div></div>` +
+        `</body></html>`)
+    defer free_layout(root2)
+    testing.expectf(t, abs(box_scroll_extent(root2) - 5000) < 1, "controle: %.1f", box_scroll_extent(root2))
+    // `overflow-x:hidden` sozinho: o Y declarado visible não sobrevive
+    root3 := lay(`<html><body style="margin:0">` +
+        `<div style="height:100px;overflow-x:hidden;overflow-y:visible"><div style="height:5000px"></div></div>` +
+        `</body></html>`)
+    defer free_layout(root3)
+    e3 := box_scroll_extent(root3)
+    // overflow-x:hidden + y:visible computa y=auto (css-overflow §3) ⇒ também clipa
+    testing.expectf(t, e3 <= 100.5, "x:hidden força y:auto: esperava ≤ 100, veio %.1f", e3)
 }
 
 @(test)

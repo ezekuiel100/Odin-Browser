@@ -312,10 +312,18 @@ box_max_extent :: proc(b: ^Box) -> f32 {
 // do bandcamp, body travado da cnn): root.h colapsa p/ ≈ viewport, a barra de
 // scroll some e todo o conteúdo abaixo da dobra fica inalcançável/sobreposto,
 // embora content_h (box_max_extent) enxergue os milhares de px reais.
+//
+// Caixa que CORTA o Y (overflow-y hidden/clip/auto/scroll) conta só a própria
+// caixa, não o que ela esconde — irmã do box_scroll_extent_x. Sem a poda, menu
+// recolhido (`max-height:0;overflow:hidden`), carrossel e rolável interno
+// estendiam a página até o fim do conteúdo ESCONDIDO: espaço em branco no fim.
+// `html`/`body` não podam (o overflow deles propaga ao viewport).
 box_scroll_extent :: proc(b: ^Box) -> f32 {
     if b == nil do return 0
     if b.pos == .Fixed do return 0 // colado no viewport: não estende o scroll
     m := b.y + b.h
+    raiz := b.node != nil && (b.node.tag == "html" || b.node.tag == "body")
+    if b.ovf_clip_y && !raiz do return m
     for c in b.children {
         if e := box_scroll_extent(c); e > m do m = e
     }
