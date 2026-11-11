@@ -1761,6 +1761,9 @@ is_nth_family :: proc(name: string) -> bool {
 @(private)
 pseudo_never_matches :: proc(name: string) -> bool {
     switch strings.to_lower(name, context.temp_allocator) {
+    // Valid in selector lists, but only matches inside a shadow tree.
+    // Rejecting :host also discards Tailwind's :root,:host theme variables.
+    case "host":                                                      return true
     // navegação por fragmento — nenhum elemento é alvo no 1º render
     case "target", "target-within":                                   return true
     // histórico de visita (e privacidade)
@@ -2690,6 +2693,12 @@ fields_top :: proc(s: string) -> []string {
         ch := s[i]
         if      ch == '(' do depth += 1
         else if ch == ')' do depth -= 1
+        // A function token ends at ')', even without following whitespace:
+        // Tailwind emits oklch(...)0% after substituting gradient variables.
+        if ch == ')' && depth == 0 && start >= 0 {
+            append(&out, s[start:i+1]); start = -1
+            continue
+        }
         sep := depth == 0 && (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')
         if sep {
             if start >= 0 { append(&out, s[start:i]); start = -1 }
