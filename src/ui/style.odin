@@ -834,7 +834,7 @@ deco_of :: proc(c: Computed) -> Deco {
 Box_Sizing :: enum u8 { Content, Border }
 Flex_Dir   :: enum u8 { Row, Column }
 Flex_Just  :: enum u8 { Start, Center, End, Between, Around, Evenly }
-Flex_Align :: enum u8 { Stretch, Start, Center, End }
+Flex_Align :: enum u8 { Stretch, Start, Center, End, Baseline, LastBaseline }
 Position   :: enum u8 { Static, Relative, Absolute, Fixed, Sticky }
 // InlineStart/InlineEnd = valores LÓGICOS (css-logical); compute_node os resolve
 // p/ Left/Right conforme a direção do elemento antes do layout (que só vê físico).
@@ -4863,6 +4863,8 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     if v, ok := decls["align-items"]; ok {
         switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
         case "flex-start", "start": comp.align_items = .Start
+        case "baseline", "first baseline": comp.align_items = .Baseline
+        case "last baseline": comp.align_items = .LastBaseline
         case "center":              comp.align_items = .Center
         case "flex-end", "end":     comp.align_items = .End
         case:                       comp.align_items = .Stretch
@@ -4874,6 +4876,8 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         case "flex-start", "start": comp.align_self = .Start;   comp.has_align_self = true
         case "center":              comp.align_self = .Center;  comp.has_align_self = true
         case "flex-end", "end":     comp.align_self = .End;     comp.has_align_self = true
+        case "baseline", "first baseline": comp.align_self = .Baseline; comp.has_align_self = true
+        case "last baseline": comp.align_self = .LastBaseline; comp.has_align_self = true
         case "stretch":             comp.align_self = .Stretch; comp.has_align_self = true
         }
     }
@@ -5215,6 +5219,8 @@ is_len_token :: proc(tok: string) -> bool {
 @(private="file")
 parse_box_align :: proc(v: string) -> Flex_Align {
     switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+    case "baseline", "first baseline": return .Baseline
+    case "last baseline": return .LastBaseline
     case "center":                     return .Center
     case "end", "flex-end", "right":   return .End
     case "start", "flex-start", "left": return .Start
@@ -5228,6 +5234,8 @@ parse_box_align :: proc(v: string) -> Flex_Align {
 map_align_items :: proc(v: string) -> Flex_Align {
     switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
     case "flex-start", "start": return .Start
+    case "baseline", "first baseline": return .Baseline
+    case "last baseline": return .LastBaseline
     case "center":              return .Center
     case "flex-end", "end":     return .End
     }

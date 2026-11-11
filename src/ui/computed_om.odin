@@ -698,6 +698,8 @@ flex_just_str :: proc(j: Flex_Just) -> string {
 @(private = "file")
 flex_align_str :: proc(a: Flex_Align) -> string {
     switch a {
+    case .Baseline: return "baseline"
+    case .LastBaseline: return "last baseline"
     case .Stretch: return "stretch"
     case .Start:   return "flex-start"
     case .Center:  return "center"
