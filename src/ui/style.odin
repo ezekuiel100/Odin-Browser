@@ -1325,6 +1325,8 @@ Computed :: struct {
     ovf_clip_x: bool,       // clipa no eixo horizontal (overflow[-x]:hidden/clip/scroll/auto)
     ovf_clip_y: bool,       // clipa no eixo vertical
     overflow_scroll: bool,  // overflow:scroll/auto — clipa E rola (não herda)
+    ovf_scroll_x: bool,     // o eixo X é ROLÁVEL (overflow-x scroll/auto); hidden só clipa
+    ovf_scroll_y: bool,     // idem no eixo Y
     scroll_container: bool, // é scroll container: overflow hidden/scroll/auto em ALGUM
                             // eixo (NÃO clip — clip clipa mas não rola). Usado p/ o
                             // min-size:auto de flex item (clip ≡ visible; hidden/scroll → 0).
@@ -1919,6 +1921,8 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.ovf_clip_x = false
     comp.ovf_clip_y = false
     comp.overflow_scroll = false
+    comp.ovf_scroll_x = false
+    comp.ovf_scroll_y = false
     comp.scroll_container = false
     comp.resize = .None // resize não herda
     comp.ellipsis = false // text-overflow não herda
@@ -3914,6 +3918,8 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
             comp.ovf_clip_x = kx != .Visible
             comp.ovf_clip_y = ky != .Visible
             if kx == .Scroll || kx == .Auto || ky == .Scroll || ky == .Auto do comp.overflow_scroll = true
+            comp.ovf_scroll_x = kx == .Scroll || kx == .Auto
+            comp.ovf_scroll_y = ky == .Scroll || ky == .Auto
             // scroll container = hidden/scroll/auto (rolável programaticamente). `clip`
             // NÃO é — clipa mas não rola; p/ min-size:auto de flex item conta como visible.
             if kx == .Hidden || ky == .Hidden || comp.overflow_scroll do comp.scroll_container = true

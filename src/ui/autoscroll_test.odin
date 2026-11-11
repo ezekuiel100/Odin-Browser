@@ -16,7 +16,7 @@ inp_at :: proc(x, y: f32) -> Autoscroll_Input {
 autoscroll_toggle_mode_sobrevive_a_soltura :: proc(t: ^testing.T) {
     // apertou e soltou SEM sair da zona morta ⇒ modo trava, segue ligado
     a: Autoscroll
-    autoscroll_start(&a, 7, {100, 100}, nil)
+    autoscroll_start(&a, 7, {100, 100}, nil, {false, true})
     i := inp_at(105, 103)
     autoscroll_step(&a, i)
     i.mid_released = true
@@ -32,7 +32,7 @@ autoscroll_toggle_mode_sobrevive_a_soltura :: proc(t: ^testing.T) {
 autoscroll_arraste_encerra_na_soltura :: proc(t: ^testing.T) {
     // controle do anterior: a ÚNICA diferença é sair da zona morta apertado
     a: Autoscroll
-    autoscroll_start(&a, 7, {100, 100}, nil)
+    autoscroll_start(&a, 7, {100, 100}, nil, {false, true})
     autoscroll_step(&a, inp_at(100, 160))
     testing.expect(t, a.dragged)
     i := inp_at(100, 160)
@@ -45,7 +45,7 @@ autoscroll_arraste_encerra_na_soltura :: proc(t: ^testing.T) {
 autoscroll_clique_encerra_e_e_engolido :: proc(t: ^testing.T) {
     for b in 0 ..< 3 {
         a: Autoscroll
-        autoscroll_start(&a, 7, {100, 100}, nil)
+        autoscroll_start(&a, 7, {100, 100}, nil, {false, true})
         i := inp_at(100, 100); i.mid_released = true
         autoscroll_step(&a, i) // modo trava
         i = inp_at(300, 300)
@@ -64,7 +64,7 @@ autoscroll_sem_clique_nada_e_engolido :: proc(t: ^testing.T) {
     // controle: modo ligado e mouse andando, sem clique ⇒ nada engolido. Sem isto
     // o teste acima passaria com um `swallow = {true,true,true}` fixo.
     a: Autoscroll
-    autoscroll_start(&a, 7, {100, 100}, nil)
+    autoscroll_start(&a, 7, {100, 100}, nil, {false, true})
     sw := autoscroll_step(&a, inp_at(100, 500))
     testing.expect(t, a.on)
     testing.expect(t, sw == [3]bool{}, "sem clique não se engole nada")
@@ -78,11 +78,11 @@ autoscroll_sem_clique_nada_e_engolido :: proc(t: ^testing.T) {
 @(test)
 autoscroll_esc_e_troca_de_aba_encerram :: proc(t: ^testing.T) {
     a: Autoscroll
-    autoscroll_start(&a, 7, {100, 100}, nil)
+    autoscroll_start(&a, 7, {100, 100}, nil, {false, true})
     i := inp_at(100, 100); i.escape = true
     autoscroll_step(&a, i)
     testing.expect(t, !a.on, "Esc")
-    autoscroll_start(&a, 7, {100, 100}, nil)
+    autoscroll_start(&a, 7, {100, 100}, nil, {false, true})
     i = inp_at(100, 100); i.tab_ok = false
     autoscroll_step(&a, i)
     testing.expect(t, !a.on, "aba trocada/carregando")
@@ -120,22 +120,50 @@ autoscroll_delta_acumula_rolagem_lenta :: proc(t: ^testing.T) {
     // ~8 px/s: cada frame de 16 ms dá 0,13 px. Truncar SEM acumular daria zero
     // para sempre; acumulando, 1 s inteiro anda ~8 px, sempre em px INTEIROS.
     a: Autoscroll
-    autoscroll_start(&a, 7, {0, 100}, nil)
+    autoscroll_start(&a, 7, {0, 100}, nil, {false, true})
     y := f32(100 + AUTOSCROLL_DEAD + 2)
     want := autoscroll_velocity(y - 100)
     total := f32(0)
     for _ in 0 ..< 60 {
-        d := autoscroll_delta(&a, y, 1.0 / 60)
-        testing.expect(t, d == f32(int(d)), "deslocamento tem de ser inteiro")
-        total += d
+        d := autoscroll_delta(&a, {0, y}, 1.0 / 60)
+        testing.expect(t, d.y == f32(int(d.y)), "deslocamento tem de ser inteiro")
+        total += d.y
     }
     testing.expectf(t, abs(total - want) <= 1, "1 s a %.1f px/s andou %.1f", want, total)
     // um frame travado (2 s) não vira salto: limitado a AUTOSCROLL_DTMAX
     b: Autoscroll
-    autoscroll_start(&b, 7, {0, 100}, nil)
-    d := autoscroll_delta(&b, 100 + 300, 2)
-    testing.expect(t, d <= autoscroll_velocity(300) * AUTOSCROLL_DTMAX + 1)
+    autoscroll_start(&b, 7, {0, 100}, nil, {false, true})
+    d := autoscroll_delta(&b, {0, 100 + 300}, 2)
+    testing.expect(t, d.y <= autoscroll_velocity(300) * AUTOSCROLL_DTMAX + 1)
     // desligado não anda
     c: Autoscroll
-    testing.expect_value(t, autoscroll_delta(&c, 900, 1), 0)
+    testing.expect(t, autoscroll_delta(&c, {900, 900}, 1) == [2]f32{})
+}
+
+@(test)
+autoscroll_eixo_x :: proc(t: ^testing.T) {
+    // cursor 200 px À ESQUERDA e 200 px ABAIXO da âncora, alvo que rola nos dois
+    // eixos: X anda p/ a esquerda (negativo), Y p/ baixo, com a MESMA curva
+    a: Autoscroll
+    autoscroll_start(&a, 7, {500, 500}, nil, {true, true})
+    d := autoscroll_delta(&a, {300, 700}, 0.05)
+    testing.expectf(t, d.x < 0 && d.y > 0, "esperava X<0 e Y>0, veio %v", d)
+    testing.expectf(t, d.x == -d.y, "a curva é a mesma nos dois eixos: %v", d)
+}
+
+@(test)
+autoscroll_eixo_que_nao_rola_fica_parado :: proc(t: ^testing.T) {
+    // controle do anterior: o MESMO movimento, alvo que só rola no Y (o caso de
+    // `overflow-x:hidden`) ⇒ X tem de ficar em zero mesmo com o cursor longe
+    a: Autoscroll
+    autoscroll_start(&a, 7, {500, 500}, nil, {false, true})
+    d := autoscroll_delta(&a, {300, 700}, 0.05)
+    testing.expect_value(t, d.x, 0)
+    testing.expect(t, d.y > 0)
+    // e o espelho: só X
+    b: Autoscroll
+    autoscroll_start(&b, 7, {500, 500}, nil, {true, false})
+    d = autoscroll_delta(&b, {300, 700}, 0.05)
+    testing.expect(t, d.x < 0)
+    testing.expect_value(t, d.y, 0)
 }

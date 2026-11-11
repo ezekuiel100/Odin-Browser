@@ -180,8 +180,9 @@ pinned_oy :: proc(r: Box_Ref) -> f32 {
 //     Coincide com a spec quando o offsetParent é o `<body>` (o caso comum); num
 //     ancestral posicionado o nosso valor é maior. Não temos cadeia de
 //     offsetParent, e inventar uma seria pior que documentar.
-//  b. **`scrollWidth` = clientWidth**: guardamos extensão de scroll só no eixo Y
-//     (`Box.scroll_max`), então no X não temos o que dizer.
+//  b. **`scrollWidth` só conta o X de container ROLÁVEL** (`Box.scroll_max_x`,
+//     com `overflow-x:auto/scroll`): numa caixa visible/hidden não medimos o
+//     transbordo horizontal, e devolvemos o clientWidth.
 //  c. **`clientWidth/Height` não descontam barra de rolagem** — a nossa não ocupa
 //     espaço de layout.
 //  d. **`getClientRects()` devolve UM retângulo** (a caixa de borda). No navegador
@@ -249,7 +250,11 @@ js_element_rect :: proc(node: ^dompkg.Node) -> (x, y, w, h: f32, ok: bool) {
     r, found := box_ref_of(node)
     if !found || r.b == nil do return 0, 0, 0, 0, false
     b := r.b
-    return b.x + r.ox - g_js_scroll_x, b.y + pinned_oy(r) - g_js_scroll_y, b.w, b.h, true
+    // fixed também é pinado no X desde que a página rola na horizontal: o paint
+    // devolve o scroll X ao x dele, e a subtração abaixo cancela.
+    ox := r.ox
+    if b.pos == .Fixed do ox += g_js_scroll_x
+    return b.x + ox - g_js_scroll_x, b.y + pinned_oy(r) - g_js_scroll_y, b.w, b.h, true
 }
 
 // Métrica escalar (offsetWidth, clientHeight, scrollTop, …). Separada do rect
@@ -291,14 +296,14 @@ js_element_metric :: proc(node: ^dompkg.Node, which: string) -> (v: f32, ok: boo
     case "offsetHeight": return b.h, true
     case "clientWidth":  return max(b.w - b.border_w[3] - b.border_w[1], 0), true // degradação (c)
     case "clientHeight": return max(b.h - b.border_w[0] - b.border_w[2], 0), true
-    case "scrollWidth":  return max(b.w - b.border_w[3] - b.border_w[1], 0), true // degradação (b)
+    case "scrollWidth":  return max(b.w - b.border_w[3] - b.border_w[1], 0) + b.scroll_max_x, true // degradação (b)
     case "scrollHeight": return max(b.h - b.border_w[0] - b.border_w[2], 0) + b.scroll_max, true
     // offsetTop/Left incluem o deslocamento de relative/transform (é a posição de
     // LAYOUT final), mas seguem relativos ao DOCUMENTO — degradação (a).
     case "offsetTop":    return b.y + r.oy, true
     case "offsetLeft":   return b.x + r.ox, true
     case "scrollTop":    return b.scroll_y, true
-    case "scrollLeft":   return 0, true
+    case "scrollLeft":   return b.scroll_x, true
     }
     return 0, false
 }

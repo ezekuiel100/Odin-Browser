@@ -322,6 +322,68 @@ box_scroll_extent :: proc(b: ^Box) -> f32 {
     return m
 }
 
+// Borda direita (x ABSOLUTO) do conteúdo EM FLUXO de `b` — palavras/átomos das
+// linhas e caixas filhas, descendo enquanto ninguém corta o eixo X. Alimenta o
+// `scroll_max_x` de container rolável (layout_box). Abs/fixed ficam de fora:
+// quando isto roda, layout_absolutes ainda não os posicionou.
+// Degradação: `transform`/`position:relative` não deslocam a conta (o Chrome
+// inclui); o descendente de um inline-block que transborde dele também não.
+content_right_extent :: proc(b: ^Box) -> f32 {
+    m := b.content_x
+    for it in b.inlines {
+        if r := b.content_x + it.x + it.w; r > m do m = r
+    }
+    for c in b.children {
+        if c.pos == .Absolute || c.pos == .Fixed do continue
+        if r := c.x + c.w; r > m do m = r
+        if !c.ovf_clip_x {
+            if r := content_right_extent(c); r > m do m = r
+        }
+    }
+    return m
+}
+
+// Extensão HORIZONTAL rolável da página: irmã de box_scroll_extent no eixo X.
+// Poda `fixed` (colado no viewport) e o conteúdo de caixa que corta o X (conta a
+// própria caixa, não o que ela esconde). `html`/`body` NÃO podam aqui: o overflow
+// deles propaga ao VIEWPORT — quem decide isso é page_x_blocked.
+box_scroll_extent_x :: proc(b: ^Box) -> f32 {
+    if b == nil || b.pos == .Fixed do return 0
+    m := b.x + b.w
+    raiz := b.node != nil && (b.node.tag == "html" || b.node.tag == "body")
+    if b.ovf_clip_x && !raiz do return m
+    for it in b.inlines {
+        if r := b.content_x + it.x + it.w; r > m do m = r
+    }
+    for c in b.children {
+        if e := box_scroll_extent_x(c); e > m do m = e
+    }
+    return m
+}
+
+// `overflow-x:hidden/clip` propagado ao viewport (css-overflow §3.3): vale o do
+// `<html>`; se ele for visible, vale o do `<body>`. É o idioma mais comum de
+// "matar a rolagem horizontal" — sem honrar isto, todo site que esconde um menu
+// fora da tela ganharia rolagem lateral.
+page_x_blocked :: proc(root: ^Box) -> bool {
+    html := find_box_tag(root, "html", 2)
+    body := find_box_tag(html != nil ? html : root, "body", 2)
+    src := html
+    if src == nil || !src.ovf_clip_x do src = body
+    return src != nil && src.ovf_clip_x && !src.ovf_scroll_x
+}
+
+@(private = "file")
+find_box_tag :: proc(b: ^Box, tag: string, depth: int) -> ^Box {
+    if b == nil do return nil
+    if b.node != nil && b.node.tag == tag do return b
+    if depth <= 0 do return nil
+    for c in b.children {
+        if f := find_box_tag(c, tag, depth - 1); f != nil do return f
+    }
+    return nil
+}
+
 // Descrição curta de uma caixa: <tag#id.classe> display x/w/h.
 diag_desc :: proc(b: ^Box) -> string {
     tag, id, cls := "anon", "", ""

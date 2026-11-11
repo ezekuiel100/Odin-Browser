@@ -245,6 +245,7 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     }
     tab.layout = build_layout(tab.dom, tab.styles, tab.url)
     animation_restore_tree(tab.layout, old_layout)
+    scroll_restore_tree(tab.layout, old_layout) // scroll de overflow:auto não volta ao 0
     free_layout(old_layout)
     when UIPROF { g_uiprof.ms_buildlay += time.duration_milliseconds(time.tick_since(t_bl)) }
     tab.zoom_applied = g_zoom
@@ -293,6 +294,7 @@ State :: struct {
     scroll_target:  f32,  // Y-página alvo (box.y é absoluto)
     scroll_smooth:  bool, // anima em vez de pular (scroll-behavior:smooth da raiz)
     autoscroll:     Autoscroll, // rolagem automática do botão do meio (autoscroll.odin)
+    page_max_x:     f32,  // limite da rolagem HORIZONTAL da página ativa (deste frame)
 }
 
 g_font_ui:  ^im.Font
@@ -711,6 +713,7 @@ run :: proc() {
         // ANTES de qualquer widget: o clique que encerra a rolagem automática do
         // meio tem de sumir para TODO leitor do mouse neste frame.
         autoscroll_input(&s)
+        wheel_shift_to_h() // Shift+roda = horizontal, p/ todo leitor da roda da página
 
         images_poll(renderer) // sobe texturas prontas, inicia downloads pendentes
 
@@ -1160,9 +1163,19 @@ draw_content :: proc(s: ^State) {
             g_viewport_size = avail
             g_viewport_valid = true
 
+            // Extensão HORIZONTAL da página (abs já posicionados acima). O ImGui
+            // não serve de fonte: o ContentSize.x dele soma qualquer widget que o
+            // paint submeta fora da tela, inclusive dentro de `overflow-x:hidden`.
+            // O limite é contra a largura de LAYOUT (avail.x) — a barra vertical
+            // sobrepõe a página, então medir contra a área interna daria ~14 px de
+            // rolagem lateral em TODA página alta. `html/body{overflow-x:hidden}`
+            // (propagado ao viewport) zera o eixo.
+            page_w := box_scroll_extent_x(tab.layout)
+            s.page_max_x = page_x_blocked(tab.layout) ? 0 : max(0, page_w - avail.x)
+
             // rolagem automática do meio: o deslocamento do frame vai p/ o paint
             // (rolável interno) ou volta p/ ser aplicado na página logo abaixo.
-            auto_dy := autoscroll_prepare(s)
+            auto_d := autoscroll_prepare(s)
 
             paint_layout(s, tab.layout)
 
@@ -1176,7 +1189,9 @@ draw_content :: proc(s: ^State) {
             // px abaixo da dobra. Fixed fica de fora (colado no viewport).
             scroll_h := tab.layout.h
             if ext := box_scroll_extent(tab.layout); ext > scroll_h do scroll_h = ext
-            im.SetCursorPos({0, scroll_h})
+            // o mesmo Dummy estende o X até a borda direita do conteúdo, senão o
+            // ImGui clamparia o SetScrollX abaixo a zero
+            im.SetCursorPos({s.page_max_x > 0 ? page_w - 1 : 0, scroll_h})
             im.Dummy({1, 1})
 
             // scroll da página: aplica a roda RESTANTE (não consumida por um
@@ -1185,7 +1200,14 @@ draw_content :: proc(s: ^State) {
             if io.MouseWheel != 0 && im.IsWindowHovered({}) {
                 im.SetScrollY(im.GetScrollY() - io.MouseWheel * 60)
             }
-            autoscroll_finish(s, auto_dy)
+            // eixo X: roda horizontal (touchpad/roda inclinável) e Shift+roda, que
+            // já chega aqui convertida (wheel_shift_to_h). >0 = p/ a esquerda.
+            if io.MouseWheelH != 0 && im.IsWindowHovered({}) && s.page_max_x > 0 {
+                im.SetScrollX(clamp(im.GetScrollX() - io.MouseWheelH * 60, 0, s.page_max_x))
+            }
+            // o conteúdo encolheu (ou o eixo foi bloqueado): devolve o X ao limite
+            if im.GetScrollX() > s.page_max_x do im.SetScrollX(s.page_max_x)
+            autoscroll_finish(s, auto_d, s.page_max_x)
 
             // scroll de âncora pendente (#id): pulo instantâneo, ou animação suave
             // se a raiz tem scroll-behavior:smooth. A roda do usuário cancela.
@@ -2251,7 +2273,8 @@ dispatch_page_aux :: proc(s: ^State, vw, vh: f32) {
         aux_press_clear(s)
         return
     }
-    scroller := g_aux_scroller // gravado pelo paint deste frame; o dispatch pode refazer o layout
+    scroller      := g_aux_scroller // gravado pelo paint deste frame; o dispatch pode refazer o layout
+    scroller_axes := g_aux_axes
 
     tab_id := s.tabs[s.active].id
     vm     := s.tabs[s.active].vm
@@ -2270,7 +2293,7 @@ dispatch_page_aux :: proc(s: ^State, vw, vh: f32) {
         }
         // fora de link: rolagem automática. `preventDefault` no mousedown a
         // impede — é o que mapas/editores usam p/ ter o meio só p/ eles.
-        if href == "" && !down_prevented do autoscroll_try_start(s, tab_id, scroller)
+        if href == "" && !down_prevented do autoscroll_try_start(s, tab_id, scroller, scroller_axes, s.page_max_x)
     }
     if released {
         same_tab := s.aux_press_tab != 0 && s.aux_press_tab == tab_id

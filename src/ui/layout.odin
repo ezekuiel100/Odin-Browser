@@ -283,6 +283,8 @@ Box :: struct {
     overflow_hidden: bool,
     ovf_clip_x: bool, ovf_clip_y: bool, // clip por eixo (overflow-x/-y independentes)
     overflow_scroll: bool, // container rolável (overflow:scroll/auto)
+    ovf_scroll_x: bool,    // e o eixo X rola (overflow-x scroll/auto); hidden só clipa
+    ovf_scroll_y: bool,    // idem no eixo Y
     scroll_container: bool, // hidden/scroll/auto (NÃO clip) — min-size:auto de flex item
     resize: Resize_Dir,    // resize — alça de arraste no canto inferior direito.
                            // JÁ FILTRADO pela aplicabilidade (ver apply_box): aqui
@@ -303,6 +305,8 @@ Box :: struct {
     word_spacing:    f32,  // px extra em cada espaço entre palavras (nível de bloco)
     scroll_y:        f32,  // deslocamento de scroll do elemento (estado; persiste)
     scroll_max:      f32,  // scroll máximo = altura natural - altura visível
+    scroll_x:        f32,  // idem no eixo X (só com ovf_scroll_x)
+    scroll_max_x:    f32,  // quanto o conteúdo em fluxo passa da borda direita
     float:  Float_Side,    // float:left/right (fora do fluxo vertical normal)
     clear:  Clear_Side,    // clear:left/right/both
     has_maxw: bool, maxw: f32, maxw_pct: bool,
@@ -2394,6 +2398,8 @@ apply_box :: proc(b: ^Box, comp: Computed) {
     b.ovf_clip_x = comp.ovf_clip_x
     b.ovf_clip_y = comp.ovf_clip_y
     b.overflow_scroll = comp.overflow_scroll
+    b.ovf_scroll_x = comp.ovf_scroll_x
+    b.ovf_scroll_y = comp.ovf_scroll_y
     b.scroll_container = comp.scroll_container
     // APLICABILIDADE de `resize` (css-ui §5.2): só vale em elemento que estabelece
     // contexto de rolagem (overflow ≠ visible) — mais os controles de formulário,
@@ -2954,8 +2960,20 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
 
     // scroll de elemento: quanto o conteúdo natural excede a altura visível.
     if b.overflow_scroll {
-        b.scroll_max = max(0, nat_h - content_h)
+        // só o eixo que ROLA: `overflow: auto hidden` (carrossel) clipa o Y sem
+        // deixar a roda rolá-lo.
+        b.scroll_max = b.ovf_scroll_y ? max(0, nat_h - content_h) : 0
         b.scroll_y = clamp(b.scroll_y, 0, b.scroll_max) // reclampa (conteúdo pode mudar)
+        // eixo X: o quanto o conteúdo EM FLUXO passa da borda direita da padding
+        // box. Medido RELATIVO a b.x (deslocar a subárvore inteira depois não muda
+        // nada). Degradação: abs/fixed ficam de fora — ainda não foram posicionados
+        // aqui (layout_absolutes roda depois), a mesma lacuna do nat_h vertical.
+        b.scroll_max_x = 0
+        if b.ovf_scroll_x {
+            inner_r := b.x + b.w - bwr
+            b.scroll_max_x = max(0, content_right_extent(b) + p[1] - inner_r)
+        }
+        b.scroll_x = clamp(b.scroll_x, 0, b.scroll_max_x)
     }
 
     b.margin[2] = mb // guarda a margem inferior efetiva para o irmão
@@ -5978,6 +5996,7 @@ compute_subtree_bbox :: proc(b: ^Box) {
     // menos o scroll próprio quando esta caixa é um container rolável. Vale para
     // os filhos E para os itens inline (paint_inline recebe ox2/child_oy).
     dy := b.rel_dy - (b.overflow_scroll ? b.scroll_y : 0)
+    dx := b.rel_dx - (b.overflow_scroll ? b.scroll_x : 0)
 
     // itens inline. Palavras/imagens ficam na content box; um InlineBox é uma
     // caixa própria pintada em (content_x + ox2 + it.x, content_y + child_oy + it.y).
@@ -5993,7 +6012,7 @@ compute_subtree_bbox :: proc(b: ^Box) {
     // por b.children/b.inlines não descreve o que o segmento da layer desenha.
     // ⇒ Enquanto isso não for resolvido, o bbox NÃO pode autorizar culling.
     for &it in b.inlines {
-        ix := b.content_x + it.x + b.rel_dx
+        ix := b.content_x + it.x + dx
         iy := b.content_y + it.y + dy
         x0 = min(x0, ix); y0 = min(y0, iy)
         x1 = max(x1, ix + it.w); y1 = max(y1, iy + it.h)
@@ -6024,8 +6043,8 @@ compute_subtree_bbox :: proc(b: ^Box) {
             safe = false // já derrubado pelo próprio filho, mas explícito
             continue
         }
-        x0 = min(x0, child.sub_x0 + b.rel_dx); y0 = min(y0, child.sub_y0 + dy)
-        x1 = max(x1, child.sub_x1 + b.rel_dx); y1 = max(y1, child.sub_y1 + dy)
+        x0 = min(x0, child.sub_x0 + dx); y0 = min(y0, child.sub_y0 + dy)
+        x1 = max(x1, child.sub_x1 + dx); y1 = max(y1, child.sub_y1 + dy)
     }
 
     b.sub_x0, b.sub_y0, b.sub_x1, b.sub_y1 = x0, y0, x1, y1
@@ -8858,6 +8877,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // Fixed: pinado ao viewport. Sticky: gruda em top:N quando o topo passaria
     // dele, limitado à base do bloco contendor (sticky_max_dy, do layout).
     if b.pos == .Fixed {
+        ox2 += im.GetScrollX() // a página também rola na horizontal
         oy2 += im.GetScrollY()
     } else if b.pos == .Sticky && b.inset_has[0] && !b.inset_pct[0] {
         dy := im.GetScrollY() + b.inset[0] - (b.y + oy2)
@@ -8899,24 +8919,33 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // interno sob o cursor vira o alvo (pai-primeiro ⇒ o último a gravar é o de
     // dentro); nos frames seguintes, o alvo — achado por COMPARAÇÃO de ponteiro,
     // o nó nunca é derreferenciado por aqui — recebe o deslocamento do frame.
-    if b.overflow_scroll && b.scroll_max > 0 && b.node != nil {
-        if over && im.IsMouseClicked(.Middle) do g_aux_scroller = rawptr(b.node)
+    if b.overflow_scroll && (b.scroll_max > 0 || b.scroll_max_x > 0) && b.node != nil {
+        if over && im.IsMouseClicked(.Middle) {
+            g_aux_scroller = rawptr(b.node)
+            g_aux_axes = {b.scroll_max_x > 0, b.scroll_max > 0}
+        }
         if g_autoscroll_target != nil && rawptr(b.node) == g_autoscroll_target {
             g_autoscroll_hit = true
-            b.scroll_y = clamp(b.scroll_y + g_autoscroll_dy, 0, b.scroll_max)
+            b.scroll_x = clamp(b.scroll_x + g_autoscroll_d.x, 0, b.scroll_max_x)
+            b.scroll_y = clamp(b.scroll_y + g_autoscroll_d.y, 0, b.scroll_max)
         }
     }
-    if b.overflow_scroll && over && b.scroll_max > 0 {
+    if b.overflow_scroll && over {
         io := im.GetIO()
-        if io.MouseWheel != 0 {
+        // Consome a roda se o container REALMENTE rolou; no limite (não moveu),
+        // overscroll-behavior:auto (default) DEIXA encadear p/ a página, enquanto
+        // contain/none consome mesmo assim (não encadeia). Cada eixo por si:
+        // a roda horizontal (MouseWheelH; Shift+roda já chega convertida — ver
+        // wheel_shift_to_h) não é consumida por quem só rola no Y.
+        if io.MouseWheel != 0 && b.scroll_max > 0 {
             old := b.scroll_y
             b.scroll_y = clamp(b.scroll_y - io.MouseWheel * 40, 0, b.scroll_max)
-            // Consome a roda se o container REALMENTE rolou; no limite (não moveu),
-            // overscroll-behavior:auto (default) DEIXA encadear p/ a página, enquanto
-            // contain/none consome mesmo assim (não encadeia).
-            if b.scroll_y != old || b.overscroll_contain {
-                io.MouseWheel = 0
-            }
+            if b.scroll_y != old || b.overscroll_contain do io.MouseWheel = 0
+        }
+        if io.MouseWheelH != 0 && b.scroll_max_x > 0 {
+            old := b.scroll_x
+            b.scroll_x = clamp(b.scroll_x - io.MouseWheelH * 40, 0, b.scroll_max_x)
+            if b.scroll_x != old || b.overscroll_contain do io.MouseWheelH = 0
         }
     }
 
@@ -9284,8 +9313,10 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         cy1 = b.ovf_clip_y ? screen.y + b.h - b.border_w[2] : screen.y + b.h + BIG
         emit_overflow_clip(pt, b, {cx0, cy0}, {cx1, cy1}, round_clip)
     }
-    // scroll de elemento: desloca o conteúdo pra cima por scroll_y (clipado acima)
+    // scroll de elemento: desloca o conteúdo pra cima por scroll_y e p/ a
+    // esquerda por scroll_x (clipado acima)
     child_oy := b.overflow_scroll ? oy2 - b.scroll_y : oy2
+    child_ox := b.overflow_scroll ? ox2 - b.scroll_x : ox2
     if owns_scope {
         if b.overflow_hidden do end_overflow_clip(pt, round_clip)
         collect_stacking(active_scope, b, ox2, oy2, -1, abs_origin)
@@ -9303,7 +9334,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         // mesma degradação do `:hover{color}`, que também não desce por caixas.
         hdeco := b.hover.deco
         if b.href != "" && !b.hover.deco_set do hdeco.underline = true // default de link do UA
-        paint_inline(pt, s, b, ox2, child_oy, eff, oc, ot, in_xform || b.has_transform || b.has_xform_matrix, hdeco, b.hover.has_deco && hovering, active_scope) // per-item visibility lets descendants become visible
+        paint_inline(pt, s, b, child_ox, child_oy, eff, oc, ot, in_xform || b.has_transform || b.has_xform_matrix, hdeco, b.hover.has_deco && hovering, active_scope) // per-item visibility lets descendants become visible
         if b.overflow_hidden do end_overflow_clip(pt, round_clip)
     } else {
         switch b.kind {
@@ -9335,7 +9366,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
                     if      esc && clip_on  { end_overflow_clip(pt, round_clip); clip_on = false }
                     else if !esc && !clip_on { emit_overflow_clip(pt, b, {cx0, cy0}, {cx1, cy1}, round_clip); clip_on = true }
                 }
-                emit_stacked(pt, s, child, ox2, child_oy, eff, in_xform || b.has_transform || b.has_xform_matrix, active_scope)
+                emit_stacked(pt, s, child, child_ox, child_oy, eff, in_xform || b.has_transform || b.has_xform_matrix, active_scope)
             }
             if clip_on do end_overflow_clip(pt, round_clip)
         }

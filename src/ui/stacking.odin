@@ -37,6 +37,7 @@ stacking_offset :: proc(b: ^Box, ox, oy: f32) -> (x, y: f32) {
     dx, dy := animation_translation_delta(b)
     x = ox + b.rel_dx + dx; y = oy + b.rel_dy + dy
     if b.pos == .Fixed {
+        x += im.GetScrollX()
         y += im.GetScrollY()
     } else if b.pos == .Sticky && b.inset_has[0] && !b.inset_pct[0] {
         dy := im.GetScrollY() + b.inset[0] - (b.y + y)
@@ -59,10 +60,11 @@ collect_stacking :: proc(scope: ^Stacking_Scope, b: ^Box, ox, oy: f32, clip: int
              b.ovf_clip_y ? b.y + oy + b.h - b.border_w[2] : big}, clip, b})
     }
     child_oy := b.overflow_scroll ? oy - b.scroll_y : oy
+    child_ox := b.overflow_scroll ? ox - b.scroll_x : ox
     for child in stacking_children(b) {
         if child.inline_parent_effect != nil do continue // painted by its inline opacity scope
         cc := overflow_escapes(b, child) ? clip : own_clip
-        cx, cy := ox, child_oy
+        cx, cy := child_ox, child_oy
         if child.pos == .Absolute { cx = origin.x; cy = origin.y }
         if child.pos == .Fixed { cx = origin.x; cy = origin.y }
         collect_stacking_child(scope, child, cx, cy, cc, origin)
