@@ -140,3 +140,23 @@ xform_geometry_ancestors_and_flattening :: proc(t:^testing.T) {
     x,y,r,b=x_bounds(child.x_world,child.w,child.h)
     testing.expect(t,x==15 && y==30 && r==95 && b==90)
 }
+
+@(test)
+xform_inline_box_geometry_and_inverse_pointer :: proc(t:^testing.T) {
+    child:=Box{w=40,h=20,transform_sx=1,transform_sy=1}
+    root:=Box{w=200,h=100,content_x=10,content_y=20,transform_sx=2,transform_sy=2}
+    root.inlines=make([dynamic]Inline_Item)
+    defer delete(root.inlines)
+    append(&root.inlines,Inline_Item{kind=.InlineBox,box=&child,x=30,y=5})
+    x_geometry_tree(&root,0,0,0,0)
+    x,y,r,b:=x_bounds(child.x_world,40,20)
+    testing.expect(t,x==80 && y==50 && r==160 && b==90)
+    child.x_paint_origin={40,25}
+    local:=x_widget_point(&child,{150,70})
+    testing.expect(t,local.x==75 && local.y==35)
+    u,v,ok:=x_unproject(child.x_world,150,70)
+    testing.expect(t,ok && u==35 && v==10)
+    zero:XMatrix
+    _,_,ok=x_unproject(zero,0,0)
+    testing.expect(t,!ok)
+}

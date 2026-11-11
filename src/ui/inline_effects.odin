@@ -36,7 +36,7 @@ paint_inline :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1
         for it in b.inlines {
             if it.hidden || it.invisible do continue
             for e := it.effect; e != nil; e = e.parent {
-                if e == effect && im.IsMouseHoveringRect(
+                if e == effect && x_mouse_rect(b,
                     {cs.x + it.x, cs.y + it.y}, {cs.x + it.x + it.w, cs.y + it.y + it.h}) {
                     effect.hovering = true
                 }

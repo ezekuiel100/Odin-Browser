@@ -148,6 +148,7 @@ index_boxes :: proc(b: ^Box, ox, oy: f32) {
         if _, ja := g_js_boxes[b.node]; !ja do g_js_boxes[b.node] = Box_Ref{b, ox2, oy2}
     }
     for c in b.children do index_boxes(c, ox2, oy2)
+    for it in b.inlines do if it.box!=nil do index_boxes(it.box,b.content_x+ox2+it.x,b.content_y+oy2+it.y)
 }
 
 // Offset final em Y, com a compensação de fixed/sticky do paint aplicada AGORA
@@ -201,7 +202,13 @@ pinned_oy :: proc(r: Box_Ref) -> f32 {
 // certo p/ headless sem scroll.
 @(private = "file", thread_local) g_js_scroll_x, g_js_scroll_y: f32
 
-js_scroll_set :: proc(x, y: f32) { g_js_scroll_x = x; g_js_scroll_y = y }
+js_scroll_set :: proc(x, y: f32) {
+    if x!=g_js_scroll_x || y!=g_js_scroll_y {
+        if g_js_boxes_ok do clear(&g_js_boxes)
+        g_js_boxes_ok=false
+    }
+    g_js_scroll_x=x; g_js_scroll_y=y
+}
 js_scroll_get :: proc() -> (f32, f32) { return g_js_scroll_x, g_js_scroll_y }
 
 // Viewport da fonte corrente: raiz IMPLÍCITA do IntersectionObserver e valor de

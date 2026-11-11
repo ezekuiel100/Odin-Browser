@@ -239,6 +239,7 @@ EDIT_CAP :: 256
 Box :: struct {
     x_world: XMatrix,
     x_hovered: bool,
+    x_view_origin, x_paint_origin: im.Vec2,
     node: ^dompkg.Node,
     kind: Box_Kind,
 
@@ -8418,6 +8419,8 @@ paint_control_mark :: proc(dl: ^im.DrawList, screen: im.Vec2, b: ^Box, radius, e
 // então o texto digitado persiste entre frames.
 @(private="file")
 paint_text_input :: proc(b: ^Box, screen: im.Vec2, eff: f32) {
+    mouse:=x_widget_mouse(b)
+    defer x_widget_restore(mouse)
     txt := b.edit_color != 0 ? b.edit_color : DEFAULT_TEXT
     if b.ctrl_disabled do txt = 0x9a9a9a
 
@@ -8624,7 +8627,27 @@ paint_select :: proc(b: ^Box, screen: im.Vec2, eff: f32) {
     defer im.EndDisabled()
 
     id := fmt.ctprintf("##sel_%p", b)
-    if im.BeginCombo(id, preview, flags) {
+    // Keep preview geometry in the box plane; open the native popup using
+    // the projected anchor and physical mouse, outside that coordinate scope.
+    mouse:=x_widget_mouse(b)
+    released:=im.InvisibleButton(id,{iw,line_h},{.EnableNav})
+    pressed:=released || (im.IsItemHovered() && im.IsMouseClicked(.Left))
+    item_id:=im.GetItemID()
+    x_widget_restore(mouse)
+    dl:=im.GetWindowDrawList()
+    arrow:=b.appearance_none ? f32(0) : line_h
+    im.RenderTextClipped({ix,iy},{ix+iw-arrow,iy+line_h},preview,nil,nil)
+    if arrow>0 {
+        im.DrawList_AddTriangleFilled(dl,{ix+iw-arrow*.75,iy+line_h*.4},{ix+iw-arrow*.25,iy+line_h*.4},{ix+iw-arrow*.5,iy+line_h*.65},col_o(txt,eff))
+    }
+    popup_id:=im.cImHashStr("##ComboPopup",0,item_id)
+    if pressed && !im.IsPopupOpenID(popup_id,im.PopupFlags_None) do im.OpenPopupEx(popup_id,im.PopupFlags_None)
+    anchor:=b.x_world*x_translation(ix-b.x_paint_origin.x,iy-b.x_paint_origin.y,0)
+    x0,y0,x1,y1:=x_bounds(anchor,iw,line_h)
+    rect:=im.Rect{{x0+b.x_view_origin.x,y0+b.x_view_origin.y},{x1+b.x_view_origin.x,y1+b.x_view_origin.y}}
+    im.SetNextWindowPos({rect.Min.x,rect.Max.y})
+    opened:=im.BeginComboPopup(popup_id,rect,flags)
+    if opened {
         for o, i in opts {
             lbl := strings.clone_to_cstring(option_label(o), context.temp_allocator)
             if im.Selectable(lbl, i == cur) && i != cur {
@@ -9001,7 +9024,8 @@ paint_resize_grip :: proc(pt: ^Painter, b: ^Box, screen: im.Vec2, eff: f32) {
     io := im.GetIO()
 
     dragging := g_resize_drag.active && g_resize_drag.node == b.node
-    in_grip  := im.IsMouseHoveringRect({x1 - gs, y1 - gs}, {x1, y1})
+    in_grip  := x_mouse_rect(b, {x1 - gs, y1 - gs}, {x1, y1})
+    pointer:=x_widget_point(b,io.MousePos)
 
     if in_grip || dragging {
         switch b.resize {
@@ -9022,17 +9046,17 @@ paint_resize_grip :: proc(pt: ^Painter, b: ^Box, screen: im.Vec2, eff: f32) {
         ex_h := b.padding[0] + b.padding[2] + b.border_w[0] + b.border_w[2]
         w0 := b.box_sizing == .Border ? b.w : b.w - ex_w
         h0 := b.box_sizing == .Border ? b.h : b.h - ex_h
-        g_resize_drag = {node = b.node, active = true, mx = io.MousePos.x, my = io.MousePos.y, w0 = w0, h0 = h0}
+        g_resize_drag = {node = b.node, active = true, mx = pointer.x, my = pointer.y, w0 = w0, h0 = h0}
         dragging = true
     }
     if dragging {
         if im.IsMouseDown(.Left) {
             st := g_resize[b.node] // ausente = zero; quem manda são os has_* abaixo
             if b.resize == .Both || b.resize == .Horizontal {
-                st.w = max(RESIZE_MIN, g_resize_drag.w0 + (io.MousePos.x - g_resize_drag.mx)); st.has_w = true
+                st.w = max(RESIZE_MIN, g_resize_drag.w0 + (pointer.x - g_resize_drag.mx)); st.has_w = true
             }
             if b.resize == .Both || b.resize == .Vertical {
-                st.h = max(RESIZE_MIN, g_resize_drag.h0 + (io.MousePos.y - g_resize_drag.my)); st.has_h = true
+                st.h = max(RESIZE_MIN, g_resize_drag.h0 + (pointer.y - g_resize_drag.my)); st.has_h = true
             }
             g_resize[b.node] = st
         } else {
@@ -9169,6 +9193,8 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
 
     // mouse sobre a caixa? (para :hover e cursor). A caixa mais interna pintada
     // por último vence (SetMouseCursor é last-wins no frame).
+    b.x_view_origin={screen.x-b.x-ox2+im.GetScrollX(),screen.y-b.y-oy2+im.GetScrollY()}
+    b.x_paint_origin=screen
     over := x_mouse_over(b, screen, ox2, oy2) && !b.pe_none
     b.x_hovered = over
     if over && b.cursor != .Auto do im.SetMouseCursor(cursor_to_imgui(b.cursor))
@@ -9312,6 +9338,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         ox2+=dx; oy2+=dy; screen.x+=dx; screen.y+=dy
         baked_tx=full[0,3]; baked_ty=full[1,3]
     }
+    b.x_paint_origin=screen
     pivot_x:=screen.x-baked_tx+b.w*b.transform_ox+b.transform_opx
     pivot_y:=screen.y-baked_ty+b.h*b.transform_oy+b.transform_opy
     project:=x_translation(pivot_x,pivot_y,b.transform_opz)*full*x_translation(-pivot_x-baked_tx,-pivot_y-baked_ty,-b.transform_opz)
@@ -10084,7 +10111,7 @@ hovered_deco_grp :: proc(b: ^Box, cs: im.Vec2) -> u32 {
             if v := cs.y + e.y + e.h; v > bot do bot = v
             j += 1
         }
-        if im.IsMouseHoveringRect({x0, top}, {x1, bot}) do hit = it.hov_grp // o último ganha
+        if x_mouse_rect(b, {x0, top}, {x1, bot}) do hit = it.hov_grp // o último ganha
         i = j
     }
     return hit
@@ -10141,7 +10168,7 @@ paint_link_hover :: proc(pt: ^Painter, s: ^State, b: ^Box, cs: im.Vec2, opa: f32
     }
 
     hov := -1
-    for r, ri in runs do if im.IsMouseHoveringRect({r.x0, r.top}, {r.x1, r.bot}) do hov = ri
+    for r, ri in runs do if x_mouse_rect(b, {r.x0, r.top}, {r.x1, r.bot}) do hov = ri
     if hov < 0 do return
 
     im.SetMouseCursor(.Hand)

@@ -358,18 +358,25 @@ x_geometry_rec :: proc(b:^Box,ox,oy,sx,sy:f32,parent:XMatrix) {
     }
     if b.overflow_scroll { xx-=b.scroll_x; yy-=b.scroll_y }
     for child in b.children do x_geometry_rec(child,xx,yy,sx,sy,descendants)
+    for it in b.inlines {
+        if it.box!=nil do x_geometry_rec(it.box,b.content_x+xx+it.x,b.content_y+yy+it.y,sx,sy,descendants)
+    }
 }
 
-x_contains :: proc(m:XMatrix,w,h,x,y:f32) -> bool {
+x_unproject :: proc(m:XMatrix,x,y:f32) -> (u,v:f32,ok:bool) {
     // Solve the inverse plane homography without inverting a singular 4D
     // flattening matrix. Edge-on and zero-scale planes have no hit area.
     a,b:=m[0,0]-x*m[3,0],m[0,1]-x*m[3,1]
     c,d:=m[1,0]-y*m[3,0],m[1,1]-y*m[3,1]
     e,f:=x*m[3,3]-m[0,3],y*m[3,3]-m[1,3]
     det:=a*d-b*c
-    if abs(det)<1e-8 do return false
-    u,v:=(e*d-b*f)/det,(a*f-e*c)/det
-    return u>=0 && v>=0 && u<w && v<h && m[3,0]*u+m[3,1]*v+m[3,3]>1e-5
+    if abs(det)<1e-8 do return 0,0,false
+    u,v=(e*d-b*f)/det,(a*f-e*c)/det
+    return u,v,m[3,0]*u+m[3,1]*v+m[3,3]>1e-5
+}
+x_contains :: proc(m:XMatrix,w,h,x,y:f32) -> bool {
+    u,v,ok:=x_unproject(m,x,y)
+    return ok && u>=0 && v>=0 && u<w && v<h
 }
 x_bounds :: proc(m:XMatrix,w,h:f32) -> (x0,y0,x1,y1:f32) {
     x0=f32(3.402823e38); y0=f32(3.402823e38); x1=-f32(3.402823e38); y1=-f32(3.402823e38)
@@ -391,4 +398,37 @@ x_mouse_over :: proc(b:^Box,screen:im.Vec2,ox,oy:f32) -> bool {
     dl:=im.GetWindowDrawList()
     lo,hi:=im.DrawList_GetClipRectMin(dl),im.DrawList_GetClipRectMax(dl)
     return mouse.x>=lo.x && mouse.y>=lo.y && mouse.x<hi.x && mouse.y<hi.y
+}
+
+// Rectangles passed here are in the untransformed draw-list coordinates.
+x_mouse_rect :: proc(b:^Box,lo,hi:im.Vec2) -> bool {
+    mouse:=im.GetMousePos()
+    dl:=im.GetWindowDrawList()
+    clip0,clip1:=im.DrawList_GetClipRectMin(dl),im.DrawList_GetClipRectMax(dl)
+    if mouse.x<clip0.x || mouse.y<clip0.y || mouse.x>=clip1.x || mouse.y>=clip1.y do return false
+    u,v,ok:=x_unproject(b.x_world,mouse.x-b.x_view_origin.x,mouse.y-b.x_view_origin.y)
+    x,y:=u+b.x_paint_origin.x,v+b.x_paint_origin.y
+    return ok && x>=lo.x && y>=lo.y && x<hi.x && y<hi.y
+}
+XMouse :: struct { pos,prev,delta:im.Vec2, clicked:[5]im.Vec2 }
+x_widget_point :: proc(b:^Box,point:im.Vec2) -> im.Vec2 {
+    u,v,ok:=x_unproject(b.x_world,point.x-b.x_view_origin.x,point.y-b.x_view_origin.y)
+    if !ok do return {-1e20,-1e20}
+    return {u+b.x_paint_origin.x,v+b.x_paint_origin.y}
+}
+x_widget_mouse :: proc(b:^Box) -> XMouse {
+    io:=im.GetIO()
+    saved:=XMouse{io.MousePos,io.MousePosPrev,io.MouseDelta,io.MouseClickedPos}
+    dl:=im.GetWindowDrawList()
+    lo,hi:=im.DrawList_GetClipRectMin(dl),im.DrawList_GetClipRectMax(dl)
+    io.MousePos=x_widget_point(b,saved.pos)
+    if saved.pos.x<lo.x || saved.pos.y<lo.y || saved.pos.x>=hi.x || saved.pos.y>=hi.y do io.MousePos={-1e20,-1e20}
+    io.MousePosPrev=x_widget_point(b,saved.prev)
+    io.MouseDelta=io.MousePos-io.MousePosPrev
+    for i in 0..<5 do io.MouseClickedPos[i]=x_widget_point(b,saved.clicked[i])
+    return saved
+}
+x_widget_restore :: proc(saved:XMouse) {
+    io:=im.GetIO()
+    io.MousePos=saved.pos; io.MousePosPrev=saved.prev; io.MouseDelta=saved.delta; io.MouseClickedPos=saved.clicked
 }

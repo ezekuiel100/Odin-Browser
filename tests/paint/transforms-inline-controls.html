@@ -1,0 +1,13 @@
+<!doctype html><style>
+body{margin:0;background:white;font:20px/1 monospace}
+#text{position:absolute;left:30px;top:30px;width:100px;height:30px;transform:scale(2);transform-origin:0 0}
+a{color:red;text-decoration:none}a:hover{text-decoration:underline;text-decoration-color:blue;text-decoration-thickness:3px}
+span{background:red;color:red;opacity:.5}span:hover{opacity:1}
+#opacity{position:absolute;left:300px;top:30px;width:100px;height:30px;transform:scale(2);transform-origin:0 0}
+input{position:absolute;left:30px;top:150px;width:100px;height:30px;padding:0;border:0;background:#eee;color:black;caret-color:blue;transform:scale(2);transform-origin:0 0}
+#ib{position:absolute;left:300px;top:150px;width:150px;height:50px;transform:scale(2);transform-origin:0 0}
+button{display:inline-block;width:40px;height:30px;padding:0;border:0;background:red}button:hover{background:green}
+#metric{position:absolute;left:300px;top:260px;width:30px;height:30px;background:red}
+select{position:absolute;left:30px;top:260px;width:100px;height:30px;transform:scale(2);transform-origin:0 0}
+</style><div id="text"><a href="#top">MMMM</a></div><div id="opacity"><span>MMMM</span></div><input id="edit"><div id="ib"><button id="button"></button></div><div id="metric"></div><select><option>ONE</option><option>TWO</option></select>
+<script>setTimeout(function(){var r=document.getElementById('button').getBoundingClientRect();if(r.width===80&&r.left===300)document.getElementById('metric').style.backgroundColor='green';},0);</script>
