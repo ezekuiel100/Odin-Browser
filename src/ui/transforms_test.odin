@@ -108,3 +108,35 @@ xform_matrix_reflection_and_matching_skew :: proc(t:^testing.T) {
     m=x_interpolate(ac.xform,bc.xform,0.5,100,100)
     testing.expect(t,abs(m[0,1]-math.tan(f32(math.PI/6)))<0.001)
 }
+
+@(test)
+xform_hit_plane_and_bounds :: proc(t:^testing.T) {
+    m:=x_translation(650,300,0)*x_test("transform:scale(2)")
+    testing.expect(t,x_contains(m,40,40,720,360))
+    testing.expect(t,!x_contains(m,40,40,731,360))
+    x,y,r,b:=x_bounds(m,40,40)
+    testing.expect(t,x==650 && y==300 && r==730 && b==380)
+    m=x_translation(100,100,0)*x_test("transform:rotate(45deg)")
+    testing.expect(t,!x_contains(m,100,100,30,101))
+    testing.expect(t,x_contains(m,100,100,100,150))
+    m=x_test("transform:scale(0)")
+    testing.expect(t,!x_contains(m,100,100,0,0))
+    m=x_test("transform:perspective(300px) rotateY(60deg)")
+    q:=m*([4]f32{70,30,0,1})
+    testing.expect(t,x_contains(m,100,100,q[0]/q[3],q[1]/q[3]))
+}
+@(test)
+xform_geometry_ancestors_and_flattening :: proc(t:^testing.T) {
+    c:=test_apply("transform:scale(2);transform-origin:0 0")
+    defer if c.xform!=nil { delete(c.xform.ops); free(c.xform) }
+    child:=Box{x=10,y=20,w=40,h=30,transform_sx=1,transform_sy=1}
+    root:=Box{w=100,h=100,xform=c.xform,transform_sx=2,transform_sy=2,children=make([dynamic]^Box)}
+    append(&root.children,&child)
+    defer delete(root.children)
+    x_geometry_tree(&root,0,0,0,0)
+    x,y,r,b:=x_bounds(child.x_world,child.w,child.h)
+    testing.expect(t,x==20 && y==40 && r==100 && b==100)
+    x_geometry_tree(&root,0,0,5,10)
+    x,y,r,b=x_bounds(child.x_world,child.w,child.h)
+    testing.expect(t,x==15 && y==30 && r==95 && b==90)
+}

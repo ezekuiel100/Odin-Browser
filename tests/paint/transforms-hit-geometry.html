@@ -1,0 +1,13 @@
+<!doctype html><style>
+body{margin:0;background:white}
+#hit{position:absolute;left:50px;top:50px;width:40px;height:40px;background:red;transform-origin:0 0;transform:scale(2)}
+#hit:hover{background:green}
+#metric,#click{position:absolute;top:160px;width:30px;height:30px;background:red}
+#metric{left:50px}#click{left:100px}
+#parent{position:absolute;left:200px;top:50px;width:100px;height:100px;transform:scale(2);transform-origin:0 0}
+#child{position:absolute;left:10px;top:10px;width:20px;height:20px;background:blue}
+</style><div id="hit"></div><div id="metric"></div><div id="click"></div><div id="parent"><div id="child"></div></div>
+<script>
+setTimeout(function(){var a=document.getElementById('hit').getBoundingClientRect();var b=document.getElementById('child').getBoundingClientRect();if(a.width===80&&a.height===80&&a.left===50&&b.left===220&&b.width===40)document.getElementById('metric').style.backgroundColor='green';},0);
+document.getElementById('hit').addEventListener('click',function(){document.getElementById('click').style.backgroundColor='green';});
+</script>

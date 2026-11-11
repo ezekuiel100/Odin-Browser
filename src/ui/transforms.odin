@@ -301,3 +301,94 @@ x_preserves :: proc(b:^Box) -> bool {
     return b.preserve_3d && b.opacity>=1 && b.n_filters==0 && !b.overflow_hidden &&
         b.blend_mode==.Normal && !b.isolate && b.clip_path.kind==.None && !b.mask_grad.active
 }
+
+// Geometry uses the same screen-space pivot and baked translation as paint.
+// Retain a homography for the local border plane, rather than its bounding box:
+// a rotated box must not catch clicks in the empty corners of that bounding box.
+x_geometry_tree :: proc(root:^Box, ox,oy,sx,sy:f32) {
+    identity:XMatrix=1
+    x_geometry_rec(root,ox,oy,sx,sy,identity)
+}
+x_geometry_rec :: proc(b:^Box,ox,oy,sx,sy:f32,parent:XMatrix) {
+    if b==nil do return
+    dx,dy:=animation_translation_delta(b)
+    xx,yy:=ox+b.rel_dx+dx,oy+b.rel_dy+dy
+    if b.pos==.Fixed { xx+=sx; yy+=sy }
+    else if b.pos==.Sticky && b.inset_has[0] && !b.inset_pct[0] {
+        d:=sy+b.inset[0]-(b.y+yy)
+        if d>0 do yy+=min(d,b.sticky_max_dy)
+    }
+    target:=b.xform
+    if b.x_hovered && b.hover.has_transform do target=b.hover.xform
+    m:=x_resolve(target,b.w,b.h)
+    if st,ok:=g_trans[b.node]; ok && st.xform.init && b.trans[.Transform].on {
+        ch:=st.xform
+        m=x_interpolate(&ch.start,&ch.target,timing_eval(b.trans[.Transform].timing,ch.prog),b.w,b.h)
+    }
+    for &player in b.animations {
+        if !player.anim.active do continue
+        ev:=eval_anim(&player.anim,player.elapsed,b.w,b.h)
+        if ev.has_xform do m=ev.xform
+    }
+    if target==nil && b.xform==nil && !b.hover.has_transform && len(b.animations)==0 {
+        cs,sn:=f32(math.cos(b.transform_rot)),f32(math.sin(b.transform_rot))
+        m[0,0]=cs*b.transform_sx; m[0,1]=-sn*b.transform_sy
+        m[1,0]=sn*b.transform_sx; m[1,1]=cs*b.transform_sy
+        if b.has_xform_matrix { m[0,0]=b.xf_a; m[0,1]=b.xf_b; m[1,0]=b.xf_c; m[1,1]=b.xf_d }
+        tx,ty:=x_box_translation(b); m[0,3]=tx; m[1,3]=ty
+    }
+    if b.motion_rotation!=0 do m=x_rotation({0,0,1},b.motion_rotation)*m
+    tx,ty:=x_box_translation(b)
+    // Translation is already included in the layout offset.
+    xx+=m[0,3]-tx-dx; yy+=m[1,3]-ty-dy
+    x,y:=b.x+xx-sx,b.y+yy-sy
+    px,py:=x-m[0,3]+b.w*b.transform_ox+b.transform_opx,y-m[1,3]+b.h*b.transform_oy+b.transform_opy
+    project:=x_translation(px,py,b.transform_opz)*m*x_translation(-px-m[0,3],-py-m[1,3],-b.transform_opz)
+    world:=parent*project
+    b.x_world=world*x_translation(x,y,0)
+    descendants:=world
+    if !x_preserves(b) {
+        flat:XMatrix=1; flat[2,2]=0
+        descendants=descendants*flat
+    }
+    if b.perspective>0 {
+        p:XMatrix=1; p[3,2]=-1/b.perspective
+        cx,cy:=x+b.w*b.perspective_ox+b.perspective_opx,y+b.h*b.perspective_oy+b.perspective_opy
+        descendants=descendants*x_translation(cx,cy,0)*p*x_translation(-cx,-cy,0)
+    }
+    if b.overflow_scroll { xx-=b.scroll_x; yy-=b.scroll_y }
+    for child in b.children do x_geometry_rec(child,xx,yy,sx,sy,descendants)
+}
+
+x_contains :: proc(m:XMatrix,w,h,x,y:f32) -> bool {
+    // Solve the inverse plane homography without inverting a singular 4D
+    // flattening matrix. Edge-on and zero-scale planes have no hit area.
+    a,b:=m[0,0]-x*m[3,0],m[0,1]-x*m[3,1]
+    c,d:=m[1,0]-y*m[3,0],m[1,1]-y*m[3,1]
+    e,f:=x*m[3,3]-m[0,3],y*m[3,3]-m[1,3]
+    det:=a*d-b*c
+    if abs(det)<1e-8 do return false
+    u,v:=(e*d-b*f)/det,(a*f-e*c)/det
+    return u>=0 && v>=0 && u<w && v<h && m[3,0]*u+m[3,1]*v+m[3,3]>1e-5
+}
+x_bounds :: proc(m:XMatrix,w,h:f32) -> (x0,y0,x1,y1:f32) {
+    x0=f32(3.402823e38); y0=f32(3.402823e38); x1=-f32(3.402823e38); y1=-f32(3.402823e38)
+    points:=[4][4]f32{{0,0,0,1},{w,0,0,1},{w,h,0,1},{0,h,0,1}}
+    for v in points {
+        q:=m*v
+        if abs(q[3])<1e-5 do continue
+        x,y:=q[0]/q[3],q[1]/q[3]
+        x0=min(x0,x); y0=min(y0,y); x1=max(x1,x); y1=max(y1,y)
+    }
+    if x0==f32(3.402823e38) do return 0,0,0,0
+    return
+}
+x_mouse_over :: proc(b:^Box,screen:im.Vec2,ox,oy:f32) -> bool {
+    // Convert ImGui window coordinates to the viewport coordinates used by DOM.
+    origin:=im.Vec2{screen.x-b.x-ox+im.GetScrollX(),screen.y-b.y-oy+im.GetScrollY()}
+    mouse:=im.GetMousePos()
+    if !x_contains(b.x_world,b.w,b.h,mouse.x-origin.x,mouse.y-origin.y) do return false
+    dl:=im.GetWindowDrawList()
+    lo,hi:=im.DrawList_GetClipRectMin(dl),im.DrawList_GetClipRectMax(dl)
+    return mouse.x>=lo.x && mouse.y>=lo.y && mouse.x<hi.x && mouse.y<hi.y
+}

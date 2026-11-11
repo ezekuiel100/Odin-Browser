@@ -120,6 +120,7 @@ box_ref_of :: proc(node: ^dompkg.Node) -> (Box_Ref, bool) {
     }
     if !g_js_boxes_ok {
         if g_js_boxes == nil do g_js_boxes = make(map[^dompkg.Node]Box_Ref)
+        x_geometry_tree(g_js_layout, 0, 0, g_js_scroll_x, g_js_scroll_y)
         index_boxes(g_js_layout, 0, 0)
         g_js_boxes_ok = true
     }
@@ -250,11 +251,8 @@ js_element_rect :: proc(node: ^dompkg.Node) -> (x, y, w, h: f32, ok: bool) {
     r, found := box_ref_of(node)
     if !found || r.b == nil do return 0, 0, 0, 0, false
     b := r.b
-    // fixed também é pinado no X desde que a página rola na horizontal: o paint
-    // devolve o scroll X ao x dele, e a subtração abaixo cancela.
-    ox := r.ox
-    if b.pos == .Fixed do ox += g_js_scroll_x
-    return b.x + ox - g_js_scroll_x, b.y + pinned_oy(r) - g_js_scroll_y, b.w, b.h, true
+    x0, y0, x1, y1 := x_bounds(b.x_world, b.w, b.h)
+    return x0, y0, x1-x0, y1-y0, true
 }
 
 // Métrica escalar (offsetWidth, clientHeight, scrollTop, …). Separada do rect

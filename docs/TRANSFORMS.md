@@ -8,18 +8,21 @@ Projection retains homogeneous coordinates between participating preserve-3d ele
 
 Within a preserve-3d stacking scope, planes paint from far to near using transformed center depth, with document order retained at equal depths. Parent rotation and sampled keyframes participate in this depth calculation. Opacity, filters, overflow clips and other grouping effects flatten the context.
 
+Box interaction and DOM rectangles share a composed geometry traversal with ancestor transforms, origins, perspective, scrolling, fixed/sticky positioning and sampled keyframes. Zero-area planes reject pointer hits. Layout metrics such as offsetWidth remain untransformed.
+
 ## Current limits
 
 - Ordering uses plane centers and treats nested stacking scopes atomically. Intersecting planes need polygon splitting, and nested preserve-3d scopes need a shared 3D display list. `@supports (transform-style: preserve-3d)` therefore remains false.
 - Triangles crossing the eye plane are discarded rather than clipped into new polygons.
 - The SDL renderer interpolates texture coordinates affinely within each triangle; strongly tilted images do not have perspective-correct texture sampling.
-- Pointer hit testing and DOM geometry still use the existing layout boxes; they do not invert the projective transform.
+- Box pointer targets invert the projected border plane, and DOM bounding rectangles enclose its transformed corners. Inline text-run targets and native widget internals retain their existing interaction paths. Fragmented inline DOM rectangles are not yet a union of all fragments. Eye-plane-crossing geometry remains approximate, consistently with the rendering limitation above.
 
 ## Verification
 
 Run `./test.ps1` for the package suites. After building, run:
 
 ```powershell
+./tools/check-transform-hit-geometry.ps1 -Browser ./browser.exe
 ./tools/check-projective-transforms.ps1 -Browser ./browser.exe
 ./tools/check-stacking.ps1 -Browser ./browser.exe
 ./tools/check-hover-transform-clip.ps1 -Browser ./browser.exe

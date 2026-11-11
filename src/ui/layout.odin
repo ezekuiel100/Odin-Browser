@@ -237,6 +237,8 @@ Form_Control :: enum u8 { None, Checkbox, Radio, Text, Password, Textarea, Selec
 EDIT_CAP :: 256
 
 Box :: struct {
+    x_world: XMatrix,
+    x_hovered: bool,
     node: ^dompkg.Node,
     kind: Box_Kind,
 
@@ -9085,6 +9087,9 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         paint_inline_absolute(pt, s, b, effect, ox, oy, opa, in_xform, scope, stacked, abs_origin)
         return
     }
+    if scope == nil && !stacked {
+        x_geometry_tree(b, ox, oy, im.GetScrollX(), im.GetScrollY())
+    }
     keep_depth:=g_x_keep_depth
     saved_keep:=g_x_keep_depth
     g_x_keep_depth=x_preserves(b) || b.perspective>0
@@ -9164,7 +9169,8 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
 
     // mouse sobre a caixa? (para :hover e cursor). A caixa mais interna pintada
     // por último vence (SetMouseCursor é last-wins no frame).
-    over := im.IsMouseHoveringRect(screen, {screen.x + b.w, screen.y + b.h}) && !b.pe_none
+    over := x_mouse_over(b, screen, ox2, oy2) && !b.pe_none
+    b.x_hovered = over
     if over && b.cursor != .Auto do im.SetMouseCursor(cursor_to_imgui(b.cursor))
 
     // scroll de elemento: a roda sobre um container rolável ajusta seu scroll e é
@@ -9736,7 +9742,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
 
     // pointer-events:none — o elemento não é alvo de cliques (passam através).
     if b.href != "" && !b.pe_none {
-        if im.IsMouseHoveringRect(screen, {screen.x + b.w, screen.y + b.h}) {
+        if x_mouse_over(b, screen, ox2, oy2) {
             im.SetMouseCursor(.Hand)
             if im.IsMouseClicked(.Left) do navigate_href(s, b.href)
             if aux_frame() do s.aux_href = b.href // o último pintado (o de cima) vence
@@ -9747,7 +9753,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // num alvo SEPARADO — o meio não dispara `click`, e sim mousedown/mouseup/
     // auxclick (ver dispatch_page_aux).
     if b.node != nil && my_paint_seq > g_aux_seq && !b.pe_none && aux_frame() {
-        if im.IsMouseHoveringRect(screen, {screen.x + b.w, screen.y + b.h}) {
+        if x_mouse_over(b, screen, ox2, oy2) {
             s.aux_node = b.node
             g_aux_seq  = my_paint_seq
         }
@@ -9757,7 +9763,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // ordem de pintura (ver g_hit_seq: filho > pai, e irmão da frente > irmão de
     // trás). O dispatch acontece DEPOIS do paint (dispatch_page_click), nunca aqui.
     if b.node != nil && my_paint_seq > g_click_seq && !b.pe_none {
-        if im.IsMouseHoveringRect(screen, {screen.x + b.w, screen.y + b.h}) && im.IsMouseClicked(.Left) {
+        if x_mouse_over(b, screen, ox2, oy2) && im.IsMouseClicked(.Left) {
             s.click_target = b.node
             g_click_seq    = my_paint_seq
         }
@@ -9765,7 +9771,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
 
     // clique em checkbox/radio: alterna o estado (radio liga este e desliga o grupo)
     if (b.ctrl == .Checkbox || b.ctrl == .Radio) && !b.ctrl_disabled && !b.pe_none {
-        if im.IsMouseHoveringRect(screen, {screen.x + b.w, screen.y + b.h}) && im.IsMouseClicked(.Left) {
+        if x_mouse_over(b, screen, ox2, oy2) && im.IsMouseClicked(.Left) {
             if b.ctrl == .Checkbox {
                 b.ctrl_checked = !b.ctrl_checked
             } else {
