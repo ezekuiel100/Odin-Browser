@@ -46,6 +46,7 @@ TAB_MAX_W : f32 : 220
 
 Tab :: struct {
     id:      u64,            // identificador estável (índices mudam ao fechar abas)
+    opener:  u64,            // id da aba que a abriu com o botão do meio (0 = nenhuma)
     title:   string,
     url:     string,
     loading: bool,
@@ -278,6 +279,14 @@ State :: struct {
     url_buf: [URL_LIMIT]u8,
     status:  string,
     click_target: ^dompkg.Node, // nó clicado neste frame (processado após o paint)
+    // Botão do MEIO (ver dispatch_page_aux). `aux_node`/`aux_href` são gravados
+    // pelo paint SÓ nos frames em que o botão do meio apertou ou soltou: o nó mais
+    // acima sob o cursor e o link sob ele. `aux_press_*` sobrevive entre o frame do
+    // aperto e o da soltura (o href é CLONADO: o layout pode ser refeito no meio).
+    aux_node:       ^dompkg.Node,
+    aux_href:       string,
+    aux_press_tab:  u64,    // id da aba onde o meio APERTOU (0 = não apertou na página)
+    aux_press_href: string, // link sob o aperto (owned)
     // scroll de âncora (#id): navigate_href seta o alvo; o viewport aplica (pulo ou
     // animação suave conforme scroll-behavior). scroll_pending liga o processamento.
     scroll_pending: bool,
@@ -617,6 +626,7 @@ run :: proc() {
     assert(renderer != nil)
     defer sdl2.DestroyRenderer(renderer)
     defer images_free_all() // ANTES do DestroyRenderer (defer roda LIFO): textura e do renderer
+    defer shaped_text_clear()
     defer emoji_shutdown()  // a fonte de emoji (~12 MB), carregada sob demanda
     g_renderer = renderer // p/ o compositing de layers (group-opacity) em replay_paint
 
@@ -769,6 +779,9 @@ draw_browser :: proc(s: ^State) {
     draw_tabstrip(s)
     draw_toolbar(s)
     draw_content(s)
+    // soltura do meio FORA da página (aba carregando, faixa de abas, devtools):
+    // o dispatch_page_aux não rodou, então o aperto pendente morre aqui.
+    if im.IsMouseReleased(.Middle) do aux_press_clear(s)
     if g_devtools_open do draw_devtools(s)
     draw_status_bar(s)
 }
@@ -803,9 +816,16 @@ draw_tabstrip :: proc(s: ^State) {
 
         im.SetCursorScreenPos(p0)
         im.SetNextItemAllowOverlap()
-        if im.InvisibleButton(fmt.ctprintf("##tab%d", i), {tab_w, TAB_H - 5}) {
-            s.active = i
-            sync_url_buf(s)
+        // botão do MEIO fecha a aba (como nos navegadores). O InvisibleButton só
+        // dispara na SOLTURA sobre o item que recebeu o aperto, então arrastar o
+        // meio p/ fora da aba cancela — o mesmo contrato do clique esquerdo.
+        if im.InvisibleButton(fmt.ctprintf("##tab%d", i), {tab_w, TAB_H - 5}, {.MouseButtonLeft, .MouseButtonMiddle}) {
+            if im.IsMouseReleased(.Middle) {
+                close_idx = i
+            } else {
+                s.active = i
+                sync_url_buf(s)
+            }
         }
         hovered := im.IsItemHovered()
 
@@ -832,7 +852,9 @@ draw_tabstrip :: proc(s: ^State) {
         // botão fechar (×)
         cx := p1.x - 16
         im.SetCursorScreenPos({cx - 9, midy - 9})
-        if im.InvisibleButton(fmt.ctprintf("##close%d", i), {18, 18}) {
+        // o × fica POR CIMA da aba e rouba o hover: sem o meio aqui, o clique do
+        // meio sobre o × não fecharia nada.
+        if im.InvisibleButton(fmt.ctprintf("##close%d", i), {18, 18}, {.MouseButtonLeft, .MouseButtonMiddle}) {
             close_idx = i
         }
         chov := im.IsItemHovered()
@@ -876,6 +898,10 @@ draw_tabstrip :: proc(s: ^State) {
         for h in ct.history do delete(h)
         delete(ct.history)
         ordered_remove(&s.tabs, close_idx)
+        // fechar uma aba À ESQUERDA da ativa desloca a ativa um índice p/ trás;
+        // sem isto o foco pulava p/ a vizinha da direita (raro com o ×, que a
+        // aba precisa estar sob o mouse, e comum com o meio em abas de fundo).
+        if close_idx < s.active do s.active -= 1
         if s.active >= len(s.tabs) do s.active = len(s.tabs) - 1
         sync_url_buf(s)
     }
@@ -1107,6 +1133,7 @@ draw_content :: proc(s: ^State) {
             view_rect := Rect{0, 0, avail.x, avail.y}
             layout_absolutes(tab.layout, view_rect, view_rect)
             s.click_target = nil       // paint_box grava aqui se houver clique
+            s.aux_node = nil; s.aux_href = "" // idem p/ o botão do meio
 
             // Amostra a origem de conteúdo do viewport em tela p/ o highlight do
             // inspetor: paint_box mapeia screen(box) = origem + {box.x, box.y} (o
@@ -1162,6 +1189,9 @@ draw_content :: proc(s: ^State) {
             // tab.layout — por isso vem depois de todos os usos da cópia `tab` acima.
             // O layout novo entra em vigor no próximo frame (que re-copia o ponteiro).
             dispatch_page_click(s, avail.x, avail.y)
+            // botão do meio (mousedown/mouseup/auxclick + abrir link em aba de
+            // fundo). Mesma regra: depois do paint, pode reconstruir o layout.
+            dispatch_page_aux(s, avail.x, avail.y)
 
             // escolha num <select> (o combo do paint só REGISTRA; aqui aterra no
             // DOM e vira evento, com o layout já livre p/ ser reconstruído).
@@ -1747,11 +1777,16 @@ navigate :: proc(s: ^State) {
 
 // Inicia uma navegação para uma URL já resolvida (usado pela barra e por links).
 // record = true registra no histórico (navegação nova); false é voltar/avançar/recarregar.
-start_navigation :: proc(s: ^State, url: string, record := true, auto_https := false) {
+// tab_idx < 0 = aba ativa; outro índice navega aquela aba EM SEGUNDO PLANO (a
+// barra de URL e o status continuam sendo os da aba ativa).
+start_navigation :: proc(s: ^State, url: string, record := true, auto_https := false, tab_idx := -1) {
     if len(s.tabs) == 0 || url == "" do return
+    idx := tab_idx if tab_idx >= 0 else s.active
+    if idx >= len(s.tabs) do return
+    background := idx != s.active
     css_unknown_report()
 
-    tab := &s.tabs[s.active]
+    tab := &s.tabs[idx]
 
     if record {
         // descarta o "avançar" pendente e empilha a nova URL
@@ -1766,8 +1801,10 @@ start_navigation :: proc(s: ^State, url: string, record := true, auto_https := f
     tab.url     = strings.clone(url) // posse própria (estável)
     tab.title   = strings.clone(url)
     tab.loading = true
-    s.status = fmt.aprintf("Conectando a %s ...", url)
-    sync_url_buf(s) // reflete a nova URL na barra
+    if !background {
+        s.status = fmt.aprintf("Conectando a %s ...", url)
+        sync_url_buf(s) // reflete a nova URL na barra
+    }
 
     // dispara a busca numa thread separada (não trava a UI)
     job := new(Fetch_Job)
@@ -2157,13 +2194,98 @@ dispatch_page_click :: proc(s: ^State, vw, vh: f32) {
     if tab.vm == nil do return
 
     // bubbling acontece dentro de dispatch_event (alvo -> raiz)
-    fired := jspkg.dispatch_event(tab.vm, node, "click")
+    fired, _ := jspkg.dispatch_mouse_event(tab.vm, node, "click", 0, 0)
     if fired && tab.dom != nil {
         // o JS pode ter criado/removido nós ou mudado classes: re-estiliza a
         // página inteira (o mapa styles antigo não cobre os nós novos) e
         // reconstrói o layout — re-parseando o css_text retido.
         restyle_tab(tab, vw, vh)
     }
+}
+
+// Botão do MEIO na página. O paint gravou, nos frames de aperto/soltura, o nó
+// mais acima sob o cursor (aux_node) e o link sob ele (aux_href). Sequência da
+// UI Events / navegadores:
+//   aperto  → `mousedown` {button:1, buttons:4}
+//   soltura → `mouseup`   {button:1, buttons:0} + `auxclick` {button:1}
+//             e, se o aperto e a soltura caíram no MESMO link e o `auxclick` não
+//             foi cancelado, abre o link numa aba nova EM SEGUNDO PLANO.
+// O meio NÃO dispara `click` (é o que distingue `auxclick`).
+// Degradação: o `auxclick` vai ao alvo da SOLTURA, não ao ancestral comum do
+// aperto e da soltura (guardar o nó entre frames arriscaria um nó já liberado);
+// a condição é "apertou nesta mesma aba". Link `#âncora`/`javascript:` não abre
+// aba (resolve_url devolve "").
+dispatch_page_aux :: proc(s: ^State, vw, vh: f32) {
+    node := s.aux_node
+    href := strings.clone(s.aux_href, context.temp_allocator) // o layout pode ser refeito no dispatch
+    s.aux_node = nil
+    s.aux_href = ""
+    if len(s.tabs) == 0 do return
+    pressed  := im.IsMouseClicked(.Middle)
+    released := im.IsMouseReleased(.Middle)
+    if !pressed && !released do return
+
+    tab_id := s.tabs[s.active].id
+    vm     := s.tabs[s.active].vm
+    base   := strings.clone(s.tabs[s.active].url, context.temp_allocator)
+    fired  := false
+
+    if pressed {
+        aux_press_clear(s)
+        s.aux_press_tab  = tab_id
+        s.aux_press_href = strings.clone(href)
+        if node != nil && vm != nil {
+            f, _ := jspkg.dispatch_mouse_event(vm, node, "mousedown", 1, 4)
+            fired |= f
+        }
+    }
+    if released {
+        same_tab := s.aux_press_tab != 0 && s.aux_press_tab == tab_id
+        prevented := false
+        if node != nil && vm != nil {
+            f, _ := jspkg.dispatch_mouse_event(vm, node, "mouseup", 1, 0)
+            fired |= f
+            if same_tab {
+                f2, p := jspkg.dispatch_mouse_event(vm, node, "auxclick", 1, 0)
+                fired |= f2
+                prevented = p
+            }
+        }
+        if same_tab && !prevented && href != "" && href == s.aux_press_href {
+            if url := net.resolve_url(base, href, context.temp_allocator); url != "" {
+                open_background_tab(s, url)
+            }
+        }
+        aux_press_clear(s)
+    }
+
+    // mesmo contrato do dispatch_page_click: o JS pode ter mexido no DOM
+    if fired {
+        tab := &s.tabs[s.active] // re-tomado: open_background_tab pode ter realocado s.tabs
+        if tab.dom != nil do restyle_tab(tab, vw, vh)
+    }
+}
+
+aux_press_clear :: proc(s: ^State) {
+    if s.aux_press_href != "" do delete(s.aux_press_href)
+    s.aux_press_href = ""
+    s.aux_press_tab  = 0
+}
+
+// Abre `url` numa aba nova SEM ativá-la (clique do meio num link). A aba entra à
+// direita da ativa, DEPOIS das que ela já abriu assim — vários cliques do meio
+// seguidos ficam na ordem em que foram dados, como no Chrome/Firefox.
+// Devolve o índice da aba nova.
+open_background_tab :: proc(s: ^State, url: string) -> int {
+    if len(s.tabs) == 0 do return -1
+    opener := s.tabs[s.active].id
+    idx := s.active + 1
+    for idx < len(s.tabs) && s.tabs[idx].opener == opener do idx += 1
+    t := make_tab("Nova aba") // o start_navigation troca pelo título (clonado) da URL
+    t.opener = opener
+    inject_at(&s.tabs, idx, t)
+    start_navigation(s, url, tab_idx = idx)
+    return idx
 }
 
 // Aplica a escolha feita num <select> neste frame: reflete no DOM, dispara

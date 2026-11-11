@@ -30,6 +30,15 @@ import net "../net"    // p/ buscar <script src> injetado dinamicamente (chunk w
 // nil => querySelector devolve null e querySelectorAll devolve [].
 Dom_Query_Fn :: proc(scope: ^dom.Node, selector: string, all: bool, out: ^[dynamic]^dom.Node)
 g_dom_query: Dom_Query_Fn
+g_selector_valid: proc(string) -> bool
+g_dom_matches: proc(^dom.Node, string, ^dom.Node) -> bool
+
+selector_check :: proc(vm: ^Interp, s: string) -> bool {
+    if g_selector_valid == nil || g_selector_valid(s) do return true
+    vm.throwing = true
+    vm.thrown = mk_error(vm, "SyntaxError", "Invalid CSS selector")
+    return false
+}
 
 // Hook do getComputedStyle: o valor computado (e o USADO, que precisa do layout)
 // vive no pacote ui — mesma razão de ciclo do g_dom_query. Contrato: `prop` chega
@@ -848,6 +857,23 @@ dispatch_animation_event :: proc(vm: ^Interp, node: ^dom.Node, kind, name: strin
 dispatch_event :: proc(vm: ^Interp, node: ^dom.Node, type: string) -> bool {
     fired, _ := dispatch_event_obj(vm, node, type, nil)
     return fired
+}
+
+// Evento de MOUSE sintetizado pela UI (click/auxclick/mousedown/mouseup), com
+// `button` (QUAL botão mudou: 0=esq 1=meio 2=dir) e `buttons` (bitmask dos que
+// estão APERTADOS depois do evento: 1=esq 4=meio 2=dir). Sobe e é cancelável.
+// ⚠️ sem `button` o evento chegava com `e.button === undefined`, e o filtro mais
+// comum de handler de link (`if (e.button !== 0) return`) recusava até o clique
+// ESQUERDO. Degradação: sem clientX/Y, sem modificadores (ctrl/shift/alt/meta).
+dispatch_mouse_event :: proc(vm: ^Interp, node: ^dom.Node, type: string, button, buttons: int) -> (fired: bool, prevented: bool) {
+    ev := new_object(vm)
+    if vm.event_proto != nil do ev.proto = vm.event_proto
+    ev.props["type"] = type
+    ev.props["bubbles"] = true
+    ev.props["cancelable"] = true
+    ev.props["button"] = f64(button)
+    ev.props["buttons"] = f64(buttons)
+    return dispatch_event_obj(vm, node, type, ev)
 }
 
 // Núcleo do dispatch. ev_in != nil → o objeto Event veio do JS (dispatchEvent):
@@ -2071,6 +2097,7 @@ native_query_selector :: proc(vm: ^Interp, this: Value, args: []Value) -> Value 
     if !ok do return JS_Null{}
     found: [dynamic]^dom.Node
     defer delete(found)
+    if !selector_check(vm, sel) do return JS_Null{}
     g_dom_query(node, sel, false, &found)
     if len(found) == 0 do return JS_Null{}
     return wrap_element(vm, found[0])
@@ -2087,6 +2114,7 @@ native_query_selector_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Va
     if !ok do return arr
     found: [dynamic]^dom.Node
     defer delete(found)
+    if !selector_check(vm, sel) do return arr
     g_dom_query(node, sel, true, &found)
     for n in found do append(&arr.items, wrap_element(vm, n))
     return arr
@@ -2860,8 +2888,10 @@ native_toggle_attribute :: proc(vm: ^Interp, this: Value, args: []Value) -> Valu
 // match de DESCENDENTES de um escopo): consultamos o PAI e vemos se `node` está
 // no resultado. Sem pai (raiz) não há como testar → false (aproximação aceitável).
 @(private = "file")
-dom_node_matches :: proc(node: ^dom.Node, sel: string) -> bool {
-    if g_dom_query == nil || node == nil || node.kind != .Element || node.parent == nil do return false
+dom_node_matches :: proc(node: ^dom.Node, sel: string, scope: ^dom.Node = nil) -> bool {
+    if node == nil || node.kind != .Element do return false
+    if g_dom_matches != nil do return g_dom_matches(node, sel, scope != nil ? scope : node)
+    if g_dom_query == nil || node.parent == nil do return false
     tmp: [dynamic]^dom.Node
     defer delete(tmp)
     g_dom_query(node.parent, sel, true, &tmp)
@@ -2875,6 +2905,7 @@ native_matches :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     node := node_of(this)
     sel, ok := arg(args, 0).(string)
     if node == nil || !ok do return false
+    if !selector_check(vm, sel) do return false
     return dom_node_matches(node, sel)
 }
 
@@ -2884,8 +2915,9 @@ native_closest :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     node := node_of(this)
     sel, ok := arg(args, 0).(string)
     if node == nil || !ok do return JS_Null{}
+    if !selector_check(vm, sel) do return JS_Null{}
     for n := node; n != nil; n = n.parent {
-        if n.kind == .Element && dom_node_matches(n, sel) do return wrap_element(vm, n)
+        if n.kind == .Element && dom_node_matches(n, sel, node) do return wrap_element(vm, n)
     }
     return JS_Null{}
 }

@@ -184,6 +184,7 @@ headless_paint :: proc(url: string, url2: string = "", frames: int = 150) -> boo
     if renderer == nil { fmt.eprintln("renderer falhou"); return false }
     defer sdl2.DestroyRenderer(renderer)
     defer images_free_all() // ANTES do DestroyRenderer (defer roda LIFO): textura e do renderer
+    defer shaped_text_clear()
     defer emoji_shutdown()  // a fonte de emoji (~12 MB), carregada sob demanda
 
     im.CHECKVERSION(); im.CreateContext(); defer im.DestroyContext()
@@ -644,6 +645,7 @@ headless_phase2test :: proc() -> bool {
     if renderer == nil { fmt.eprintln("renderer falhou"); return false }
     defer sdl2.DestroyRenderer(renderer)
     defer images_free_all() // ANTES do DestroyRenderer (defer roda LIFO): textura e do renderer
+    defer shaped_text_clear()
     defer emoji_shutdown()  // a fonte de emoji (~12 MB), carregada sob demanda
 
     im.CHECKVERSION(); im.CreateContext(); defer im.DestroyContext()
@@ -753,6 +755,7 @@ headless_fonttest :: proc(ttf_path := "C:\\Windows\\Fonts\\impact.ttf") -> bool 
     if renderer == nil { fmt.eprintln("renderer falhou"); return false }
     defer sdl2.DestroyRenderer(renderer)
     defer images_free_all()
+    defer shaped_text_clear()
     defer emoji_shutdown()
 
     im.CHECKVERSION(); im.CreateContext(); defer im.DestroyContext()
@@ -869,6 +872,7 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
     if renderer == nil { fmt.eprintln("renderer falhou"); return false }
     defer sdl2.DestroyRenderer(renderer)
     defer images_free_all() // ANTES do DestroyRenderer (defer roda LIFO): textura e do renderer
+    defer shaped_text_clear()
     defer emoji_shutdown()  // a fonte de emoji (~12 MB), carregada sob demanda
 
     im.CHECKVERSION(); im.CreateContext(); defer im.DestroyContext()
@@ -1015,6 +1019,7 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
     if renderer == nil { fmt.eprintln("headless: renderer falhou"); return false }
     defer sdl2.DestroyRenderer(renderer)
     defer images_free_all() // ANTES do DestroyRenderer (defer roda LIFO): textura e do renderer
+    defer shaped_text_clear()
     defer emoji_shutdown()  // a fonte de emoji (~12 MB), carregada sob demanda
 
     im.CHECKVERSION()
@@ -1221,7 +1226,7 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
                 target := s.click_target
                 s.click_target = nil
                 // bubbling acontece dentro de dispatch_event (alvo -> raiz)
-                fired := jspkg.dispatch_event(page_vm, target, "click")
+                fired, _ := jspkg.dispatch_mouse_event(page_vm, target, "click", 0, 0)
                 if fired {
                     // re-estiliza (nós novos entram no mapa) e reconstrói o layout,
                     // re-parseando o css_text (rules com seletores frescos)
@@ -1365,6 +1370,7 @@ headless_dumplayout :: proc(in_path: string, out_path: string, width: i32 = 800,
     if renderer == nil { fmt.eprintln("dumplayout: renderer falhou"); return false }
     defer sdl2.DestroyRenderer(renderer)
     defer images_free_all() // ANTES do DestroyRenderer (defer roda LIFO): textura e do renderer
+    defer shaped_text_clear()
     defer emoji_shutdown()  // a fonte de emoji (~12 MB), carregada sob demanda
 
     im.CHECKVERSION(); im.CreateContext(); defer im.DestroyContext()
