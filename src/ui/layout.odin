@@ -90,10 +90,9 @@ g_renderer: ^sdl2.Renderer = nil
 // AddImage do dl principal as lê no RenderDrawData de fim-de-frame). Destruídas
 // e zeradas no começo de cada paint_layout.
 g_layer_textures: [dynamic]^sdl2.Texture
-// Orçamento de layers por frame (limita memória; cada layer é uma textura do
-// tamanho do BBOX). Além disso, paint_box faz fallback p/ opacidade bakeada.
-LAYER_BUDGET :: 24
-g_layer_count: int = 0 // quantas layers já emitidas neste frame (reset em paint_layout)
+// Every group keeps its compositing semantics, regardless of paint order.
+// composite_layer allocates only the visible bounding box and reuses cached
+// textures; a frame-wide count must not disable masks or group opacity.
 BACKDROP_BUDGET :: 12 // cada backdrop-filter re-renderiza o dl inteiro num target (caro)
 g_backdrop_count: int = 0 // backdrop-filters aplicados neste frame (reset em paint_layout)
 
@@ -6870,8 +6869,8 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     // blend não-linear por-canal (overlay/hard-light/soft-light/color-dodge/
     // color-burn/difference): não expressável como blend do SDL → kernel CPU sobre
     // a textura, contra o backdrop sólido. Todos ficam contíguos no fim do enum
-    // (>= Overlay). filter tem precedência (com filtro, blend é ignorado).
-    cpu_blend := !has_filter && blend >= .Overlay
+    // (>= Overlay). Filters run first; blending must still apply afterwards.
+    cpu_blend := blend >= .Overlay
 
     // HASH do conteúdo: vértices LOCAIS (pos+uv+cor) + blend + filtros. Vértices
     // idênticos ⇒ textura idêntica (o blur/filtro são funções determinísticas),
@@ -6974,8 +6973,8 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
 
     // MISS: (re)renderiza. Blend mode do composite: Normal = alpha sobre fundo
     // transparente; um mix-blend separável vira BlendMode custom + limpa com a COR
-    // IDENTIDADE do modo (áreas sem elemento = no-op no backdrop). filter e blend
-    // não se combinam na v1 (com filter, blend ignorado).
+    // IDENTIDADE do modo (áreas sem elemento = no-op no backdrop). CPU blend
+    // runs after filters; native SDL blend with filters is still unsupported.
     tex := sdl2.CreateTexture(g_renderer, .ABGR8888, .TARGET, iw, ih)
     if tex == nil do return next
     cr, cg, cb, ca: u8 = 0, 0, 0, 0 // transparente
@@ -7019,8 +7018,8 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
             // O que sai do target é PREMULTIPLICADO; os kernels abaixo são definidos
             // sobre a cor reta (ver buf_unpremul).
             buf_unpremul(buf)
-            if      has_filter do apply_filters(buf, pw, ph, filters)
-            else if cpu_blend  do apply_cpu_blend(buf, blend, backdrop)
+            if has_filter do apply_filters(buf, pw, ph, filters)
+            if cpu_blend do apply_cpu_blend(buf, blend, backdrop)
             // clip-path e mask por ÚLTIMO: reduzem o alpha (o filtro/blend já rodou
             // sobre o conteúdo inteiro, como na spec: clip/mask são o passo final).
             if has_clip do apply_clip_mask(buf, pw, ph, clip, cbx - fx, cby - fy, cbw, cbh)
@@ -7053,7 +7052,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     // LIFETIME: com nó (e sem colisão no mesmo frame) → cacheia comp_tex (persiste,
     // reusada nos próximos frames). Sem nó, ou nó já usado neste frame (não posso
     // trocar uma textura em uso) → per-frame (g_layer_textures, destruída no próximo
-    // paint_layout). A .TARGET intermediária do filtro é sempre per-frame.
+    // paint_layout). The CPU-uploaded result no longer references its target.
     cacheable := node != nil
     if cacheable {
         if old, ok := cache^[node]; ok && old.used == g_frame do cacheable = false
@@ -7064,7 +7063,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     } else {
         append(&g_layer_textures, comp_tex)
     }
-    if intermediate != nil do append(&g_layer_textures, intermediate)
+    if intermediate != nil do sdl2.DestroyTexture(intermediate)
 
     tint := custom ? u32(0xFFFFFFFF) : (premul ? premul_tint(opacity) : imgui_mul_alpha(0xFFFFFFFF, opacity))
     im.DrawList_AddImage(dl, im.TextureID(uintptr(comp_tex)), {fx, fy}, {fx + f32(iw), fy + f32(ih)}, {0, 0}, {1, 1}, tint)
@@ -7769,7 +7768,6 @@ paint_layout :: proc(s: ^State, root: ^Box) {
         sdl2.DestroyTexture(g_round_clip_cache[k].tex)
         delete_key(&g_round_clip_cache, k)
     }
-    g_layer_count = 0
     g_backdrop_count = 0
     // cor atrás da raiz = fundo da página (p/ recortar cantos de overflow:hidden)
     if len(s.tabs) > 0 do g_bg_behind = s.tabs[s.active].page_bg
@@ -9036,8 +9034,6 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // subárvore numa LAYER — o conteúdo é desenhado OPACO (eff←opa) e o dimming
     // vem do composite da textura a own_a (replay_paint/composite_layer). Sem
     // filhos (folha) ou sem renderer, mantém o baking antigo (eff = opa·own_a).
-    // g_layer_count limita o nº de layers/frame (memória: 1 textura de viewport
-    // por layer); além do orçamento, faz fallback p/ baking.
     own_a := opa > 0.0001 ? eff / opa : b.opacity
     // layer quando: (opacidade PRÓPRIA<1 com filhos, onde o double-darken de
     // sobreposição apareceria) OU (mix-blend-mode≠normal, que blenda o elemento
@@ -9052,9 +9048,8 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // before transforming the group, so a scaled/rotated card and its contents
     // share the same transformed edge (including clips in nested wrappers).
     if !want_layer && do_xform do want_layer = paint_subtree_has_overflow_clip(b)
-    do_layer := want_layer && g_renderer != nil && g_layer_count < LAYER_BUDGET
+    do_layer := want_layer && g_renderer != nil
     if do_layer {
-        g_layer_count += 1
         eff = opa // conteúdo desenhado opaco na layer; o composite aplica own_a/blend
     }
 
