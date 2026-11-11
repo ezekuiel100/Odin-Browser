@@ -10255,7 +10255,11 @@ paint_image :: proc(dl: ^im.DrawList, url: string, pos: im.Vec2, w, h: f32, fit 
     cmin := im.DrawList_GetClipRectMin(dl)
     cmax := im.DrawList_GetClipRectMax(dl)
     if url != "" {
-        if img := image_get(url); img.state == .Ready {
+        img := image_get(url)
+        // Enquanto carrega, preserva o fundo CSS ja pintado e o espaco do layout.
+        // O navegador nao deve impor uma cor de placeholder sobre o site.
+        if img.state == .Loading do return
+        if img.state == .Ready {
             tex := im.TextureID(uintptr(img.tex))
             iw, ih := f32(img.w), f32(img.h)
             if fit == .Fill || iw <= 0 || ih <= 0 || w <= 0 || h <= 0 {
@@ -10291,8 +10295,7 @@ paint_image :: proc(dl: ^im.DrawList, url: string, pos: im.Vec2, w, h: f32, fit 
     // aqui seria um bloco cinza no meio de uma frase — pior que o vão.
     if strings.has_prefix(url, EMOJI_SCHEME) do return
     // Imagem DECORATIVA que FALHOU (formato sem decoder — AVIF —, 404, decode
-    // inválido): NADA. O esqueleto cinza só faz sentido enquanto a imagem está a
-    // CAMINHO; em `.Failed` ele é uma mancha opaca permanente sobre o que estiver
+    // inválido): NADA. Em `.Failed` o placeholder seria uma mancha opaca sobre o que estiver
     // atrás. Restrito ao decorativo por MEDIDA, não por gosto — ver img_is_decorative.
     //
     // Custou uma regressão para aparecer: o M234 deu altura aos absolutos com
