@@ -1038,7 +1038,7 @@ Anim :: struct {
     reverse, fill_before, fill_after, paused: bool,
     timing: Timing,
     n:         int,  // nº de stops preenchidos
-    stops:     []Anim_Stop, // temporary style storage; playback owns a copy
+    stops:     []Anim_Stop, // style-owned storage; playback owns a copy
     underlying: Anim_Stop,
 }
 
@@ -1096,7 +1096,7 @@ Computed :: struct {
     bg:            u32,
     has_bg:        bool,
     hover:         Hover_Style, // overrides de :hover (não herda)
-    anim_more: []Anim, // temporary list; Box owns playback copies
+    anim_more: []Anim, // style-owned list; Box owns playback copies
     anim:          Anim,        // animation/@keyframes resolvido (não herda)
     weight:        Font_Weight, // font-weight (Regular/Semi/Bold; ver Font_Weight)
     italic:        bool, // font-style: italic/oblique (herda)
@@ -8312,7 +8312,7 @@ resolve_animation :: proc(comp: ^Computed, decls: map[string]string, kf: []csspk
     count := len(sh)
     if v, ok := decls["animation-name"]; ok do count = len(split_commas_paren(resolve_var(v, vars)))
     if count == 0 do return
-    if count > 1 do comp.anim_more = make([]Anim, count - 1, context.temp_allocator)
+    if count > 1 do comp.anim_more = make([]Anim, count - 1)
     for i in 0 ..< count {
         one := make(map[string]string, context.temp_allocator)
         if len(sh) > 0 do one["animation"] = sh[i % len(sh)]
@@ -8423,7 +8423,7 @@ resolve_animation_one :: proc(comp: ^Computed, decls: map[string]string, kf: []c
         tx_percent = comp.transform_tx_pct ? comp.transform_tx : 0,
         ty_percent = comp.transform_ty_pct ? comp.transform_ty : 0,
     }
-    comp.anim.stops = make([]Anim_Stop, len(set.stops), context.temp_allocator)
+    comp.anim.stops = make([]Anim_Stop, len(set.stops))
     for st in set.stops {
         as := Anim_Stop{ pct = st.pct }
         if tv, ok := st.decls["animation-timing-function"]; ok {

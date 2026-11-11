@@ -1,12 +1,38 @@
 ﻿package ui
 
 import "core:testing"
+import "core:mem/virtual"
 import css "../css"
 import html "../html"
 import dom "../dom"
 import js "../js"
 
 ANIM_TEST_KF :: "@keyframes Fade{from{opacity:0}to{opacity:1}}@keyframes Tint{from{background-color:black}to{background-color:white}}"
+
+@(test)
+animation_styles_survive_temp_arena :: proc(t: ^testing.T) {
+    root := html.parse_render("<html><body><div class='x'>animated</div></body></html>")
+    defer dom.free_tree(root)
+    rules, kf := css.parse(".x{animation:Move 1s,Move 2s}@keyframes Move{from{transform:translateX(0)}to{transform:translateX(10px)}}")
+    defer css.free_rules(&rules)
+    defer css.free_keyframes(&kf)
+    arena: virtual.Arena
+    err := virtual.arena_init_growing(&arena)
+    testing.expect(t, err == nil)
+    if err != nil do return
+    saved_temp := context.temp_allocator
+    context.temp_allocator = virtual.arena_allocator(&arena)
+    styles, _ := compute_styles(root, &rules, 1280, 900, kf[:])
+    context.temp_allocator = saved_temp
+    virtual.arena_destroy(&arena)
+    // Simulate fetch_worker/frame teardown before the style map is released.
+    c := styles[dom.find_first(root, "div")]
+    testing.expect_value(t, c.anim.n, 2)
+    testing.expect_value(t, len(c.anim_more), 1)
+    testing.expect_value(t, c.anim.stops[1].pct, f32(1))
+    testing.expect_value(t, c.anim_more[0].stops[1].pct, f32(1))
+    free_styles(styles)
+}
 
 @(test)
 animation_multiple_lists :: proc(t: ^testing.T) {

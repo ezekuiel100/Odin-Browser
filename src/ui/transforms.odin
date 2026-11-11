@@ -219,22 +219,33 @@ x_step :: proc(ch:^XChan,target:^XList,tr:Transition,dt,w,h:f32) -> XMatrix {
 x_free_styles :: proc(styles:map[^dompkg.Node]Computed) {
     seen:=make(map[^XList]bool,context.temp_allocator)
     defer delete(seen)
-    visit :: proc(c:Computed,seen:^map[^XList]bool) {
+    // Computed survives frame/worker temp arenas. Keep animation arrays alive
+    // until this traversal has collected their transforms, then free each once.
+    stops:=make(map[rawptr][]Anim_Stop,context.temp_allocator)
+    lists:=make(map[rawptr][]Anim,context.temp_allocator)
+    defer delete(stops)
+    defer delete(lists)
+    visit :: proc(c:Computed,seen:^map[^XList]bool,stops:^map[rawptr][]Anim_Stop,lists:^map[rawptr][]Anim) {
         add :: proc(x:^XList,seen:^map[^XList]bool) { if x!=nil do seen[x]=true }
+        if len(c.anim.stops)>0 do stops[raw_data(c.anim.stops)]=c.anim.stops
+        if len(c.anim_more)>0 do lists[raw_data(c.anim_more)]=c.anim_more
         add(c.xform,seen); add(c.hover.xform,seen)
         add(c.anim.underlying.xform,seen)
         for i in 0..<c.anim.n do add(c.anim.stops[i].xform,seen)
         for a in c.anim_more {
+            if len(a.stops)>0 do stops[raw_data(a.stops)]=a.stops
             add(a.underlying.xform,seen)
             for i in 0..<a.n do add(a.stops[i].xform,seen)
         }
-        if c.before!=nil do visit(c.before^,seen)
-        if c.after!=nil do visit(c.after^,seen)
-        if c.first_letter!=nil do visit(c.first_letter^,seen)
-        if c.placeholder!=nil do visit(c.placeholder^,seen)
+        if c.before!=nil do visit(c.before^,seen,stops,lists)
+        if c.after!=nil do visit(c.after^,seen,stops,lists)
+        if c.first_letter!=nil do visit(c.first_letter^,seen,stops,lists)
+        if c.placeholder!=nil do visit(c.placeholder^,seen,stops,lists)
     }
-    for _,c in styles do visit(c,&seen)
+    for _,c in styles do visit(c,&seen,&stops,&lists)
     for x in seen { delete(x.ops); free(x) }
+    for _,s in stops do delete(s)
+    for _,s in lists do delete(s)
 }
 
 g_x_keep_depth:bool

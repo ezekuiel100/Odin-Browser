@@ -747,6 +747,13 @@ load_page :: proc(root: ^dom.Node) -> ^Interp {
 // propriedades caem no lookup normal de props (handled=false).
 @(private = "file")
 document_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
+    // Document implements ParentNode too. Reuse the live tree accessors: Phoenix
+    // LiveView checks document.firstElementChild in joinDeadView/isPhxView.
+    switch name {
+    case "firstElementChild", "lastElementChild", "childElementCount", "children",
+         "firstChild", "lastChild", "childNodes":
+        return dom_elem_get(vm, o, name)
+    }
     if name == "currentScript" {
         if vm.current_script != nil do return wrap_element(vm, cast(^dom.Node) vm.current_script), true
         return JS_Null{}, true
