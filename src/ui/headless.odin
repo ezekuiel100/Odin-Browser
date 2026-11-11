@@ -1172,8 +1172,8 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
     if container_rules_present(rules[:]) {
         container_w_clear()
         layout_box(layout, 0, 0, f32(width))
-        if g_container_dirty {
-            g_container_dirty = false
+        if style_doc().container_dirty {
+            style_doc().container_dirty = false
             free_styles(styles)
             old_layout := layout
             styles, page_bg = compute_styles(dom, &rules, f32(width), f32(height), kf[:])

@@ -79,6 +79,10 @@ Tab :: struct {
     style_dark: bool,
     restyle_nodes: int, // diagnostics: nodes whose cascade ran on the last restyle
     restyle_layout: bool,
+    // Estado de estilo/layout DESTE documento (rem, viewport, medidas de
+    // container query). PONTEIRO porque a Tab é copiada por valor; nil até o 1º
+    // uso (tab_style_doc). Trocado junto com o DOM na navegação (poll_jobs).
+    style_doc: ^Style_Doc,
 }
 
 // Requisição de rede em andamento, processada numa thread separada.
@@ -104,6 +108,10 @@ Fetch_Job :: struct {
     // após o build_layout e essas fatias ficavam penduradas em job.styles.
     rules:   [dynamic]csspkg.Rule,
     kf:      [dynamic]csspkg.Keyframe_Set,
+    // Documento de estilo do job: o worker resolve estilo e layout na thread
+    // DELE, vinculado a este Style_Doc — nunca ao da aba ativa (antes os dois
+    // escreviam no mesmo map global de container query). Transferido à aba.
+    style_doc: ^Style_Doc,
     done:    b32,           // sinalizado atomicamente quando termina
 }
 
@@ -224,8 +232,18 @@ tab_drop_rules :: proc(tab: ^Tab) {
 // Recompute invalidated style branches; preserve boxes for supported paint-only
 // changes. Zoom, viewport, stylesheet and structural changes use the full path.
 // Parsed rules own their strings and survive the frame's temporary allocator.
+// Documento de estilo da aba, criado no 1º uso.
+tab_style_doc :: proc(tab: ^Tab) -> ^Style_Doc {
+    if tab.style_doc == nil do tab.style_doc = style_doc_new()
+    return tab.style_doc
+}
+
 restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     if tab.dom == nil { tab.zoom_applied = g_zoom; return }
+    // A aba pode não ser a ativa (restyle por JS de aba de fundo): vincula o
+    // documento DELA, e devolve o vínculo do frame ao sair.
+    prev_doc := style_doc_bind(tab_style_doc(tab))
+    defer style_doc_bind(prev_doc)
     rules_changed := !tab.rules_ready
     if !tab.rules_ready {
         tab.rules, tab.kf = csspkg.parse(tab.css_text)
@@ -822,6 +840,12 @@ capture_frame :: proc(renderer: ^sdl2.Renderer) {
 // ── Janela raiz ─────────────────────────────────────────────────────────────
 
 draw_browser :: proc(s: ^State) {
+    // Todo layout/geometria/JS deste frame é da aba ATIVA: as medidas de
+    // container query que o layout grava e o viewport que o getComputedStyle lê
+    // são do documento dela, não de um global compartilhado entre abas.
+    // ⚠️ o `defer` fica FORA de qualquer `if`: em Odin ele vale para o bloco.
+    prev_doc := style_doc_bind(len(s.tabs) > 0 ? tab_style_doc(&s.tabs[s.active]) : nil)
+    defer style_doc_bind(prev_doc)
     vp := im.GetMainViewport()
     im.SetNextWindowPos(vp.Pos)
     im.SetNextWindowSize(vp.Size)
@@ -960,6 +984,7 @@ draw_tabstrip :: proc(s: ^State) {
         if ct.styles != nil do free_styles(ct.styles)
         if ct.layout != nil do free_layout(ct.layout)
         if ct.css_text != "" do delete(ct.css_text)
+        style_doc_free(ct.style_doc)
         tab_drop_rules(ct)
         for h in ct.history do delete(h)
         delete(ct.history)
@@ -1185,8 +1210,8 @@ draw_content :: proc(s: ^State) {
             // Container queries: o layout acima MEDIU os contêineres; se a medida
             // difere da que o estilo usou, reestiliza UMA vez e relayouta. Converge
             // em 2 passadas (container-type = contenção → a medida não muda depois).
-            if g_container_dirty {
-                g_container_dirty = false
+            if style_doc().container_dirty {
+                style_doc().container_dirty = false
                 restyle_tab(&s.tabs[s.active], avail.x, avail.y)
                 tab = s.tabs[s.active]
                 if tab.layout != nil do ensure_tab_geometry(tab.layout, avail.x, avail.y)
@@ -1926,6 +1951,7 @@ start_navigation :: proc(s: ^State, url: string, record := true, auto_https := f
     if job.viewport_w < 1 do job.viewport_w = 1280
     job.viewport_h = im.GetIO().DisplaySize.y
     if job.viewport_h < 1 do job.viewport_h = 720
+    job.style_doc = style_doc_new()
     append(&g_jobs, job)
     thread.create_and_start_with_poly_data(job, fetch_worker, self_cleanup = true)
 }
@@ -1977,6 +2003,7 @@ fetch_worker :: proc(job: ^Fetch_Job) {
         // tbody implícito, conteúdo estrangeiro). Substituiu o par legado
         // parse+normalize_document: o scaffold html/head/body agora sai do próprio
         // algoritmo. Fecha o buraco medido no M141 (legado 429/1509 vs 1680).
+        style_doc_bind(job.style_doc) // thread própria: o vínculo é thread_local
         job.dom = htmlp.parse_render(job.resp.body)
         // O tamanho do viewport ANTES de rodar script alheio: `window.innerWidth`
         // é lido no carregamento (mobile×desktop) e este worker é OUTRA thread, com
@@ -2469,6 +2496,11 @@ poll_jobs :: proc(s: ^State) {
                 tab.rules = job.rules
                 tab.kf = job.kf
                 tab.rules_ready = true // já parseadas pela thread: o 1º restyle reusa
+                // documento NOVO, documento de estilo novo: as medidas de
+                // contêiner da página anterior eram chaveadas por nós já liberados
+                style_doc_free(tab.style_doc)
+                tab.style_doc = job.style_doc
+                job.style_doc = nil
                 tab.zoom_applied = g_zoom // computado pela thread com o zoom atual
                 job.dom = nil
                 job.layout = nil
@@ -2507,6 +2539,7 @@ poll_jobs :: proc(s: ^State) {
             csspkg.free_rules(&job.rules)     // não foram transferidas
             csspkg.free_keyframes(&job.kf)
         }
+        style_doc_free(job.style_doc) // nil se foi transferido à aba
 
         delete(job.url)
         if job.final_url != "" do delete(job.final_url)

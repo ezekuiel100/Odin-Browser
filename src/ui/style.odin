@@ -41,44 +41,25 @@ g_zoom: f32 = 1.0
 g_cur_lh_px: f32 // (thread_local não aceita inicializador; o zero-value já é o "não sei")
 
 // font-size COMPUTADO do elemento RAIZ (<html>) — a base da unidade `rem` (CSS
-// Values §5.1.3). Era 16px fixo em três lugares, o que quebrava o truque
-// `html{font-size:62.5%}` (rem = 10px), comum o bastante para deformar um site
-// inteiro: no svelte.dev a fonte do hero saía 86,4px em vez de 54px.
-// Vive num global pelo mesmo motivo do `g_cur_lh_px` acima — `parse_len` tem
-// dezenas de call-sites e a unidade tem de valer em TODOS. É gravado uma vez por
-// página, quando as declarações da raiz terminam de ser aplicadas e ANTES de
-// qualquer descendente ser computado.
-// ⚠️ thread_local pela mesma razão: o runner de teste computa estilo em 16
-// threads ao mesmo tempo. Zero = "ainda não computei a raiz" → cai no inicial.
-@(private="file", thread_local)
-g_root_font_size: f32
+// Values §5.1.3) — e o VIEWPORT do render corrente (`@media (aspect-ratio)`, o
+// `media` dos <source> de <picture>) moram em Style_Doc (style_doc.odin): são
+// estado do DOCUMENTO, não do pacote. O `rem` era 16px fixo em três lugares, o
+// que quebrava `html{font-size:62.5%}` (no svelte.dev o hero saía 86,4px em vez
+// de 54px); o root_font_size é gravado quando as declarações da raiz terminam e
+// ANTES de qualquer descendente. Zero = "ainda não computei a raiz" → inicial.
 
 // Base da unidade `rem`, já escalada pelo zoom (o font-size da raiz também é).
 @(private="file")
 rem_px :: proc() -> f32 {
-    return g_root_font_size > 0 ? g_root_font_size : 16 * g_zoom
+    rfs := style_doc().root_font_size
+    return rfs > 0 ? rfs : 16 * g_zoom
 }
 
 // Esquema de cor preferido, avaliado por `@media (prefers-color-scheme: …)`.
 // Default = claro (o navegador não tem tema escuro próprio ainda); um toggle de
-// UI pode ligar isto para sites com dark mode responderem.
+// UI pode ligar isto para sites com dark mode responderem. É PREFERÊNCIA do
+// app (não do documento), por isso fica global.
 g_prefers_dark: bool = false
-
-// Altura do viewport do render atual (px), p/ avaliar `@media (aspect-ratio)`.
-// Setada no início de compute_styles; media_matches usa vw/g_viewport_h.
-// thread_local pela MESMA razão do g_cur_lh_px acima: é escrita por compute_styles,
-// e o runner de teste tem 16 delas em voo.
-// ⚠️ thread_local NÃO aceita inicializador, então o default de 720 saiu daqui e
-// virou fallback no ponto de LEITURA (é o único).
-@(thread_local)
-g_viewport_h: f32
-
-// Largura do viewport do render atual (px). Mesma disciplina do g_viewport_h e
-// pela mesma razão de invariante: o `media` de um `<source>` de `<picture>` e o
-// `@media` da folha NÃO podem discordar sobre "sou desktop?" — então a seleção
-// de source lê daqui, e não de um parâmetro próprio. Fallback no ponto de LEITURA.
-@(thread_local)
-g_viewport_w: f32
 
 // Custom properties registradas com `inherits: false` (nome + valor inicial),
 // recolhidas das regras sintéticas de `@property` no início de compute_styles e
@@ -207,12 +188,9 @@ svg_css_get :: proc(n: ^dompkg.Node) -> (Svg_Css, bool) {
 // estabelece contenção, então o tamanho do contêiner NÃO depende do conteúdo dele
 // (só dos ancestrais) — a 2ª passada mede o mesmo que a 3ª mediria.
 //   1ª: sem medidas → cai no FALLBACK (viewport), que é o comportamento antigo.
-//   2ª: com g_container_w preenchido pelo layout → avalia contra o contêiner.
-g_container_w: map[^dompkg.Node]f32   // nó do contêiner → largura de conteúdo medida
-g_container_used: map[^dompkg.Node]f32 // o que a última resolução de estilo usou
-g_container_dirty: bool                // medida != usada → precisa reestilizar
-
-container_w_clear :: proc() { clear(&g_container_w); clear(&g_container_used); g_container_dirty = false }
+//   2ª: com as medidas do Style_Doc preenchidas pelo layout → avalia contra o contêiner.
+// O estado (medidas, o que foi usado, "sujo") é POR DOCUMENTO: Style_Doc em
+// style_doc.odin, junto de container_w_clear.
 
 // Alguma regra veio de um @container? Portão da 2ª passada: página sem
 // container query não paga NADA (nem o layout extra).
@@ -224,11 +202,11 @@ container_rules_present :: proc(rules: []csspkg.Rule) -> bool {
 // Chamado pelo layout p/ cada caixa que É um contêiner de consulta.
 container_w_record :: proc(n: ^dompkg.Node, w: f32) {
     if n == nil do return
-    old, had := g_container_w[n]
+    old, had := style_doc().container_w[n]
     if !had || abs(old - w) > 0.5 {
-        g_container_w[n] = w
+        style_doc().container_w[n] = w
         // só suja se o estilo já foi resolvido com um valor DIFERENTE
-        if used, uok := g_container_used[n]; !uok || abs(used - w) > 0.5 do g_container_dirty = true
+        if used, uok := style_doc().container_used[n]; !uok || abs(used - w) > 0.5 do style_doc().container_dirty = true
     }
 }
 
@@ -240,9 +218,9 @@ container_matches :: proc(r: csspkg.Rule, n: ^dompkg.Node, styles: ^map[^dompkg.
         c, ok := styles[p]
         if !ok || !c.container_inline do continue
         if r.cq_name != "" && c.container_name != r.cq_name do continue
-        w, measured := g_container_w[p]
+        w, measured := style_doc().container_w[p]
         if !measured do break // contêiner achado mas ainda não medido → fallback
-        g_container_used[p] = w
+        style_doc().container_used[p] = w
         if r.cq_min >= 0 && w < r.cq_min do return false
         if r.cq_max >= 0 && w > r.cq_max do return false
         return true
@@ -1601,14 +1579,17 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
     styles = previous
     if styles == nil do styles = make(map[^dompkg.Node]Computed)
     stamp_shadow_scopes(root) // marcador que dá escopo às regras de cada shadow root
-    g_viewport_h = viewport_h // p/ @media (aspect-ratio) em collect_decls
-    g_viewport_w = viewport_w // p/ o `media` dos <source> de <picture> (build_layout)
+    style_doc().viewport_h = viewport_h // p/ @media (aspect-ratio) em collect_decls
+    style_doc().viewport_w = viewport_w // p/ o `media` dos <source> de <picture> (build_layout)
     csspkg.g_dark_scheme = g_prefers_dark // p/ light-dark() no parser de cor
     // base do `rem` volta ao INICIAL a cada página: o <html> desta árvore pode não
     // declarar font-size, e herdar a base da página anterior seria pior que o bug
     // que isto conserta.
-    g_root_font_size = 16 * g_zoom
-    root_inherit := Computed{color = DEFAULT_TEXT, font_size = 16 * g_zoom, line_height = 1.3, deco_color = DECO_UNSET, text_align = .Start}
+    style_doc().root_font_size = 16 * g_zoom
+    // A raiz herda do INICIAL (os campos que não herdam o reset do compute_node
+    // devolve ao inicial de qualquer jeito). Era um Computed montado à mão aqui
+    // com os 5 campos herdados que alguém lembrou de listar.
+    root_inherit := computed_initial()
     root_vars := make(map[string]string, context.temp_allocator) // variáveis CSS (--x)
     // `@property … { inherits: false }`: as regras sintéticas vêm marcadas com
     // `reg_noinherit`. Coletamos aqui UMA vez (a lista é minúscula — o Tailwind
@@ -1822,190 +1803,14 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     // lang efetivo: atributo `lang` do elemento sobrepõe o herdado (usado p/ as
     // aspas default de <q> quando não há prop `quotes`).
     if l, ok := n.attrs["lang"]; ok && l != "" do comp.lang = l
-    // estas propriedades não herdam — zera antes de aplicar as deste nó
-    comp.unicode_bidi = .Normal
-    comp.svg_css = nil              // fill/stroke de regra CSS é por-elemento (M246)
-    comp.counter_reset_raw = ""     // counter-reset/increment/set não herdam
-    comp.counter_increment_raw = ""
-    comp.counter_set_raw = ""
-    comp.content = ""; comp.has_content = false
-    comp.content_raw = ""; comp.content_has_counter = false
-    comp.has_bg = false
-    comp.bg = 0
-    comp.display_none = false
-    comp.margin = {}
-    comp.has_margin = false
-    comp.padding = {}
-    comp.padding_pct = {}; comp.padding_frac = {}; comp.padding_off = {}
-    comp.margin_pct  = {}; comp.margin_frac  = {}; comp.margin_off  = {}
-    comp.border_w = {}
-    comp.border_c = {}
-    comp.border_style_none = {}
-    comp.has_border = false
-    comp.bimg = {} // border-image NÃO herda
-    comp.outline_w = 0
-    comp.outline_c = 0
-    comp.outline_off = 0
-    comp.has_width = false
-    comp.has_maxw = false
-    comp.has_minw = false
-    comp.has_height = false
-    comp.has_height_pct = false
-    comp.width_pct_off = 0
-    comp.height_pct_off = 0
-    comp.minw_pct_off = 0
-    comp.maxw_pct_off = 0
-    comp.has_minh_pct = false; comp.minh_pct_off = 0
-    comp.has_maxh_pct = false; comp.maxh_pct_off = 0
-    comp.width_bd = {}; comp.height_bd = {}; comp.minw_bd = {}
-    comp.maxw_bd = {}; comp.minh_bd = {}; comp.maxh_bd = {}
-    comp.height_mc = false
-    comp.width_mc = false
-    comp.width_minc = false
-    comp.width_fit = false
-    comp.has_maxh = false
-    comp.has_minh = false
-    comp.minh_mc = false
-    comp.aspect = 0
-    comp.box_sizing = .Content
-    comp.margin_x_auto = false
-    comp.margin_left_auto = false
-    comp.margin_right_auto = false
-    comp.margin_top_auto = false
-    comp.margin_bottom_auto = false
-    comp.border_radius = {}
-    comp.border_radius_pct = {}
-    comp.position = .Static
-    comp.inset = {}
-    comp.inset_off = {}
-    comp.inset_pct = {}
-    comp.inset_has = {}
-    // flex (não herdam)
-    comp.display_inline_block = false
-    comp.display_block = false
-    comp.display_inline = false
-    comp.display_inline_level = false
-    comp.display_flex = false
-    comp.display_table = false
-    comp.display_table_row = false
-    comp.display_table_cell = false
-    comp.display_table_rowgrp = false
-    comp.display_contents = false
-    comp.flex_dir = .Row
-    comp.flex_reverse = false
-    comp.flex_wrap = false
-    comp.flex_wrap_reverse = false
-    comp.justify = .Start
-    comp.align_items = .Stretch
-    comp.align_content = .Start
-    comp.ac_stretch = true // default: align-content normal → stretch das trilhas auto
-    comp.justify_items = .Stretch
-    comp.align_self = .Stretch
-    comp.has_align_self = false
-    comp.justify_self = .Stretch
-    comp.has_justify_self = false
-    comp.gap = 0
-    comp.col_count = 0
-    comp.col_width = 0
-    comp.col_gap = -1 // normal (1em)
-    comp.gap_pct = false; comp.gap_frac = 0; comp.gap_off = 0
-    comp.row_gap_pct = false; comp.row_gap_frac = 0; comp.row_gap_off = 0
-    comp.break_before_avoid = false
-    comp.break_after_avoid = false
-    comp.flex_grow = 0
-    comp.flex_shrink = 1
-    comp.has_flex_basis = false
-    comp.flex_basis_pct_off = 0; comp.flex_basis_bd = {}
-    comp.flex_basis_auto = false
-    comp.order = 0
-    // grid (não herdam)
-    comp.display_grid = false
-    comp.grid_auto_fill = false
-    comp.grid_track_n = 0
-    comp.grid_row_track_n = 0
-    comp.grid_auto_row_n = 0
-    comp.grid_auto_col_n = 0
-    comp.content_hidden = false
-    comp.has_cis_w = false; comp.has_cis_h = false
-    comp.container_inline = false
-    comp.container_name = ""
-    comp.grid_flow_col = false
-    comp.grid_flow_dense = false
-    comp.row_gap = 0
-    comp.grid_col_start = 0; comp.grid_col_span = 1
-    comp.grid_row_start = 0; comp.grid_row_span = 1
-    comp.grid_area_n = 0
-    comp.grid_area_name = ""
-    comp.grid_col_line_n = 0; comp.grid_row_line_n = 0
-    comp.grid_col_start_name = ""; comp.grid_col_end_name = ""
-    comp.grid_row_start_name = ""; comp.grid_row_end_name = ""
-    comp.grad = {}
-    comp.grad_clip_text = false // anda junto com o grad (background-clip não herda)
-    comp.bg_img = ""
-    comp.bg_extra = nil // background-image não herda — e o filho copia o Computed
-                        // do pai inteiro (child_inherit), então SEM este reset as
-                        // camadas extras vazavam p/ toda a subárvore (o hero do
-                        // getbootstrap pintava seus 4 radiais em cada descendente)
-    comp.bg_size = .Auto
-    comp.bg_pos_x = 0; comp.bg_pos_y = 0
-    comp.bg_repeat = true
-    comp.bg_origin = .Padding
-    comp.bg_clip = .Border // background-clip não herda; inicial = border-box
-    comp.bg_fixed = false // background-attachment não herda
-    comp.obj_fit        = .Fill
-    comp.obj_pos_x = 0.5; comp.obj_pos_y = 0.5 // object-position não herda; padrão centro
-    comp.valign = .Baseline // vertical-align não herda
-    comp.trans = {} // transition não herda
-    comp.anim_more = nil
-    comp.anim = {}          // animation não herda
-    // comp.cursor NÃO é resetado: herda do pai (comportamento CSS)
-    comp.scroll_smooth = false // scroll-behavior não herda
-    comp.scroll_margin_top = 0; comp.scroll_padding_top = 0 // scroll-margin/padding não herdam
-    comp.overscroll_contain = false // overscroll-behavior não herda
-    comp.appearance_none = false // appearance não herda
-    comp.overflow_hidden = false
-    comp.ovf_clip_x = false
-    comp.ovf_clip_y = false
-    comp.overflow_scroll = false
-    comp.ovf_scroll_x = false
-    comp.ovf_scroll_y = false
-    comp.scroll_container = false
-    comp.resize = .None // resize não herda
-    comp.ellipsis = false // text-overflow não herda
-    comp.line_clamp = 0
-    comp.float = .None
-    comp.clear = .None
-    comp.z_index   = 0
-    comp.z_index_set = false
-    comp.stacking_hint = false
-    comp.opacity   = 1.0
-    comp.isolate   = false // isolation não herda
-    comp.clip_path = {}    // clip-path não herda
-    comp.mask_image = {}
-    comp.mask_grad = {}    // mask-image não herda
-    comp.table_fixed = false // table-layout não herda
-    comp.blend_mode = .Normal
-    comp.n_filters = 0
-    comp.n_backdrop = 0 // backdrop-filter não herda
-    transform_reset(&comp)
-    comp.transform_ox   = 0.5; comp.transform_oy = 0.5
-    // `comp` ainda é a cópia do PAI neste ponto: lê o preserve-3d dele antes de
-    // zerar o nosso (transform-style não herda; o que desce é só "meu pai tem").
-    comp.in_p3d = comp.preserve_3d
-    comp.preserve_3d = false
-    comp.perspective = 0; comp.perspective_ox = 0.5; comp.perspective_oy = 0.5
-    comp.perspective_opx=0; comp.perspective_opy=0
-    comp.transform_opx=0; comp.transform_opy=0; comp.transform_opz=0
-    comp.backface_hidden = false
-    comp.has_offset_path = false; comp.offset_path = ""
-    comp.offset_distance = 0; comp.offset_distance_pct = false
-    comp.offset_rotate_auto = true; comp.offset_rotate_angle = 0
-    comp.cb_abs = false; comp.cb_fixed = false // will-change não herda
-    comp.contained = false // `contain` não herda
-    comp.shadow_n = 0
-    // flags "definido neste elemento" (não herdam) — p/ propagar a filhos inline
-    comp.has_color = false
-    comp.has_font_family = false
+    // Propriedades que NÃO herdam voltam ao inicial antes das declarações deste
+    // nó. A lista de quais são é o registro (style_registry.odin) — antes eram
+    // ~180 atribuições à mão aqui, e campo novo esquecido VAZAVA p/ a subárvore.
+    // `in_p3d` é a exceção: precisa ler o preserve-3d do PAI, e `comp` ainda é
+    // a cópia dele (transform-style não herda; o que desce é "meu pai tem").
+    pai_p3d := comp.preserve_3d
+    computed_reset_noninherited(&comp)
+    comp.in_p3d = pai_p3d
 
     elem_vars := vars // variáveis CSS visíveis a este nó (herdadas)
 
@@ -2102,105 +1907,38 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         }
 
         apply_decls(&comp, merged, elem_vars, viewport_w, viewport_h, n)
-        if v, ok := merged["z-index"]; ok && strings.equal_fold(strings.trim_space(resolve_var(v, elem_vars)), "inherit") {
-            comp.z_index = inherit.z_index
-            comp.z_index_set = inherit.z_index_set
-        }
         // A fonte do elemento RAIZ define o `rem` do resto da página. Gravado aqui:
         // as declarações da raiz já foram aplicadas e a recursão nos filhos só vem
         // depois — então todo descendente já enxerga a base certa.
         // ⚠️ as declarações da PRÓPRIA raiz que usam `rem` ficam com o valor
         // anterior (o inicial), que é o que a spec manda para o `font-size` da raiz
         // — e é a mesma ordem-de-propriedade que o `em` já tem neste motor.
-        if n.kind == .Element && n.tag == "html" do g_root_font_size = comp.font_size
-        // `background-clip: inherit` — a palavra-chave `inherit` (CSS Values §4.4)
-        // pega o valor COMPUTADO do pai. Fica AQUI, e não no apply_decls, porque
-        // só o compute_node tem o Computed do pai. Tratamento PONTUAL: o motor não
-        // tem `inherit` genérico (o único outro caso é `cursor`), e esta é a prop
-        // onde a falta doía — enquanto bg_clip vazava por herança, `inherit`
-        // "funcionava" por acidente; ao parar o vazamento (bg_clip não herda), o
-        // wpt css-backgrounds/background-clip-006 expôs a palavra-chave faltando.
-        for p in ([?]string{"background-clip", "-webkit-background-clip"}) {
-            if v, ok := merged[p]; ok && strings.equal_fold(strings.trim_space(v), "inherit") {
-                comp.bg_clip = inherit.bg_clip
-            }
-        }
-        // `font-weight: inherit` — mesmo motivo (só aqui existe o Computed do pai),
-        // mas com um agravante: `apply_ua_defaults` já pôs .Bold em h1..h6 ANTES
-        // das declarações do autor, então o `comp` que o apply_decls vê não tem
-        // mais o peso herdado — só `inherit.weight` tem. É o reset que TODO
-        // preflight moderno faz (`h1,…,h6 { font-weight: inherit }`, Tailwind
-        // incluso): sem isto, todo heading dentro de card/lista sai em negrito.
+        if n.kind == .Element && n.tag == "html" do style_doc().root_font_size = comp.font_size
+        // `bolder`/`lighter` são relativos ao peso do PAI: `apply_ua_defaults` já
+        // pôs .Bold em h1..h6 ANTES das declarações do autor, então o apply_decls
+        // só viu o 700 do UA — só `inherit.weight` tem o peso do pai.
         if v, ok := merged["font-weight"]; ok {
             fw := strings.trim_space(v)
-            if strings.equal_fold(fw, "inherit") do comp.weight = inherit.weight
-            // `bolder`/`lighter` são relativos ao peso do PAI — pelo mesmo
-            // agravante do h1..h6 (o apply_decls só viu o 700 do UA).
             for kw in ([?]string{"bolder", "lighter"}) {
                 if strings.equal_fold(fw, kw) {
                     if w, k := font_weight_token(kw, inherit.weight); k do comp.weight = w
                 }
             }
         }
-        // ── palavras-chave CSS-wide (Values §7.3) que precisam do PAI ou do INICIAL ──
-        //
-        // Duas metades, e só estas duas precisam de código:
-        //   • `inherit` numa prop que NÃO herda — o valor tem de vir do pai, e só
-        //     aqui existe o Computed dele. O caso que doía é o reset clássico
-        //     `html{box-sizing:border-box} *{box-sizing:inherit}`: sem isto a
-        //     página inteira ficava em content-box (a declaração era ignorada) e
-        //     toda largura com padding saía maior.
-        //   • `initial` numa prop que HERDA — tem de QUEBRAR a herança. O `comp`
-        //     chega como cópia do pai, então ignorar a declaração deixava o valor
-        //     herdado: `color: initial` mantinha o vermelho do pai.
-        //
-        // As outras combinações JÁ estavam certas por construção e continuam sem
-        // código: `inherit`/`unset` em prop que herda = o valor que `comp` já traz;
-        // `initial`/`unset` em prop que não herda = o reset das não-herdadas que
-        // roda logo acima; `revert` = o valor do UA, que também já está em `comp`.
+        // ── palavras-chave CSS-wide (Values §7.3): inherit / initial / unset ──
+        // Genérico, pelo registro (style_registry.odin): vale p/ toda propriedade
+        // que é nome de grupo. Precisa do pai REAL (`inherit`, sem os ajustes de
+        // filho) e roda DEPOIS do apply_decls porque o UA já mexeu no `comp`:
+        // `h1{font-weight:inherit}` (preflight do Tailwind) tem de desfazer o
+        // negrito do UA, e `*{box-sizing:inherit}` tem de ler o pai.
+        // var() que resolve para a palavra-chave também vale (`z-index: var(--z)`).
         {
-            ini := computed_initial()
-            kw :: proc(merged: map[string]string, prop: string) -> (inh: bool, init: bool) {
-                v, ok := merged[prop]
-                if !ok do return false, false
-                t := strings.trim_space(v)
-                return strings.equal_fold(t, "inherit"), strings.equal_fold(t, "initial")
+            wide := make(map[string]string, context.temp_allocator)
+            for prop, v in merged {
+                rv := strings.contains(v, "var(") ? resolve_var(v, elem_vars) : v
+                if wide_keyword_of(rv) != .None do wide[prop] = rv
             }
-            // `inherit` em prop que NÃO herda
-            if i, _ := kw(merged, "box-sizing");  i do comp.box_sizing = inherit.box_sizing
-            if i, _ := kw(merged, "display");     i {
-                comp.display_none         = inherit.display_none
-                comp.display_block        = inherit.display_block
-                comp.display_inline       = inherit.display_inline
-                comp.display_inline_block = inherit.display_inline_block
-                comp.display_flex         = inherit.display_flex
-                comp.display_grid         = inherit.display_grid
-                comp.display_contents     = inherit.display_contents
-                comp.display_inline_level = inherit.display_inline_level
-            }
-            if i, _ := kw(merged, "background-color"); i { comp.bg = inherit.bg; comp.has_bg = inherit.has_bg }
-            // `initial` em prop que HERDA
-            if _, x := kw(merged, "color");          x do comp.color          = ini.color
-            if _, x := kw(merged, "font-weight");    x do comp.weight         = ini.weight
-            if _, x := kw(merged, "font-style");     x do comp.italic         = ini.italic
-            if _, x := kw(merged, "font-size");      x do comp.font_size      = ini.font_size
-            if _, x := kw(merged, "line-height");    x do comp.line_height    = ini.line_height
-            if _, x := kw(merged, "text-align");     x do comp.text_align     = ini.text_align
-            if _, x := kw(merged, "letter-spacing"); x do comp.letter_spacing = ini.letter_spacing
-            if _, x := kw(merged, "font-kerning"); x do comp.font_kerning = ini.font_kerning
-            if _, x := kw(merged, "word-spacing");   x do comp.word_spacing   = ini.word_spacing
-            if _, x := kw(merged, "white-space");    x do comp.white_space    = ini.white_space
-            if _, x := kw(merged, "overflow-wrap"); x { comp.break_word = false; comp.wrap_anywhere = false }
-            if _, x := kw(merged, "word-wrap"); x { comp.break_word = false; comp.wrap_anywhere = false }
-            if _, x := kw(merged, "word-break"); x do comp.break_all = false
-            if _, x := kw(merged, "visibility");     x do comp.invisible      = ini.invisible
-            if _, x := kw(merged, "text-transform"); x do comp.text_transform = ini.text_transform
-            if _, x := kw(merged, "list-style-type"); x do comp.list_style    = ini.list_style
-            if _,x:=kw(merged,"writing-mode"); x do comp.writing_mode=.Horizontal
-            if _,x:=kw(merged,"text-orientation"); x do comp.text_orientation=.Mixed
-            if _, x := kw(merged, "direction");      x do comp.direction      = ini.direction
-            if _, x := kw(merged, "text-indent"); x { comp.text_indent = 0; comp.text_indent_pct = false; comp.indent_each_line = false; comp.indent_hanging = false }
-            if _, x := kw(merged, "text-align-last"); x do comp.has_text_align_last = false
+            if len(wide) > 0 { pai := inherit; computed_apply_wide_keywords(&comp, &pai, wide) }
         }
         if comp.text_align == .Match_Parent do comp.text_align = align_physical(inherit.text_align, inherit.direction)
         resolve_animation(&comp, merged, kf, elem_vars, viewport_w, viewport_h)
@@ -2321,7 +2059,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
                     if p in hov do continue
                     if v, ok := merged[p]; ok do hov[p] = v
                 }
-                transform_reset(&hc)
+                computed_reset_group(&hc, "transform")
             }
             apply_decls(&hc, hov, elem_vars, viewport_w, viewport_h, n)
             comp.hover.active = true
@@ -2360,24 +2098,15 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.style_kids_ver = n.kids_ver
     styles[n] = comp
 
-    child_inherit := comp
-    child_inherit.has_bg = false
-    child_inherit.deco_set = false // "autor definiu text-decoration" é por-elemento
-    child_inherit.display_none = false
-    child_inherit.hover = {} // :hover pertence só a este nó (não herda)
-    child_inherit.anim_more = nil
-    child_inherit.anim = {}  // animation não herda
-    // Os pseudo-elementos ::before/::after pertencem SÓ a este nó. Sem isto, os
-    // filhos herdam os ponteiros ^Computed do pai; nós que não são Element pulam
-    // a atribuição em 308-309 e ficam com o ponteiro aliased → free_styles libera
-    // o mesmo ponteiro em duas entradas do mapa (double free / crash na 2ª navegação).
-    child_inherit.before = nil
-    child_inherit.after  = nil
-    child_inherit.first_letter = nil
-    child_inherit.placeholder  = nil
-    child_inherit.svg_css = nil // mesmo motivo dos ^Computed: alias vira double-free
+    // O filho recebe a cópia INTEIRA e o reset do registro (no início do
+    // compute_node dele) devolve ao inicial tudo que não herda — inclusive os
+    // ponteiros por-nó (before/after/first_letter/placeholder/svg_css), cujo
+    // alias viraria double free no free_styles. A cópia é também o "pai REAL"
+    // que `inherit` lê: antes ela chegava com has_bg/display_none zerados, e
+    // `background-color: inherit` copiava a cor do pai com has_bg=false — ou
+    // seja, não pintava nada.
     for c in n.children {
-        compute_node(c, child_inherit, elem_vars, rules, idx, styles, viewport_w, viewport_h, kf, noinh, previous, dirty)
+        compute_node(c, comp, elem_vars, rules, idx, styles, viewport_w, viewport_h, kf, noinh, previous, dirty)
     }
 }
 
@@ -2406,25 +2135,8 @@ compute_pseudo :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]strin
     defer delete(decls)
     if _, ok := decls["content"]; !ok do return nil // sem content → sem pseudo
 
-    pc := Computed{
-        color = parent.color, font_size = parent.font_size,
-        line_height = parent.line_height, font_family = parent.font_family,
-        italic = parent.italic, weight = parent.weight,
-        font_fam_id = parent.font_fam_id, invisible = parent.invisible,
-        white_space = parent.white_space, text_transform = parent.text_transform,
-        direction = parent.direction, text_align = parent.text_align,
-        writing_mode = parent.writing_mode, text_orientation = parent.text_orientation,
-        tab_size = parent.tab_size, word_spacing = parent.word_spacing,
-        text_indent = parent.text_indent, text_indent_pct = parent.text_indent_pct,
-        indent_each_line = parent.indent_each_line, indent_hanging = parent.indent_hanging,
-        letter_spacing = parent.letter_spacing, font_kerning = parent.font_kerning,
-        opacity = 1.0, deco_color = DECO_UNSET,
-        // transform neutro (escala 1, origem 50%, matriz identidade). Sem isto os
-        // campos ficam em 0 e o paint dispara um xform de matriz-zero que colapsa
-        // o pseudo a um ponto (bg + texto somem). `apply_decls` multiplica scale.
-        transform_sx = 1, transform_sy = 1, transform_ox = 0.5, transform_oy = 0.5,
-        xf_a = 1, xf_d = 1,
-    }
+    // herda do elemento de origem; o resto no INICIAL (ver computed_for_pseudo)
+    pc := computed_for_pseudo(parent)
     apply_decls(&pc, decls, vars, vw, vh, n)
     if !pc.has_content do return nil // content:none/normal
 
@@ -2444,14 +2156,8 @@ compute_first_letter :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string
     defer delete(decls)
     if len(decls) == 0 do return nil // sem regra ::first-letter
 
-    pc := Computed{
-        color = parent.color, font_size = parent.font_size,
-        line_height = parent.line_height, font_family = parent.font_family,
-        italic = parent.italic, weight = parent.weight,
-        opacity = 1.0, deco_color = DECO_UNSET,
-        transform_sx = 1, transform_sy = 1, transform_ox = 0.5, transform_oy = 0.5,
-        xf_a = 1, xf_d = 1,
-    }
+    // herda do elemento de origem; o resto no INICIAL (ver computed_for_pseudo)
+    pc := computed_for_pseudo(parent)
     apply_decls(&pc, decls, vars, vw, vh, n)
 
     out := new(Computed)
@@ -2474,14 +2180,8 @@ compute_placeholder :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]
     defer delete(decls)
     if len(decls) == 0 do return nil
 
-    pc := Computed{
-        color = parent.color, font_size = parent.font_size,
-        line_height = parent.line_height, font_family = parent.font_family,
-        italic = parent.italic, weight = parent.weight,
-        opacity = 1.0, deco_color = DECO_UNSET,
-        transform_sx = 1, transform_sy = 1, transform_ox = 0.5, transform_oy = 0.5,
-        xf_a = 1, xf_d = 1,
-    }
+    // herda do elemento de origem; o resto no INICIAL (ver computed_for_pseudo)
+    pc := computed_for_pseudo(parent)
     apply_decls(&pc, decls, vars, vw, vh, n)
 
     out := new(Computed)
@@ -2800,7 +2500,8 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             if pass not_in m && .Unknown not_in m do continue
         }
         rule := &rules[ri]
-        vh_mq := g_viewport_h > 0 ? g_viewport_h : 720 // ver a nota no g_viewport_h
+        vh_mq := style_doc().viewport_h
+        if vh_mq <= 0 do vh_mq = 720 // documento sem compute_styles ainda: fallback no LEITOR
         if !csspkg.media_matches(rule^, viewport_w, vh_mq, g_prefers_dark) do continue
         // @container: avalia contra o CONTÊINER medido (com fallback p/ viewport)
         if rule.cq_active && !container_matches(rule^, n, styles, viewport_w) do continue
@@ -3572,28 +3273,7 @@ install_value_usable :: proc "contextless" () {
     csspkg.g_value_usable = value_usable
 }
 
-@(private="file")
-// Valores INICIAIS de todas as propriedades (o "zero" da spec). Os campos que
-// não aparecem aqui têm inicial = zero do tipo.
-computed_initial :: proc() -> Computed {
-    return Computed{text_align = .Start, color = DEFAULT_TEXT, font_size = 16 * g_zoom, line_height = 1.3, opacity = 1.0,
-                    obj_pos_x = 0.5, obj_pos_y = 0.5, transform_sx = 1, transform_sy = 1,
-                    transform_ox = 0.5, transform_oy = 0.5, xf_a = 1, xf_d = 1, deco_color = DECO_UNSET,
-                    // Estes seis DIVERGIAM do bloco de reset das não-herdadas de
-                    // compute_node, que é quem manda em produção: aqui ficavam no
-                    // zero-value do tipo, e o zero-value NÃO é o valor inicial da
-                    // spec. Duas consequências reais: `all: initial` (que faz
-                    // `comp^ = computed_initial()`) produzia um estilo que a
-                    // engine nunca produziria sozinha, e todo teste escrito com
-                    // `test_apply` media contra uma base errada — foi o falso
-                    // positivo de `flex: 1` (shrink 0 aqui, 1 no pipeline).
-                    flex_shrink = 1,          // css-flexbox §7.2: inicial 1
-                    col_gap     = -1,         // sentinela "normal" (1em)
-                    ac_stretch  = true,       // align-content: normal → stretch
-                    bg_origin   = .Padding,   // background-origin: padding-box
-                    bg_repeat   = true,       // background-repeat: repeat
-                    grid_col_span = 1, grid_row_span = 1}
-}
+// computed_initial mora em style_registry.odin, junto da herança e do efeito.
 
 apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[string]string, vw: f32 = 1280, vh: f32 = 720, node: ^dompkg.Node = nil) {
     decls := raw_decls
@@ -7737,22 +7417,6 @@ node_classes_slow :: proc(cls: string) -> []string {
 parse_transform_origin :: proc(value:string) -> (ox,oy:f32) {
     ox,oy,_,_,_=x_parse_origin(value,16,1280,720)
     return
-}
-
-// Estado inicial dos campos que `translate`/`rotate`/`scale`/`transform`
-// alimentam. `transform-origin` fica de fora: é outra propriedade.
-@(private="file")
-transform_reset :: proc(comp: ^Computed) {
-    comp.has_transform  = false
-    comp.transform_tx   = 0; comp.transform_ty   = 0
-    comp.transform_tx_pct = false; comp.transform_ty_pct = false
-    comp.xf_percent = {}
-    comp.xform = nil
-    comp.transform_rot  = 0
-    comp.transform_sx   = 1; comp.transform_sy   = 1
-    comp.xf_a = 1; comp.xf_b = 0; comp.xf_c = 0; comp.xf_d = 1
-    comp.has_xform_matrix = false
-    comp.xf_back = false
 }
 
 @(private="file")

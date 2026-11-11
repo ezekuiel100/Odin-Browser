@@ -2763,7 +2763,7 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
     b.y = y + mt
     b.content_w = cw
     // container queries: publica a largura de conteúdo MEDIDA deste contêiner p/
-    // a próxima resolução de estilo (ver g_container_w em style.odin).
+    // a próxima resolução de estilo (ver Style_Doc em style_doc.odin).
     if b.container_inline do container_w_record(b.node, cw)
     b.content_x = b.x + bwl + p[3]
     b.content_y = b.y + bwt + p[0]
@@ -2837,10 +2837,10 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
     } else if b.is_table && table_has_structure(b) {
         content_h = layout_table(b)
     } else if !b.is_inline && b.kind==.Block && b.writing_mode!=.Horizontal {
-        content_h=layout_vertical_blocks(b,avail_h>=0 ? avail_h : (cb_h>=0 ? cb_h : max(1,g_viewport_h)),b.has_width || force_w>=0)
+        content_h=layout_vertical_blocks(b,avail_h>=0 ? avail_h : (cb_h>=0 ? cb_h : max(1,style_doc().viewport_h)),b.has_width || force_w>=0)
         if !b.has_width && force_w<0 { cw=b.vertical_block_extent; b.content_w=cw; b.w=cw+extra_w }
     } else if b.is_inline && b.writing_mode != .Horizontal {
-        content_h=layout_vertical_inline(b,avail_h>=0 ? avail_h : (cb_h>=0 ? cb_h : max(1,g_viewport_h)),b.has_width || force_w>=0)
+        content_h=layout_vertical_inline(b,avail_h>=0 ? avail_h : (cb_h>=0 ? cb_h : max(1,style_doc().viewport_h)),b.has_width || force_w>=0)
         if !b.has_width && force_w<0 {
             cw=b.vertical_block_extent; b.content_w=cw; b.w=cw+extra_w
         }
@@ -3634,7 +3634,7 @@ layout_inline :: proc(b: ^Box, wrap_w: f32 = -1, nlines: ^int = nil) -> f32 {
 // Share source selection between block images and replaced inline items.
 // Otherwise an inline avatar always loads src, even when srcset has a sharper image.
 image_source_for :: proc(node: ^dompkg.Node, base: string) -> (string, ^dompkg.Node) {
-    target := g_viewport_w > 0 ? g_viewport_w : 1280
+    target := style_doc().viewport_w > 0 ? style_doc().viewport_w : 1280
     source := picture_source_for(node)
     candidate := source != nil ? source : node
     url := ""
@@ -3714,8 +3714,8 @@ srcset_pick :: proc(srcset: string, alvo_w: f32) -> string {
 @(private="file")
 picture_source_for :: proc(img: ^dompkg.Node) -> ^dompkg.Node {
     if img == nil || img.parent == nil || img.parent.tag != "picture" do return nil
-    vw := g_viewport_w > 0 ? g_viewport_w : 1280
-    vh := g_viewport_h > 0 ? g_viewport_h : 720
+    vw := style_doc().viewport_w > 0 ? style_doc().viewport_w : 1280
+    vh := style_doc().viewport_h > 0 ? style_doc().viewport_h : 720
     for c in img.parent.children {
         if c == img do break // só os <source> ANTERIORES ao <img> contam
         if c.kind != .Element || c.tag != "source" do continue
@@ -11534,7 +11534,7 @@ tab_advance :: proc(it: ^Inline_Item, x, word_spacing: f32) -> f32 {
 // Available inline extent shared by physical-width intrinsic measurements.
 @(private="file")
 orthogonal_inline_limit :: proc(b: ^Box) -> f32 {
-    limit := b.has_height ? b.height : max(1, g_viewport_h)
+    limit := b.has_height ? b.height : max(1, style_doc().viewport_h)
     if b.has_height && b.box_sizing == .Border do limit = max(0, limit-b.padding[0]-b.padding[2]-bw_y(b))
     return limit
 }

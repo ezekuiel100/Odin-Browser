@@ -54,9 +54,10 @@ style_cross_dependencies :: proc(rules: []css.Rule) -> bool {
     return false
 }
 
-// Deliberately small paint whitelist: every other field, including new fields
-// added to Computed, conservatively requires layout. Compare fields rather
-// than raw bytes (padding and owned pointer addresses are not CSS values).
+// The paint whitelist is the `.Paint` effect in style_registry.odin: every
+// other field, including new fields added to Computed, conservatively requires
+// layout. Compare fields rather than raw bytes (padding and owned pointer
+// addresses are not CSS values).
 styles_paint_only :: proc(old, fresh: map[^dom.Node]Computed, dirty: map[^dom.Node]bool) -> bool {
     for n in dirty {
         a, ok := old[n]
@@ -64,15 +65,14 @@ styles_paint_only :: proc(old, fresh: map[^dom.Node]Computed, dirty: map[^dom.No
         b := fresh[n]
         if a.style_layout_fp != b.style_layout_fp do return false
         a.style_fp = b.style_fp
-        a.bg = b.bg; a.has_bg = b.has_bg; a.bg_canvas = b.bg_canvas
-        a.opacity = b.opacity; a.cursor = b.cursor
+        computed_copy_paint(&a, b)
         if !reflect.equal(a, b, true) do return false
     }
     return true
 }
 
 paint_changed :: proc(a, b: Computed) -> bool {
-    return a.bg != b.bg || a.has_bg != b.has_bg || a.bg_canvas != b.bg_canvas || a.opacity != b.opacity || a.cursor != b.cursor
+    return computed_paint_changed(a, b)
 }
 
 // Inline elements can be represented by text runs/effect records instead of
@@ -93,9 +93,7 @@ paint_boxes_available :: proc(root: ^Box, old, fresh: map[^dom.Node]Computed, di
 refresh_box_paint :: proc(b: ^Box, old, styles: map[^dom.Node]Computed, dirty: map[^dom.Node]bool) {
     if b == nil do return
     if dirty[b.node] && paint_changed(old[b.node], styles[b.node]) {
-        c := styles[b.node]
-        b.bg = c.bg; b.has_bg = c.has_bg; b.bg_canvas = c.bg_canvas
-        b.opacity = c.opacity; b.cursor = c.cursor
+        box_apply_paint(b, styles[b.node])
     }
     for child in b.children do refresh_box_paint(child, old, styles, dirty)
     for it in b.inlines do if it.box != nil do refresh_box_paint(it.box, old, styles, dirty)

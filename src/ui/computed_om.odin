@@ -227,12 +227,12 @@ js_viewport_set :: proc(w, h: f32) { g_js_vw, g_js_vh = w, h }
 
 // `window.matchMedia(q).matches`: MESMO parser e MESMA avaliação do `@media` da
 // folha (csspkg.media_query_matches) e MESMA altura de referência que o passe de
-// estilo usa (`g_viewport_h > 0 ? … : 720`, ver compute_styles) — CSS e JS da
+// estilo usa (`style_doc().viewport_h > 0 ? … : 720`, ver compute_styles) — CSS e JS da
 // mesma página não podem discordar sobre "sou mobile?".
 js_media_matches :: proc(query: string) -> bool {
     vw := g_js_vw
     if vw <= 0 do vw = 800 // mesmo fallback do window.innerWidth
-    vh := g_viewport_h > 0 ? g_viewport_h : 720
+    vh := style_doc().viewport_h > 0 ? style_doc().viewport_h : 720
     return csspkg.media_query_matches(query, vw, vh, g_prefers_dark)
 }
 
