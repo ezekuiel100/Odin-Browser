@@ -84,7 +84,8 @@ layout_vertical_inline :: proc(b:^Box,limit:f32,defined_width:bool) -> f32 {
         across,advance:f32
         if it.kind==.Word {
             word_width(&it)
-            upright:=vertical_upright(it.text,b.text_orientation)
+            orientation:=it.orientation_set ? it.orientation : b.text_orientation
+            upright:=vertical_upright(it.text,orientation)
             across=it.fsize*(it.lh>0 ? it.lh : 1.3)
             advance=upright ? it.fsize : it.text_w
             it.vertical_sideways=!upright

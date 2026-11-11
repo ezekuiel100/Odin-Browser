@@ -7473,7 +7473,7 @@ compound_matches_node :: proc(c: csspkg.Compound, n: ^dompkg.Node, scope: ^dompk
     classes: []string
     if len(c.classes) > 0 do classes = node_classes_into(n, cls_buf[:])
     if !csspkg.compound_matches(c, n.tag, classes, id, n.attrs) do return false
-    if c.nth_kind != .None && !structural_matches(c, n) do return false
+    if c.nth_kind != .None && !structural_matches(c, n, scope) do return false
     if c.empty_req && !node_is_empty(n) do return false
     if c.dir_req != .None { // :dir(ltr)/:dir(rtl)
         switch c.dir_req {
@@ -7498,7 +7498,7 @@ compound_matches_node :: proc(c: csspkg.Compound, n: ^dompkg.Node, scope: ^dompk
     }
     has_group_match := false
     for h, i in c.has { // OR dentro de uma chamada; AND entre chamadas de :has().
-        if !has_group_match do has_group_match = has_matches(n, h.lead, h.sel)
+        if !has_group_match do has_group_match = has_matches(n, h.lead, h.sel, scope)
         if h.group_end || i == len(c.has) - 1 {
             if !has_group_match do return false
             has_group_match = false
@@ -7527,26 +7527,26 @@ next_elem_sibling :: proc(n: ^dompkg.Node) -> ^dompkg.Node {
 // esquerda p/ a direita: parte do escopo, encontra candidatos p/ parts[0], e
 // segue a cadeia até o alvo.
 @(private="file")
-has_matches :: proc(scope: ^dompkg.Node, lead: csspkg.Combinator, sel: csspkg.Selector) -> bool {
-    return has_reach(scope, lead, sel, 0)
+has_matches :: proc(anchor: ^dompkg.Node, lead: csspkg.Combinator, sel: csspkg.Selector, scope: ^dompkg.Node) -> bool {
+    return has_reach(anchor, lead, sel, 0, scope)
 }
 
 @(private="file")
-has_reach :: proc(from: ^dompkg.Node, comb: csspkg.Combinator, sel: csspkg.Selector, idx: int) -> bool {
+has_reach :: proc(from: ^dompkg.Node, comb: csspkg.Combinator, sel: csspkg.Selector, idx: int, scope: ^dompkg.Node) -> bool {
     switch comb {
     case .Child:
-        for c in from.children do if c.kind == .Element && has_try(c, sel, idx) do return true
+        for c in from.children do if c.kind == .Element && has_try(c, sel, idx, scope) do return true
     case .Descendant:
         for c in from.children {
             if c.kind != .Element do continue
-            if has_try(c, sel, idx) do return true
-            if has_reach(c, .Descendant, sel, idx) do return true // desce mais fundo
+            if has_try(c, sel, idx, scope) do return true
+            if has_reach(c, .Descendant, sel, idx, scope) do return true // desce mais fundo
         }
     case .Adjacent:
-        if s := next_elem_sibling(from); s != nil do return has_try(s, sel, idx)
+        if s := next_elem_sibling(from); s != nil do return has_try(s, sel, idx, scope)
     case .Sibling:
         for s := next_elem_sibling(from); s != nil; s = next_elem_sibling(s) {
-            if has_try(s, sel, idx) do return true
+            if has_try(s, sel, idx, scope) do return true
         }
     }
     return false
@@ -7555,17 +7555,17 @@ has_reach :: proc(from: ^dompkg.Node, comb: csspkg.Combinator, sel: csspkg.Selec
 // Testa o candidato contra parts[idx] e, se casar e não for o alvo, segue a
 // cadeia interna de S via o próximo combinador.
 @(private="file")
-has_try :: proc(cand: ^dompkg.Node, sel: csspkg.Selector, idx: int) -> bool {
-    if !compound_matches_node(sel.parts[idx], cand) do return false
+has_try :: proc(cand: ^dompkg.Node, sel: csspkg.Selector, idx: int, scope: ^dompkg.Node) -> bool {
+    if !compound_matches_node(sel.parts[idx], cand, scope) do return false
     if idx == len(sel.parts) - 1 do return true
-    return has_reach(cand, sel.combs[idx], sel, idx + 1)
+    return has_reach(cand, sel.combs[idx], sel, idx + 1, scope)
 }
 
 // Avalia a pseudo-classe estrutural (:first-child/:nth-child/…) contra a
 // posição do nó entre os irmãos ELEMENTO do pai (1-based; *-of-type conta só
 // irmãos com a mesma tag).
 @(private="file")
-structural_matches :: proc(c: csspkg.Compound, n: ^dompkg.Node) -> bool {
+structural_matches :: proc(c: csspkg.Compound, n: ^dompkg.Node, scope: ^dompkg.Node) -> bool {
     p := n.parent
     if p == nil do return false
     of_type := c.nth_kind == .Of_Type || c.nth_kind == .Last_Of_Type || c.nth_kind == .Only_Of_Type
@@ -7573,6 +7573,11 @@ structural_matches :: proc(c: csspkg.Compound, n: ^dompkg.Node) -> bool {
     for ch in p.children {
         if ch.kind != .Element do continue
         if of_type && ch.tag != n.tag do continue
+        if len(c.nth_filter)>0 {
+            matched := false
+            for sel in c.nth_filter do if selector_matches_node(sel, ch, scope) { matched=true; break }
+            if !matched do continue
+        }
         total += 1
         if ch == n do idx = total
     }

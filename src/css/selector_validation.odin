@@ -154,7 +154,12 @@ selector_complex_valid :: proc(s: string, relative: bool, depth: int) -> bool {
                     case "not", "has":
                         if !functional || !selector_list_valid(arg, false, name == "has", depth+1) do return false
                     case "nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type":
-                        _, _, ok := parse_nth(arg)
+                        formula, filter := split_nth_filter(arg)
+                        if formula != arg {
+                            if name != "nth-child" && name != "nth-last-child" do return false
+                            if !selector_list_valid(filter, false, false, depth+1) do return false
+                        }
+                        _, _, ok := parse_nth(formula)
                         if !functional || !ok do return false
                     case "dir":
                         if !functional || (strings.trim_space(arg) != "ltr" && strings.trim_space(arg) != "rtl") do return false

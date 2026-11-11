@@ -159,3 +159,20 @@ writing_unicode_vertical_orientation :: proc(t:^testing.T) {
     }
     free_layout(root); dompkg.free_tree(doc)
 }
+
+@(test)
+writing_inline_orientation_override :: proc(t:^testing.T) {
+    advances:[128]f32
+    f:=wm_init_font(&advances)
+    defer text_metrics_clear()
+    root,b,doc:=wm_build(`<div id="t" style="writing-mode:vertical-rl;text-orientation:sideways;font-size:20px;line-height:1;height:100px"><span style="text-orientation:upright">AB</span></div>`,&f)
+    defer { free_layout(root); dompkg.free_tree(doc) }
+    for _ in 0..<2 {
+        layout_box(b,0,0,300)
+        testing.expect_value(t,len(b.inlines),2)
+        for it in b.inlines {
+            testing.expect(t,!it.vertical_sideways)
+            testing.expect_value(t,it.h,20)
+        }
+    }
+}

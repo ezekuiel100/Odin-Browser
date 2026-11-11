@@ -69,3 +69,24 @@ selector_dom_syntax_errors :: proc(t: ^testing.T) {
         testing.expectf(t, ok, "missing SyntaxError: %s (got %v)", script, result)
     }
 }
+
+@(test)
+selector_filtered_nth_and_has_scope :: proc(t: ^testing.T) {
+    root := htmlpkg.parse(`<main id="m"><div id="a" class="x"><span></span></div><i></i><div id="b" class="x"></div><div id="c" class="x"></div></main>`)
+    defer dompkg.free_tree(root)
+    scripts := []string{
+        `document.querySelector(':nth-child(2 of .x)').id === 'b'`,
+        `document.querySelector(':nth-last-child(2 of .x)').id === 'b'`,
+        `document.querySelectorAll(':nth-child(-n + 2 of .x, i)').length === 2`,
+        `document.getElementById('m').querySelector(':nth-child(2 of :scope > .x)').id === 'b'`,
+        `document.getElementById('a').matches(':has(> :is(:scope > span))')`,
+        `document.getElementById('m').querySelectorAll('div:has(> :is(:scope > span))').length === 0`,
+        `!CSS.supports('selector(:nth-of-type(2 of .x))')`,
+        `!CSS.supports('selector(:nth-child(2 of ))')`,
+    }
+    for script in scripts {
+        result := jspkg.run_with_dom(script, root)
+        ok, _ := result.(bool)
+        testing.expectf(t, ok, "%s: %v", script, result)
+    }
+}

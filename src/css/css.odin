@@ -71,6 +71,7 @@ Compound :: struct {
     id:      string,
     specificity: [3]int,       // (IDs, classes/attrs/pseudos, types/pseudo-elements)
     attrs:   [dynamic]Attr_Sel, // seletores de atributo ([type="text"]…)
+    nth_filter: [dynamic]Selector,
     nth_kind:    Nth_Kind,      // pseudo-classe estrutural (:first-child/:nth-child…)
     nth_a, nth_b: int,          // An+B de :nth-child()/:nth-of-type()
     ui_states: bit_set[UI_State], // :checked/:disabled/… (avaliados por atributo)
@@ -1557,7 +1558,20 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
             }
             // pseudo-classe estrutural (:first-child/:nth-child…): registra e
             // segue parseando o composto (ex.: li:first-child:hover)
-            if kind, a, b, ok := parse_structural(name, arg); ok {
+            formula, filter := split_nth_filter(arg)
+            if !strings.equal_fold(name, "nth-child") && !strings.equal_fold(name, "nth-last-child") { formula = arg; filter = "" }
+            if kind, a, b, ok := parse_structural(name, formula); ok {
+                if filter != "" {
+                    best: [3]int
+                    for part in split_selector_list_top(filter) {
+                        sel, valid := parse_complex(strings.trim_space(part))
+                        if valid {
+                            append(&out.nth_filter, sel)
+                            if specificity_compare(sel.specificity, best)>0 do best=sel.specificity
+                        } else { out.never = true }
+                    }
+                    out.specificity = specificity_add(out.specificity, best)
+                }
                 if out.nth_kind == .None {
                     out.nth_kind = kind; out.nth_a = a; out.nth_b = b
                 }
@@ -3414,6 +3428,8 @@ free_compound :: proc(p: ^Compound) {
     delete(p.attrs)
     for &ns in p.nots do free_selector(&ns)
     delete(p.nots)
+    for &s in p.nth_filter do free_selector(&s)
+    delete(p.nth_filter)
     for &os in p.ors do free_selector(&os)
     delete(p.ors)
     for &h in p.has do free_selector(&h.sel)
