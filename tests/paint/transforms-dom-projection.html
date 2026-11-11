@@ -1,0 +1,28 @@
+<!doctype html><style>
+body{margin:0;background:white}
+.case{position:absolute;left:40px;top:200px;width:300px;height:100px;visibility:hidden}
+#cross{top:30px;transform:perspective(100px) rotateY(75deg)}
+#behind{transform:perspective(100px) translateZ(150px)}
+#zero{font-size:0;line-height:0;transform:perspective(100px) translateZ(100px)}
+#tiny,#negative{transform-origin:0 0}
+#tiny{transform:matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,.000001)}
+#negative{transform:matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,-.000001)}
+#corner{left:0;top:0;width:8px;height:10px;transform-origin:0 0;transform:matrix3d(1,0,0,-.125,0,1,0,0,0,0,1,0,0,0,0,1)}
+img{width:20px;height:10px;vertical-align:top}
+.mark{position:absolute;top:20px;width:25px;height:25px;background:red}
+</style><div id="cross" class="case"></div><div id="behind" class="case"></div>
+<div id="zero" class="case"><span><img id="inline"></span></div><div id="tiny" class="case"></div><div id="negative" class="case"></div><div id="corner" class="case"></div>
+<div id="m0" class="mark" style="left:20px"></div><div id="m1" class="mark" style="left:60px"></div><div id="m2" class="mark" style="left:100px"></div><div id="m3" class="mark" style="left:140px"></div><div id="m4" class="mark" style="left:180px"></div><div id="m5" class="mark" style="left:220px"></div><div id="m6" class="mark" style="left:260px"></div>
+<script>setTimeout(function(){
+var passed=0;
+function mark(i,ok){if(ok){document.getElementById('m'+i).style.backgroundColor='green';passed++;}}
+function rect(id){return document.getElementById(id).getBoundingClientRect();}
+var r=rect('cross');mark(0,Math.abs(r.x-205.853256)<.01&&Math.abs(r.y+31.386175)<.01&&Math.abs(r.width-70.633347)<.01&&Math.abs(r.height-222.772339)<.01);
+r=rect('behind');mark(1,r.x===-110&&r.y===150&&r.width===600&&r.height===200);
+r=rect('zero');var f=document.getElementById('zero').getClientRects();mark(2,r.x===-150&&r.y===-50&&r.width===300&&r.height===100&&f.length===1&&f[0].width===r.width);
+r=rect('tiny');mark(3,Math.abs(r.x-40)<.01&&Math.abs(r.y-200)<.01&&Math.abs(r.width-300000000)<64&&Math.abs(r.height-100000000)<32);
+r=rect('negative');mark(4,Math.abs(r.width-300000000)<64&&Math.abs(r.height-100000000)<32);
+r=rect('inline');f=document.getElementById('inline').getClientRects();mark(5,r.x===-150&&r.y===-50&&r.width===20&&r.height===10&&f.length===1&&f[0].width===20);
+r=rect('corner');mark(6,r.x===0&&r.y===0&&r.width===8&&r.height===10);
+document.body.setAttribute('data-projection-checks',String(passed));
+},0);</script>

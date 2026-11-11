@@ -227,3 +227,20 @@ xform_clips_only_after_ancestor_composition :: proc(t:^testing.T) {
     x_project_vertices(&dl,0,m,false,&depth)
     testing.expect(t,verts[0].pos==im.Vec2{10,20} && len(depth)==0,"negative intermediate W must survive until the final ancestor")
 }
+
+@(test)
+xform_dom_bounds_zero_and_small_w :: proc(t:^testing.T) {
+    m:XMatrix=1
+    m[3,3]=0
+    x,y,r,b:=x_bounds(m,20,10)
+    testing.expect(t,x==0 && y==0 && r==20 && b==10,"zero W retains homogeneous X/Y rather than dropping corners")
+    m[3,3]=1e-6
+    x,y,r,b=x_bounds(m,20,10)
+    testing.expect(t,x==0 && y==0 && abs(r-20e6)<2 && abs(b-10e6)<2,"small positive W is divided")
+    m[3,3]=-1e-6
+    x,y,r,b=x_bounds(m,20,10)
+    testing.expect(t,abs(x+20e6)<2 && abs(y+10e6)<2 && r==0 && b==0,"negative W is included in DOM bounds")
+    m=XMatrix(1); m[3,0]=-0.1
+    x,y,r,b=x_bounds(m,10,10)
+    testing.expect(t,x==0 && y==0 && r==10 && b==10,"a corner on the eye plane is retained")
+}

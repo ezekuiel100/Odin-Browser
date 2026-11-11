@@ -827,7 +827,7 @@ js_element_fragment :: proc(node:^dompkg.Node,index:int) -> (x,y,w,h:f32,ok:bool
     parts:=g_js_fragments[node]
     if index>=len(parts) do return
     part:=parts[index]; r:=part.rect
-    m:=part.box.x_world*x_translation(r.x,r.y,0)
+    m:=part.box.x_world*x_translation64(r.x,r.y,0)
     x0,y0,x1,y1:=x_bounds(m,r.w,r.h)
     return x0,y0,x1-x0,y1-y0,true
 }

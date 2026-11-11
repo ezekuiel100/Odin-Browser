@@ -379,10 +379,10 @@ x_preserves :: proc(b:^Box) -> bool {
 // Retain a homography for the local border plane, rather than its bounding box:
 // a rotated box must not catch clicks in the empty corners of that bounding box.
 x_geometry_tree :: proc(root:^Box, ox,oy,sx,sy:f32) {
-    identity:XMatrix=1
+    identity:matrix[4,4]f64=1
     x_geometry_rec(root,ox,oy,sx,sy,identity)
 }
-x_geometry_rec :: proc(b:^Box,ox,oy,sx,sy:f32,parent:XMatrix) {
+x_geometry_rec :: proc(b:^Box,ox,oy,sx,sy:f32,parent:matrix[4,4]f64) {
     if b==nil do return
     dx,dy:=animation_translation_delta(b)
     xx,yy:=ox+b.rel_dx+dx,oy+b.rel_dy+dy
@@ -416,18 +416,18 @@ x_geometry_rec :: proc(b:^Box,ox,oy,sx,sy:f32,parent:XMatrix) {
     xx+=m[0,3]-tx-dx; yy+=m[1,3]-ty-dy
     x,y:=b.x+xx-sx,b.y+yy-sy
     px,py:=x-m[0,3]+b.w*b.transform_ox+b.transform_opx,y-m[1,3]+b.h*b.transform_oy+b.transform_opy
-    project:=x_translation(px,py,b.transform_opz)*m*x_translation(-px-m[0,3],-py-m[1,3],-b.transform_opz)
+    project:=x_translation64(px,py,b.transform_opz)*(cast(matrix[4,4]f64)m)*x_translation64(-px-m[0,3],-py-m[1,3],-b.transform_opz)
     world:=parent*project
-    b.x_world=world*x_translation(x,y,0)
+    b.x_world=world*x_translation64(x,y,0)
     descendants:=world
     if !x_preserves(b) {
-        flat:XMatrix=1; flat[2,2]=0
+        flat:matrix[4,4]f64=1; flat[2,2]=0
         descendants=descendants*flat
     }
     if b.perspective>0 {
-        p:XMatrix=1; p[3,2]=-1/b.perspective
+        p:matrix[4,4]f64=1; p[3,2]=-1/f64(b.perspective)
         cx,cy:=x+b.w*b.perspective_ox+b.perspective_opx,y+b.h*b.perspective_oy+b.perspective_opy
-        descendants=descendants*x_translation(cx,cy,0)*p*x_translation(-cx,-cy,0)
+        descendants=descendants*x_translation64(cx,cy,0)*p*x_translation64(-cx,-cy,0)
     }
     if b.overflow_scroll { xx-=b.scroll_x; yy-=b.scroll_y }
     for child in b.children do x_geometry_rec(child,xx,yy,sx,sy,descendants)
@@ -436,32 +436,36 @@ x_geometry_rec :: proc(b:^Box,ox,oy,sx,sy:f32,parent:XMatrix) {
     }
 }
 
-x_unproject :: proc(m:XMatrix,x,y:f32) -> (u,v:f32,ok:bool) {
+x_unproject :: proc(m:matrix[4,4]$T,x,y:f32) -> (u,v:f32,ok:bool) {
     // Solve the inverse plane homography without inverting a singular 4D
     // flattening matrix. Edge-on and zero-scale planes have no hit area.
-    a,b:=m[0,0]-x*m[3,0],m[0,1]-x*m[3,1]
-    c,d:=m[1,0]-y*m[3,0],m[1,1]-y*m[3,1]
-    e,f:=x*m[3,3]-m[0,3],y*m[3,3]-m[1,3]
+    px,py:=T(x),T(y)
+    a,b:=m[0,0]-px*m[3,0],m[0,1]-px*m[3,1]
+    c,d:=m[1,0]-py*m[3,0],m[1,1]-py*m[3,1]
+    e,f:=px*m[3,3]-m[0,3],py*m[3,3]-m[1,3]
     det:=a*d-b*c
     if abs(det)<1e-8 do return 0,0,false
-    u,v=(e*d-b*f)/det,(a*f-e*c)/det
-    return u,v,m[3,0]*u+m[3,1]*v+m[3,3]>1e-5
+    local_x,local_y:=(e*d-b*f)/det,(a*f-e*c)/det
+    return f32(local_x),f32(local_y),m[3,0]*local_x+m[3,1]*local_y+m[3,3]>T(X_EYE_EPS)
 }
-x_contains :: proc(m:XMatrix,w,h,x,y:f32) -> bool {
+x_contains :: proc(m:matrix[4,4]$T,w,h,x,y:f32) -> bool {
     u,v,ok:=x_unproject(m,x,y)
     return ok && u>=0 && v>=0 && u<w && v<h
 }
-x_bounds :: proc(m:XMatrix,w,h:f32) -> (x0,y0,x1,y1:f32) {
-    x0=f32(3.402823e38); y0=f32(3.402823e38); x1=-f32(3.402823e38); y1=-f32(3.402823e38)
-    points:=[4][4]f32{{0,0,0,1},{w,0,0,1},{w,h,0,1},{0,h,0,1}}
+x_bounds :: proc(m:matrix[4,4]$T,w,h:f32) -> (x0,y0,x1,y1:f32) {
+    lo_x,lo_y:=T(3.402823e38),T(3.402823e38)
+    hi_x,hi_y:=-lo_x,-lo_y
+    points:=[4][4]T{{0,0,0,1},{T(w),0,0,1},{T(w),T(h),0,1},{0,T(h),0,1}}
     for v in points {
         q:=m*v
-        if abs(q[3])<1e-5 do continue
-        x,y:=q[0]/q[3],q[1]/q[3]
-        x0=min(x0,x); y0=min(y0,y); x1=max(x1,x); y1=max(y1,y)
+        // DOM rectangles project all corners, including negative W. They are
+        // not the bounds of the eye-clipped painted polygon. At exactly zero
+        // W, retain X/Y (as Chromium does); small nonzero W must still divide.
+        divisor:=q[3]==0 ? T(1) : q[3]
+        x,y:=q[0]/divisor,q[1]/divisor
+        lo_x=min(lo_x,x); lo_y=min(lo_y,y); hi_x=max(hi_x,x); hi_y=max(hi_y,y)
     }
-    if x0==f32(3.402823e38) do return 0,0,0,0
-    return
+    return f32(lo_x),f32(lo_y),f32(hi_x),f32(hi_y)
 }
 x_mouse_over :: proc(b:^Box,screen:im.Vec2,ox,oy:f32) -> bool {
     // Convert ImGui window coordinates to the viewport coordinates used by DOM.
@@ -504,4 +508,12 @@ x_widget_mouse :: proc(b:^Box) -> XMouse {
 x_widget_restore :: proc(saved:XMouse) {
     io:=im.GetIO()
     io.MousePos=saved.pos; io.MousePosPrev=saved.prev; io.MouseDelta=saved.delta; io.MouseClickedPos=saved.clicked
+}
+
+// Geometry composition needs extra precision when translation terms nearly
+// cancel at very small W. Paint matrices and vertex buffers remain f32.
+x_translation64 :: proc(x,y,z:f32) -> matrix[4,4]f64 {
+    m:matrix[4,4]f64=1
+    m[0,3]=f64(x); m[1,3]=f64(y); m[2,3]=f64(z)
+    return m
 }

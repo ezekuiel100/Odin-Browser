@@ -237,7 +237,7 @@ Form_Control :: enum u8 { None, Checkbox, Radio, Text, Password, Textarea, Selec
 EDIT_CAP :: 256
 
 Box :: struct {
-    x_world: XMatrix,
+    x_world: matrix[4,4]f64,
     x_hovered: bool,
     x_view_origin, x_paint_origin: im.Vec2,
     node: ^dompkg.Node,
@@ -8691,7 +8691,7 @@ paint_select :: proc(b: ^Box, screen: im.Vec2, eff: f32) {
     }
     popup_id:=im.cImHashStr("##ComboPopup",0,item_id)
     if pressed && !im.IsPopupOpenID(popup_id,im.PopupFlags_None) do im.OpenPopupEx(popup_id,im.PopupFlags_None)
-    anchor:=b.x_world*x_translation(ix-b.x_paint_origin.x,iy-b.x_paint_origin.y,0)
+    anchor:=b.x_world*x_translation64(ix-b.x_paint_origin.x,iy-b.x_paint_origin.y,0)
     x0,y0,x1,y1:=x_bounds(anchor,iw,line_h)
     rect:=im.Rect{{x0+b.x_view_origin.x,y0+b.x_view_origin.y},{x1+b.x_view_origin.x,y1+b.x_view_origin.y}}
     im.SetNextWindowPos({rect.Min.x,rect.Max.y})

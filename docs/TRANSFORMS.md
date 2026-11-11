@@ -10,13 +10,13 @@ Eye-plane crossings are clipped in homogeneous coordinates at W=1e-5 when the 3D
 
 Within a preserve-3d stacking scope, planes paint from far to near using transformed center depth, with document order retained at equal depths. Parent rotation and sampled keyframes participate in this depth calculation. Opacity, filters, overflow clips and other grouping effects flatten the context.
 
-Box and inline-block interaction and DOM rectangles share a composed geometry traversal with ancestor transforms, origins, perspective, scrolling, fixed/sticky positioning and sampled keyframes. Zero-area planes reject pointer hits. Layout metrics such as offsetWidth remain untransformed.
+Box and inline-block interaction and DOM rectangles share a composed geometry traversal with ancestor transforms, origins, perspective, scrolling, fixed/sticky positioning and sampled keyframes. Zero-area planes reject pointer hits. Layout metrics such as offsetWidth remain untransformed. DOM rectangles project all four border-box corners, including negative W; they do not bound the eye-clipped painted polygon. Exactly zero W retains homogeneous X/Y, and every nonzero W is divided without the paint epsilon cutoff. These edge cases are checked against Edge using the DOM projection fixture. See [CSSOM View client rectangles](https://drafts.csswg.org/cssom-view/#dom-element-getclientrects) for the transformed-border-box API and [CSS Transforms perspective processing](https://www.w3.org/TR/css-transforms-2/#transform-3d-rendering) for the separate rendering rules.
 
 ## Current limits
 
 - Ordering uses plane centers and treats nested stacking scopes atomically. Intersecting planes need polygon splitting, and nested preserve-3d scopes need a shared 3D display list. `@supports (transform-style: preserve-3d)` therefore remains false.
 - The SDL renderer interpolates texture coordinates affinely within each triangle; strongly tilted images do not have perspective-correct texture sampling.
-- Box pointer targets invert the projected border plane, and DOM bounding rectangles enclose its transformed corners. Inline link/decorations/opacity targets use the inverse plane transform. Text fields remap pointer and drag positions for native editing; resize grips use local deltas. Select previews share the transformed plane while their native popups remain axis-aligned and anchor to the projected bounds. Inline source provenance survives word coalescing and line splitting: getClientRects returns projected line/column fragments and getBoundingClientRect unions them. Empty inlines retain zero-length provenance anchors through word coalescing and wrapping, so their DOM rectangles follow ancestor transforms and scrolling. Exact subranges within complex shaped glyph clusters remain incomplete. DOM bounding rectangles of eye-plane-crossing boxes still use transformed corners and remain approximate.
+- Box pointer targets invert the projected border plane, and DOM bounding rectangles enclose its transformed corners. Inline link/decorations/opacity targets use the inverse plane transform. Text fields remap pointer and drag positions for native editing; resize grips use local deltas. Select previews share the transformed plane while their native popups remain axis-aligned and anchor to the projected bounds. Inline source provenance survives word coalescing and line splitting: getClientRects returns projected line/column fragments and getBoundingClientRect unions them. Empty inlines retain zero-length provenance anchors through word coalescing and wrapping, so their DOM rectangles follow ancestor transforms and scrolling. Non-replaced inline font extents are approximated by the bounds of their items. Exact subranges within complex shaped glyph clusters remain incomplete. World geometry composes in 64-bit precision to avoid cancellation near the eye plane. DOMRect scalar hooks still return 32-bit floats, so very large extents have limited precision.
 
 ## Verification
 
@@ -28,8 +28,11 @@ Run `./test.ps1` for the package suites. After building, run:
 ./tools/check-transform-hit-geometry.ps1 -Browser ./browser.exe
 ./tools/check-projective-transforms.ps1 -Browser ./browser.exe
 ./tools/check-transform-eye-clip.ps1 -Browser ./browser.exe
+./tools/check-transform-dom-projection.ps1 -Browser ./browser.exe
 ./tools/check-stacking.ps1 -Browser ./browser.exe
 ./tools/check-hover-transform-clip.ps1 -Browser ./browser.exe
 ```
 
 The projective fixture checks both forms of perspective, depth ordering, matrix animation, rotation winding, and rotation/translation order against rendered pixels.
+
+The DOM projection fixture was also checked with Edge 157.0.4341.42. It sets `data-projection-checks="7"` on the body when all checks pass, so a reference browser can verify it using headless `--virtual-time-budget=2000 --dump-dom`. The cases cover mixed/negative/zero/small W, zero-W inline image geometry, and an individual corner on the eye plane.

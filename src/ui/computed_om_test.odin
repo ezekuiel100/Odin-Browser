@@ -628,3 +628,26 @@ test_empty_inline_fragment_geometry :: proc(t:^testing.T) {
     _,y,_,_,ok:=js_element_fragment(por_id(c.dom,"a"),0)
     testing.expect(t,ok && y==20)
 }
+
+@(test)
+test_dom_eye_plane_rectangles :: proc(t:^testing.T) {
+    c:=montar(`<style>body{margin:0}.box{position:absolute;left:40px;top:200px;width:300px;height:100px}#zero{font-size:0;line-height:0;transform:perspective(100px) translateZ(100px)}#tiny{transform-origin:0 0;transform:matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,.000001)}#behind{transform:perspective(100px) translateZ(150px)}#property{perspective:100px}#pc{width:300px;height:100px;transform:translateZ(100px)}img{width:20px;height:10px}</style><div id="zero" class="box"><span><img id="inline" style="vertical-align:top"></span></div><div id="tiny" class="box"></div><div id="behind" class="box"></div><div id="property" class="box"><div id="pc"></div></div>`,800,600,true)
+    defer desmontar(&c)
+    x,y,w,h,ok:=js_element_rect(por_id(c.dom,"zero"))
+    testing.expectf(t,ok && x == -150 && y == -50 && w==300 && h==100,"zero W: (%v,%v,%v,%v)",x,y,w,h)
+    x,y,w,h,ok=js_element_fragment(por_id(c.dom,"inline"),0)
+    testing.expectf(t,ok && x == -150 && y == -50 && w==20 && h==10,"inline at zero W: (%v,%v,%v,%v)",x,y,w,h)
+    _,_,w,h,ok=js_element_rect(por_id(c.dom,"tiny"))
+    testing.expect(t,ok && abs(w-300e6)<64 && abs(h-100e6)<32)
+    x,y,w,h,ok=js_element_rect(por_id(c.dom,"behind"))
+    testing.expect(t,ok && x == -110 && y==150 && w==600 && h==200,"fully clipped paint still has a transformed DOM border box")
+    eq(t,js_str(t,c.vm,`String(document.getElementById('zero').getBoundingClientRect().width)`),"300","DOMRect at zero W")
+    eq(t,js_str(t,c.vm,`String(document.getElementById('inline').getClientRects()[0].width)`),"20","inline DOMRect at zero W")
+    x,y,w,h,ok=js_element_rect(por_id(c.dom,"pc"))
+    testing.expectf(t,ok && x == -150 && y == -50 && w==300 && h==100,"perspective property at zero W: (%v,%v,%v,%v)",x,y,w,h)
+    js_scroll_set(0,20)
+    x,y,w,h,ok=js_element_rect(por_id(c.dom,"zero"))
+    testing.expect(t,ok && x == -150 && y == -50 && w==300 && h==100,"zero-W fallback remains unchanged after scrolling, matching Edge")
+    _,y,_,_,ok=js_element_rect(por_id(c.dom,"tiny"))
+    testing.expectf(t,ok && abs(y-180)<0.01,"small nonzero W retains viewport scroll: %v",y)
+}
