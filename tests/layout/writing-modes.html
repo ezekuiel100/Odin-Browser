@@ -1,0 +1,16 @@
+<!doctype html><meta charset="utf-8"><title>Vertical writing and complex scripts</title>
+<style>
+body { margin:0; font:24px/1.4 sans-serif }
+.vertical { display:inline-block; vertical-align:top; height:150px; margin:12px; background:#e0f0ff; padding:8px }
+.rl { writing-mode:vertical-rl }
+.lr { writing-mode:vertical-lr }
+.rtl { direction:rtl; width:380px; margin:12px; background:#fff0d0 }
+</style>
+<div id="rl" class="vertical rl">日本語の文章<br>ABC 123</div>
+<div id="lr" class="vertical lr">日本語の文章<br>ABC 123</div>
+<div id="upright" class="vertical rl" style="text-orientation:upright">ABC DEF</div>
+<div id="sideways" class="vertical rl" style="text-orientation:sideways">Vertical text</div>
+<div id="arabic" class="rtl">مرحبا بالعالم 123</div>
+<div id="hebrew" class="rtl">שלום עולם 123</div>
+<div id="mixed" style="margin:12px">English <span style="unicode-bidi:isolate;direction:rtl">שלום 123 עולם</span> text</div>
+<div id="indic" style="margin:12px">नमस्ते दुनिया ภาษาไทย</div>

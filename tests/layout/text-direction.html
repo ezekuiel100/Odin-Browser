@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Horizontal direction, logical sides, paragraph indents and tab stops</title>
+<style>
+body { margin:0; font-family:monospace; font-size:20px; line-height:1 }
+.case { width:100px; margin-bottom:10px }
+</style>
+<div id="rtl" class="case" dir="rtl" style="padding-inline:5px 15px;border-inline-start:2px solid">AA BB</div>
+<div id="indent" class="case" style="width:55px;text-indent:11px each-line">AAA BB<br>CC</div>
+<div id="hanging" class="case" style="width:55px;text-indent:11px hanging">AAA BB<br>CC</div>
+<div id="tabs" class="case" style="width:max-content;white-space:pre;tab-size:4">A&#9;B&#9;C</div>
+<div id="tabs-zero" class="case" style="width:max-content;white-space:pre;tab-size:0">A&#9;B</div>
+<div dir="rtl"><div id="inherit" class="case" style="padding-inline-start:12px">AA</div></div>
