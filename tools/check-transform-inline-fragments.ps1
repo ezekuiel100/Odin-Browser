@@ -9,7 +9,7 @@ $png=Join-Path $out "inline-fragments.png"
 if ($LASTEXITCODE -ne 0) { throw "render failed" }
 $b=New-Object System.Drawing.Bitmap $png
 try {
-    $checks=@(@("wrapped nested inline union",40),@("coalesced word retains inner span geometry",80),@("intra-word splits retain source offsets",120),@("inline rectangles follow ancestor rotation",160))
+    $checks=@(@("wrapped nested inline union",40),@("coalesced word retains inner span geometry",80),@("intra-word splits retain source offsets",120),@("inline rectangles follow ancestor rotation",160),@("empty inline anchor survives word coalescing",200),@("empty inline anchor follows rotation",240),@("empty inline anchor at a word wrap boundary",280),@("empty inline anchor respects preceding whitespace",320))
     foreach ($check in $checks) {
         $p=$b.GetPixel($check[1],360)
         if ($p.G -ne 128 -or $p.R -ne 0 -or $p.B -ne 0) { throw "FAIL $($check[0]): $p" }

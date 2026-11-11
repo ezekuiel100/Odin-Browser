@@ -7,10 +7,20 @@ body{margin:0;background:white;font:20px/1 monospace}
 #turn{position:absolute;left:450px;top:30px;transform:rotate(90deg);transform-origin:0 0;white-space:nowrap}
 #reference{position:absolute;left:300px;top:220px}
 .mark{position:absolute;top:350px;width:25px;height:25px;background:red}
+#emptyturn{position:absolute;left:580px;top:200px;transform:rotate(90deg);transform-origin:0 0}
+#emptywrap{position:absolute;left:500px;top:280px;width:25px;word-break:break-all}
+#empty{left:30px;top:280px;width:300px}
 </style><div id="wrap" class="box"><span id="outer">aaa <b id="inner">bbb ccc</b> ddd</span></div>
 <div id="merge" class="box">abc<span id="middle">def</span>ghi</div><div id="split" class="box"><span id="long">MMMMMMMM</span></div>
 <div id="turn"><span id="rot">MMMM</span></div><div id="reference"><span id="ref">def</span> <span id="refrot">MMMM</span></div>
 <div id="m0" class="mark" style="left:30px"></div><div id="m1" class="mark" style="left:70px"></div><div id="m2" class="mark" style="left:110px"></div><div id="m3" class="mark" style="left:150px"></div>
+<div id="empty" class="box"><span id="before">abc</span><span id="anchor"></span><span id="after">def</span></div>
+<div id="m4" class="mark" style="left:190px"></div>
+<div id="emptyturn"><span id="rotanchor"></span></div>
+<div id="emptywrap"><span id="wrapbefore">MMMM</span><span id="wrapanchor"></span>MMMM</div>
+<div id="m5" class="mark" style="left:230px"></div><div id="m6" class="mark" style="left:270px"></div>
+<div style="position:absolute;left:300px;top:260px"><span id="gapbefore">abc</span> <span id="gapanchor"></span><span id="gapafter">def</span></div>
+<div id="m7" class="mark" style="left:310px"></div>
 <script>setTimeout(function(){
 var a=document.getElementById('outer'),rs=a.getClientRects(),r=a.getBoundingClientRect();
 if(rs.length>=2&&r.width>0&&r.top===rs[0].top&&r.bottom===rs[rs.length-1].bottom)document.getElementById('m0').style.backgroundColor='green';
@@ -20,4 +30,12 @@ var s=document.getElementById('long').getClientRects();
 if(s.length>=3&&s[0].width>0&&s[s.length-1].width>0&&s[0].width<=50&&s[s.length-1].top>s[0].top)document.getElementById('m2').style.backgroundColor='green';
 var t=document.getElementById('rot').getBoundingClientRect(),tr=document.getElementById('refrot').getBoundingClientRect();
 if(Math.abs(t.height-tr.width)<.1&&Math.abs(t.width-tr.height)<.1&&t.height>0)document.getElementById('m3').style.backgroundColor='green';
+var e=document.getElementById('anchor'),er=e.getBoundingClientRect(),ef=e.getClientRects(),be=document.getElementById('before').getBoundingClientRect(),af=document.getElementById('after').getBoundingClientRect();
+if(ef.length===1&&er.width===0&&er.height===40&&Math.abs(er.left-be.right)<.1&&Math.abs(er.left-af.left)<.1&&er.top===be.top)document.getElementById('m4').style.backgroundColor='green';
+var ra=document.getElementById('rotanchor').getBoundingClientRect();
+if(ra.width===20&&ra.height===0&&ra.left===560&&ra.top===200)document.getElementById('m5').style.backgroundColor='green';
+var wa=document.getElementById('wrapanchor').getClientRects(),wb=document.getElementById('wrapbefore').getClientRects();
+if(wa.length===1&&wa[0].width===0&&wb.length>=2&&Math.abs(wa[0].left-wb[wb.length-1].right)<.1&&wa[0].top===wb[wb.length-1].top)document.getElementById('m6').style.backgroundColor='green';
+var ga=document.getElementById('gapanchor').getBoundingClientRect(),gb=document.getElementById('gapbefore').getBoundingClientRect(),gn=document.getElementById('gapafter').getBoundingClientRect();
+if(ga.width===0&&ga.left>gb.right&&Math.abs(ga.left-gn.left)<.1)document.getElementById('m7').style.backgroundColor='green';
 },0);</script>

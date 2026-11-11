@@ -779,7 +779,11 @@ inline_source_fragments :: proc(b:^Box,it:^Inline_Item,source:^Inline_Source,off
     lo,hi:=max(offset,it.source_start),min(offset+source.length,it.source_start+len(it.text))
     x0,x1:=it.x,it.x+it.w
     if it.kind==.Word {
-        if hi<=lo do return
+        if source.length==0 {
+            // At a wrap boundary attach the anchor to the preceding fragment.
+            if offset<it.source_start || offset>it.source_start+len(it.text) do return
+            if offset==it.source_start && it.source_start>0 do return
+        } else if hi<=lo do return
         prefix:=it^; prefix.text=it.text[:lo-it.source_start]; prefix.text_w=0
         if lo!=it.source_start do x0+=word_width(&prefix)
         prefix.text=it.text[:hi-it.source_start]; prefix.text_w=0

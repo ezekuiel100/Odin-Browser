@@ -88,7 +88,7 @@ layout_vertical_inline :: proc(b:^Box,limit:f32,defined_width:bool) -> f32 {
             orientation:=it.orientation_set ? it.orientation : b.text_orientation
             upright:=vertical_upright(it.text,orientation)
             across=it.fsize*(it.lh>0 ? it.lh : 1.3)
-            advance=upright ? it.fsize : it.text_w
+            advance=it.text=="" ? 0 : (upright ? it.fsize : it.text_w)
             it.vertical_sideways=!upright
             if it.tab_columns!=0 do advance=tab_advance(&it,along,b.word_spacing)
         } else if it.kind==.InlineBox && it.box!=nil {

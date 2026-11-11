@@ -1702,6 +1702,13 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         ikids := make([dynamic]^dompkg.Node, context.temp_allocator)
         flow_children(node, styles, &ikids)
         for c in ikids do build_inline_items(c, items, styles, s2, base, pending, started, ws2, grads = grads, owner = owner)
+        // Keep empty inline boxes in the provenance tree. A zero-length word can
+        // coalesce with its neighbours without interrupting shaping or wrapping.
+        if !root && len(items)==first {
+            if ec,ok:=styles[node]; ok && !ec.display_contents && l_flows_inline(node.tag,ec) {
+                add_words(items,"",s2,pending,started,ws2,emit_empty=true)
+            }
+        }
         if bc,ok:=styles[node]; ok {
             for k in start_idx..<len(items^) do if !items[k].orientation_set { items[k].orientation=bc.text_orientation; items[k].orientation_set=true }
         }
@@ -1872,7 +1879,7 @@ append_text_pieces :: proc(items: ^[dynamic]Inline_Item, txt: string, proto: Inl
 }
 
 @(private="file")
-add_words :: proc(items: ^[dynamic]Inline_Item, text: string, st: Inline_Style, pending, started: ^bool, ws: White_Space) {
+add_words :: proc(items: ^[dynamic]Inline_Item, text: string, st: Inline_Style, pending, started: ^bool, ws: White_Space, emit_empty := false) {
     font, scale, fem := l_pick_font(st.size, st.weight, st.fam_id, st.family, st.italic)
 
     preserve := ws == .Pre || ws == .Pre_Wrap || ws == .Break_Spaces
@@ -1883,6 +1890,11 @@ add_words :: proc(items: ^[dynamic]Inline_Item, text: string, st: Inline_Style, 
         font_kerning = st.font_kerning, valign = st.valign, nowrap = no_wrap,
         can_break = st.break_word, break_all = st.break_all, min_break = st.min_break,
         effect = st.effect, invisible = st.invisible,
+    }
+    if emit_empty && len(text)==0 {
+        proto.space_before=pending^ && started^
+        if proto.space_before do pending^=false
+        append(items,proto)
     }
     i := 0
     for i < len(text) {
@@ -3377,7 +3389,14 @@ finalize_line :: proc(b: ^Box, start, end: int, line_top, cw: f32, align: Text_A
         if b.direction == .Rtl do off -= leading_indent
         if off > 0 do for i in start ..< end do b.inlines[i].x += off
     }
-    return line_h
+    // CSS empty line boxes do not increase the block height. Their inline
+    // rectangles still retain the font metrics and insertion position above.
+    empty:=true
+    for i in start..<end {
+        it:=&b.inlines[i]
+        if it.kind!=.Word || len(it.text)>0 || it.w>0 || it.pad_before!=0 || it.pad_after!=0 || it.ipt!=0 || it.ipb!=0 { empty=false; break }
+    }
+    return empty ? 0 : line_h
 }
 
 // Folga sub-pixel na quebra de linha: conteúdo que "estoura" por menos que isto

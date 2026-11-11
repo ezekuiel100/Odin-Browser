@@ -603,3 +603,28 @@ test_inline_vertical_column_fragments :: proc(t:^testing.T) {
     _,_,_,_,extra:=js_element_fragment(node,2)
     testing.expect(t,!extra)
 }
+
+@(test)
+test_empty_inline_fragment_geometry :: proc(t:^testing.T) {
+    c:=montar(`<style>body{margin:0;font-size:20px;line-height:1}#p{position:absolute;left:40px;top:30px;transform:scale(2);transform-origin:0 0}</style><div id="p"><span id="a"></span><span id="nest"><span id="b"></span></span><span id="none" style="display:none"></span><span id="contents" style="display:contents"></span></div>`,800,600,true)
+    defer desmontar(&c)
+    for id in ([]string{"a","b","nest"}) {
+        n:=por_id(c.dom,id)
+        x,y,w,h,ok:=js_element_fragment(n,0)
+        testing.expectf(t,ok && x==40 && y==30 && w==0 && h==40,"%s: (%v,%v,%v,%v), ok=%v",id,x,y,w,h,ok)
+        _,_,_,_,extra:=js_element_fragment(n,1)
+        testing.expect(t,!extra)
+        bx,by,bw,bh,bok:=js_element_rect(n)
+        testing.expect(t,bok && bx==x && by==y && bw==w && bh==h)
+    }
+    for id in ([]string{"none","contents"}) {
+        _,_,_,_,ok:=js_element_fragment(por_id(c.dom,id),0)
+        testing.expect(t,!ok)
+    }
+    eq(t,js_str(t,c.vm,`String(document.getElementById('a').getClientRects().length)`),"1","empty inline has one fragment")
+    _,_,_,ph,pok:=js_element_rect(por_id(c.dom,"p"))
+    testing.expect(t,pok && ph==0,"empty anchors do not create a nonempty line box")
+    js_scroll_set(0,10)
+    _,y,_,_,ok:=js_element_fragment(por_id(c.dom,"a"),0)
+    testing.expect(t,ok && y==20)
+}
