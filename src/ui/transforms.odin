@@ -239,35 +239,108 @@ x_free_styles :: proc(styles:map[^dompkg.Node]Computed) {
 
 g_x_keep_depth:bool
 
+X_EYE_EPS :: f32(1e-5)
+X_Clip_Vertex :: struct { q:[4]f32, uv:im.Vec2, col:u32 }
+
+// Clip before dividing by W. Attributes use the same edge parameter as position.
+x_clip_eye :: proc(input:[3]X_Clip_Vertex) -> (out:[4]X_Clip_Vertex,n:int) {
+    prev:=input[2]
+    for cur in input {
+        inside,was_inside:=cur.q[3]>=X_EYE_EPS,prev.q[3]>=X_EYE_EPS
+        if inside!=was_inside {
+            t:=(X_EYE_EPS-prev.q[3])/(cur.q[3]-prev.q[3])
+            v:=X_Clip_Vertex{q=prev.q+(cur.q-prev.q)*t,uv=prev.uv+(cur.uv-prev.uv)*t}
+            v.q[3]=X_EYE_EPS
+            for shift:u32=0;shift<32;shift+=8 {
+                a,b:=f32((prev.col>>shift)&255),f32((cur.col>>shift)&255)
+                v.col|=u32(clamp(a+(b-a)*t+0.5,0,255))<<shift
+            }
+            out[n]=v; n+=1
+        }
+        if inside { out[n]=cur; n+=1 }
+        prev=cur
+    }
+    return
+}
+
+// ImGui owns these allocations; its allocator must also own replacement buffers.
+x_draw_buffer :: proc(dst:^$V,src:[]$T) {
+    if len(src)>int(dst.Capacity) {
+        data:=cast(^T)im.MemAlloc(uint(len(src)*size_of(T)))
+        im.MemFree(dst.Data)
+        dst.Data=data; dst.Capacity=i32(len(src))
+    }
+    copy(([^]T)(dst.Data)[:len(src)],src)
+    dst.Size=i32(len(src))
+}
+
 x_project_vertices :: proc(dl:^im.DrawList,v0:int,m:XMatrix,keep:bool,depth:^map[int][4]f32) {
     verts:=([^]im.DrawVert)(dl.VtxBuffer.Data)
-    bad:=make(map[int]bool,context.temp_allocator)
-    defer delete(bad)
+    projected:[][4]f32
+    if !keep do projected=make([][4]f32,int(dl.VtxBuffer.Size)-v0,context.temp_allocator)
+    defer delete(projected,context.temp_allocator)
+    bad:=false
     for i in v0..<int(dl.VtxBuffer.Size) {
         p,ok:=depth[i]
         if !ok do p={verts[i].pos.x,verts[i].pos.y,0,1}
         q:=m*p
-        if q[3]<=1e-5 {
-            bad[i]=true
-            verts[i].pos={0,0}
-        } else { verts[i].pos={q[0]/q[3],q[1]/q[3]} }
-        if keep { depth[i]=q } else { delete_key(depth,i) }
+        if q[3]<X_EYE_EPS { bad=true; verts[i].pos={0,0} }
+        else { verts[i].pos={q[0]/q[3],q[1]/q[3]} }
+        if keep { depth[i]=q } else { projected[i-v0]=q; delete_key(depth,i) }
     }
-    // Discard triangles crossing the eye plane. Do not let division by zero
-    // emit unbounded screen coordinates into the software rasterizer.
-    if len(bad)>0 {
-        cmds:=([^]im.DrawCmd)(dl.CmdBuffer.Data)
-        idx:=([^]im.DrawIdx)(dl.IdxBuffer.Data)
-        for c in 0..<int(dl.CmdBuffer.Size) {
-            cmd:=cmds[c]
-            for j:=int(cmd.IdxOffset); j+2<int(cmd.IdxOffset+cmd.ElemCount); j+=3 {
-                off:=int(cmd.VtxOffset)
-                if off+int(idx[j]) in bad || off+int(idx[j+1]) in bad || off+int(idx[j+2]) in bad {
-                    idx[j+1]=idx[j]; idx[j+2]=idx[j]
-                }
+    // An ancestor in the same 3D context may bring a vertex back in front.
+    if keep || !bad do return
+    cmds:=([^]im.DrawCmd)(dl.CmdBuffer.Data)
+    idx:=([^]im.DrawIdx)(dl.IdxBuffer.Data)
+    indices:=make([dynamic]im.DrawIdx,0,int(dl.IdxBuffer.Size),context.temp_allocator)
+    commands:=make([dynamic]im.DrawCmd,context.temp_allocator)
+    added:=make([dynamic]im.DrawVert,context.temp_allocator)
+    defer { delete(indices); delete(commands); delete(added) }
+    for c in 0..<int(dl.CmdBuffer.Size) {
+        cmd:=cmds[c]
+        batch:=cmd; batch.IdxOffset=u32(len(indices)); batch.ElemCount=0
+        for j:=int(cmd.IdxOffset);j+2<int(cmd.IdxOffset+cmd.ElemCount);j+=3 {
+            tri:[3]X_Clip_Vertex
+            crossing:=false
+            for k in 0..<3 {
+                i:=int(cmd.VtxOffset)+int(idx[j+k])
+                v:=verts[i]
+                q:=[4]f32{v.pos.x,v.pos.y,0,1}
+                if i>=v0 do q=projected[i-v0]
+                tri[k]={q,v.uv,v.col}
+                if q[3]<X_EYE_EPS do crossing=true
             }
+            if !crossing {
+                append(&indices,idx[j],idx[j+1],idx[j+2]); batch.ElemCount+=3
+                continue
+            }
+            poly,n:=x_clip_eye(tri)
+            if n<3 do continue
+            if batch.ElemCount>0 { append(&commands,batch); batch.ElemCount=0 }
+            // Give the new polygon its own base, keeping 16-bit indices valid
+            // even when the original command already contains 64K vertices.
+            clipped:=cmd; clipped.IdxOffset=u32(len(indices)); clipped.VtxOffset=u32(int(dl.VtxBuffer.Size)+len(added)); clipped.ElemCount=u32((n-2)*3)
+            for k in 0..<n {
+                v:=poly[k]
+                append(&added,im.DrawVert{pos={v.q[0]/v.q[3],v.q[1]/v.q[3]},uv=v.uv,col=v.col})
+            }
+            for k in 1..<n-1 do append(&indices,im.DrawIdx(0),im.DrawIdx(k),im.DrawIdx(k+1))
+            append(&commands,clipped)
+            batch.IdxOffset=u32(len(indices))
         }
+        if batch.ElemCount>0 || cmd.UserCallback!=nil do append(&commands,batch)
     }
+    all_verts:=make([dynamic]im.DrawVert,0,int(dl.VtxBuffer.Size)+len(added),context.temp_allocator)
+    defer delete(all_verts)
+    append(&all_verts,..verts[:dl.VtxBuffer.Size]); append(&all_verts,..added[:])
+    x_draw_buffer(&dl.VtxBuffer,all_verts[:])
+    x_draw_buffer(&dl.IdxBuffer,indices[:])
+    x_draw_buffer(&dl.CmdBuffer,commands[:])
+    dl._CmdHeader.VtxOffset=u32(dl.VtxBuffer.Size)
+    dl._VtxCurrentIdx=0
+    dl._VtxWritePtr=&([^]im.DrawVert)(dl.VtxBuffer.Data)[dl.VtxBuffer.Size]
+    dl._IdxWritePtr=&([^]im.DrawIdx)(dl.IdxBuffer.Data)[dl.IdxBuffer.Size]
+    im.DrawList_AddDrawCmd(dl)
 }
 
 // Origins retain both the reference-box fraction and an absolute offset.

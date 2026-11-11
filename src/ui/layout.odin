@@ -9379,7 +9379,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         if ev.has_xform do full=ev.xform
     }
     if b.motion_rotation!=0 do full=x_rotation({0,0,1},b.motion_rotation)*full
-    use_full:=b.xform!=nil || (hovering && b.hover.has_transform) || len(b.animations)>0 || b.trans[.Transform].on || b.has_offset_path
+    use_full:=b.xform!=nil || (hovering && b.hover.has_transform) || len(b.animations)>0 || b.trans[.Transform].on || b.has_offset_path || x_preserves(b) || b.perspective>0
     base_tx,base_ty:=x_box_translation(b)
     baked_tx,baked_ty:=base_tx+adx,base_ty+ady
     if use_full {

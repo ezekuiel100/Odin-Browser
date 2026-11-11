@@ -1,0 +1,13 @@
+<!doctype html><style>
+body{margin:0;background:white}
+.stage{position:absolute;width:240px;height:140px;overflow:hidden;background:#eee}
+.face{position:absolute;left:40px;top:20px;width:300px;height:100px;background:red;transform:perspective(100px) rotateY(75deg)}
+#right{left:20px;top:20px}#left{left:300px;top:20px}
+#left .face{left:-100px;transform:perspective(100px) rotateY(-75deg);background:blue}
+#behind{left:20px;top:200px}#behind .face{left:20px;width:200px;transform:perspective(100px) translateZ(150px)}
+#property{left:300px;top:200px;perspective:100px;perspective-origin:190px 70px}#property .face{transform:rotateY(75deg);background:blue}
+#after{position:absolute;left:580px;top:200px;width:30px;height:30px;background:green}
+#preserved{left:580px;top:20px}#preserved .scene{width:240px;height:140px;transform-style:preserve-3d;perspective:100px;perspective-origin:190px 70px}#preserved .face{transform:rotateY(75deg);background:blue}
+</style><div id="right" class="stage"><div class="face"></div></div><div id="left" class="stage"><div class="face"></div></div>
+<div id="behind" class="stage"><div class="face"></div></div><div id="property" class="stage"><div class="face"></div></div><div id="after"></div>
+<div id="preserved" class="stage"><div class="scene"><div class="face"></div></div></div>

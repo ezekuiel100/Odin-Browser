@@ -6,6 +6,8 @@ Transitions and keyframes interpolate matching translations, scales, skew angles
 
 Projection retains homogeneous coordinates between participating preserve-3d elements. A flat boundary removes depth before the ancestor projection. `perspective()` affects its transform list; the `perspective` property applies to descendants around `perspective-origin`. Origins retain percentages, pixel offsets, calc terms and the transform-origin Z offset.
 
+Eye-plane crossings are clipped in homogeneous coordinates at W=1e-5 when the 3D context is flattened. New edge vertices interpolate UVs and colors; partially visible triangles remain visible.
+
 Within a preserve-3d stacking scope, planes paint from far to near using transformed center depth, with document order retained at equal depths. Parent rotation and sampled keyframes participate in this depth calculation. Opacity, filters, overflow clips and other grouping effects flatten the context.
 
 Box and inline-block interaction and DOM rectangles share a composed geometry traversal with ancestor transforms, origins, perspective, scrolling, fixed/sticky positioning and sampled keyframes. Zero-area planes reject pointer hits. Layout metrics such as offsetWidth remain untransformed.
@@ -13,9 +15,8 @@ Box and inline-block interaction and DOM rectangles share a composed geometry tr
 ## Current limits
 
 - Ordering uses plane centers and treats nested stacking scopes atomically. Intersecting planes need polygon splitting, and nested preserve-3d scopes need a shared 3D display list. `@supports (transform-style: preserve-3d)` therefore remains false.
-- Triangles crossing the eye plane are discarded rather than clipped into new polygons.
 - The SDL renderer interpolates texture coordinates affinely within each triangle; strongly tilted images do not have perspective-correct texture sampling.
-- Box pointer targets invert the projected border plane, and DOM bounding rectangles enclose its transformed corners. Inline link/decorations/opacity targets use the inverse plane transform. Text fields remap pointer and drag positions for native editing; resize grips use local deltas. Select previews share the transformed plane while their native popups remain axis-aligned and anchor to the projected bounds. Inline source provenance survives word coalescing and line splitting: getClientRects returns projected line/column fragments and getBoundingClientRect unions them. Empty inlines retain zero-length provenance anchors through word coalescing and wrapping, so their DOM rectangles follow ancestor transforms and scrolling. Exact subranges within complex shaped glyph clusters remain incomplete. Eye-plane-crossing geometry remains approximate, consistently with the rendering limitation above.
+- Box pointer targets invert the projected border plane, and DOM bounding rectangles enclose its transformed corners. Inline link/decorations/opacity targets use the inverse plane transform. Text fields remap pointer and drag positions for native editing; resize grips use local deltas. Select previews share the transformed plane while their native popups remain axis-aligned and anchor to the projected bounds. Inline source provenance survives word coalescing and line splitting: getClientRects returns projected line/column fragments and getBoundingClientRect unions them. Empty inlines retain zero-length provenance anchors through word coalescing and wrapping, so their DOM rectangles follow ancestor transforms and scrolling. Exact subranges within complex shaped glyph clusters remain incomplete. DOM bounding rectangles of eye-plane-crossing boxes still use transformed corners and remain approximate.
 
 ## Verification
 
@@ -26,6 +27,7 @@ Run `./test.ps1` for the package suites. After building, run:
 ./tools/check-transform-inline-controls.ps1 -Browser ./browser.exe
 ./tools/check-transform-hit-geometry.ps1 -Browser ./browser.exe
 ./tools/check-projective-transforms.ps1 -Browser ./browser.exe
+./tools/check-transform-eye-clip.ps1 -Browser ./browser.exe
 ./tools/check-stacking.ps1 -Browser ./browser.exe
 ./tools/check-hover-transform-clip.ps1 -Browser ./browser.exe
 ```

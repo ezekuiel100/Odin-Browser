@@ -160,3 +160,70 @@ xform_inline_box_geometry_and_inverse_pointer :: proc(t:^testing.T) {
     _,_,ok=x_unproject(zero,0,0)
     testing.expect(t,!ok)
 }
+
+@(test)
+xform_clip_eye_interpolates_attributes :: proc(t:^testing.T) {
+    tri:=[3]X_Clip_Vertex{{q={0,0,0,1},uv={0,0},col=0xff000000},{q={2,0,0,1},uv={1,0},col=0xff0000ff},{q={1,2,0,-1},uv={0.5,1},col=0xffffffff}}
+    poly,n:=x_clip_eye(tri)
+    testing.expect(t,n==4,"two visible vertices produce a quad")
+    cuts:=0
+    for v in poly[:n] {
+        testing.expect(t,v.q[3]>=X_EYE_EPS)
+        if v.q[3]==X_EYE_EPS {
+            cuts+=1
+            testing.expect(t,abs(v.uv.y-0.5)<0.001)
+            testing.expect(t,((v.col>>8)&255)==127 || ((v.col>>8)&255)==128)
+            testing.expect(t,v.col>>24==255)
+        }
+    }
+    testing.expect(t,cuts==2)
+    tri[0].q[3]=-1
+    _,n=x_clip_eye(tri)
+    testing.expect(t,n==3,"one visible vertex produces a triangle")
+    tri[1].q[3]=-1
+    _,n=x_clip_eye(tri)
+    testing.expect(t,n==0,"fully hidden triangle is removed")
+    for &v in tri do v.q[3]=X_EYE_EPS
+    _,n=x_clip_eye(tri)
+    testing.expect(t,n==3,"vertices exactly on the clipping plane survive")
+}
+
+@(test)
+xform_clip_draw_buffers_preserve_offsets :: proc(t:^testing.T) {
+    dl:=im.DrawList{}
+    defer im.DrawList__ClearFreeMemory(&dl)
+    vertices:=make([]im.DrawVert,65538)
+    defer delete(vertices)
+    vertices[3].pos={0,0}; vertices[4].pos={2,0}; vertices[5].pos={0,2}
+    for &v in vertices do v.col=0xffffffff
+    indices:=[6]im.DrawIdx{0,1,2,0,1,2}
+    commands:=[2]im.DrawCmd{{ClipRect={0,0,100,100},ElemCount=3},{ClipRect={0,0,100,100},TextureId=7,VtxOffset=3,IdxOffset=3,ElemCount=3}}
+    x_draw_buffer(&dl.VtxBuffer,vertices)
+    x_draw_buffer(&dl.IdxBuffer,indices[:])
+    x_draw_buffer(&dl.CmdBuffer,commands[:])
+    dl._CmdHeader.ClipRect={0,0,100,100}
+    depth:=make(map[int][4]f32); defer delete(depth)
+    m:XMatrix=1; m[3,0]=-1
+    x_project_vertices(&dl,3,m,false,&depth)
+    cmds:=([^]im.DrawCmd)(dl.CmdBuffer.Data)
+    idx:=([^]im.DrawIdx)(dl.IdxBuffer.Data)
+    testing.expect(t,cmds[0].VtxOffset==0 && cmds[0].IdxOffset==0 && cmds[0].ElemCount==3,"unaffected command retained")
+    testing.expect(t,cmds[1].TextureId==7 && cmds[1].VtxOffset==65538 && cmds[1].IdxOffset==3 && cmds[1].ElemCount==6,"clipped quad retains texture and uses its own 32-bit base")
+    testing.expect(t,dl.IdxBuffer.Size==9 && dl.VtxBuffer.Size==65542)
+    for c in cmds[:dl.CmdBuffer.Size] {
+        for j in c.IdxOffset..<c.IdxOffset+c.ElemCount do testing.expect(t,int(c.VtxOffset)+int(idx[j])<int(dl.VtxBuffer.Size))
+    }
+    testing.expect(t,len(depth)==0 && dl._VtxCurrentIdx==0 && dl._CmdHeader.VtxOffset==u32(dl.VtxBuffer.Size))
+}
+
+@(test)
+xform_clips_only_after_ancestor_composition :: proc(t:^testing.T) {
+    verts:=[1]im.DrawVert{{pos={10,20}}}
+    dl:=im.DrawList{}; dl.VtxBuffer.Data=&verts[0]; dl.VtxBuffer.Size=1
+    depth:=make(map[int][4]f32); defer delete(depth)
+    m:XMatrix=1; m[3,3]=-1
+    x_project_vertices(&dl,0,m,true,&depth)
+    testing.expect(t,depth[0][3]==-1)
+    x_project_vertices(&dl,0,m,false,&depth)
+    testing.expect(t,verts[0].pos==im.Vec2{10,20} && len(depth)==0,"negative intermediate W must survive until the final ancestor")
+}
