@@ -254,19 +254,15 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
             if kw == "media" {
                 // prelúdio (condição) até '{'
                 pre_start := j
-                for j < n && src[j] != '{' do j += 1
+                j = token_boundary(src, j, "{")
                 if j >= n do break
                 cond := parse_media_query(src[pre_start:j])
                 j += 1 // pula '{'
                 // bloco balanceado
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, combine_media(media, cond), layer_rank, layers, cq)
                 i = j
                 continue
@@ -276,7 +272,7 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
             // o viewport (proxy). Antes o bloco era descartado → placement perdido.
             if kw == "container" {
                 pre_start := j
-                for j < n && src[j] != '{' do j += 1
+                j = token_boundary(src, j, "{")
                 if j >= n do break
                 prelude := src[pre_start:j]
                 cond := parse_container_query(prelude)
@@ -284,14 +280,10 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
                                      min = cond.min, max = cond.max}
                 // @container aninhado: o mais INTERNO manda (aninhar é raro).
                 j += 1 // pula '{'
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, layer_rank, layers, inner)
                 i = j
                 continue
@@ -300,18 +292,14 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
             // @keyframes nome { 0%{...} 50%{...} to{...} }: coleta os stops.
             if kw == "keyframes" || strings.has_suffix(kw, "-keyframes") { // -webkit-keyframes
                 name_start := j
-                for j < n && src[j] != '{' do j += 1
+                j = token_boundary(src, j, "{")
                 if j >= n do break
                 name := strings.trim_space(src[name_start:j])
                 j += 1 // '{'
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 parse_keyframes(name, src[blk_start:blk_end], keyframes)
                 i = j
                 continue
@@ -325,18 +313,14 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
             // ignorância nossa.
             if kw == "supports" {
                 cond_start := j
-                for j < n && src[j] != '{' && src[j] != ';' do j += 1
+                j = token_boundary(src, j, "{;")
                 if j >= n || src[j] == ';' { i = j + 1; continue }
                 cond := src[cond_start:j]
                 j += 1 // '{'
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 if supports_condition(cond) {
                     parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, layer_rank, layers, cq)
                 }
@@ -357,14 +341,10 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
                 }
                 if src[j] == ';' { i = j + 1; continue }
                 j += 1
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 if inner_layer != -1 {
                     parse_block(src[blk_start:blk_end], rules, keyframes, faces, order, media, inner_layer, layers, cq)
                 }
@@ -375,19 +355,15 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
             // @property --nome { syntax:…; inherits:…; initial-value: V }
             if kw == "property" {
                 name_start := j
-                for j < n && src[j] != '{' && src[j] != ';' do j += 1
+                j = token_boundary(src, j, "{;")
                 if j >= n do break
                 if src[j] == ';' { i = j + 1; continue } // sem corpo: inválido
                 name := strings.trim_space(src[name_start:j])
                 j += 1 // '{'
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 register_property(name, src[blk_start:blk_end], rules, order, media, cq)
                 i = j
                 continue
@@ -396,17 +372,13 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
             // @font-face { font-family: …; src: url(…) format(…) } — a face é
             // DESCRITA aqui; baixar/decodificar/injetar no atlas é do ui.
             if kw == "font-face" {
-                for j < n && src[j] != '{' && src[j] != ';' do j += 1
+                j = token_boundary(src, j, "{;")
                 if j >= n || src[j] == ';' { i = j + 1; continue }
                 j += 1 // '{'
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 if faces != nil do parse_font_face(src[blk_start:blk_end], faces)
                 i = j
                 continue
@@ -420,7 +392,7 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
         // regra normal: seletor até '{'; o corpo pode ter declarações e regras
         // aninhadas (CSS nesting) — parse_rule_body consome até o '}' do corpo.
         sel_start := i
-        for i < n && src[i] != '{' do i += 1
+        i = token_boundary(src, i, "{")
         if i >= n do break
         sel_text := strings.trim_space(src[sel_start:i])
         i += 1
@@ -459,14 +431,10 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
                 inner_layer := layer_prelude(layers, layer_rank, src[pre_start:j], src[j] == '{')
                 if src[j] == ';' { i = j + 1; continue }
                 j += 1
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 if inner_layer != -1 {
                     parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, media, inner_layer, layers, cq)
                 }
@@ -477,18 +445,14 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
             // seletor, com a condição combinada.
             if kw == "media" {
                 pre_start := j
-                for j < n && src[j] != '{' do j += 1
+                j = token_boundary(src, j, "{")
                 if j >= n { i = n; break }
                 cond := parse_media_query(src[pre_start:j])
                 j += 1
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, combine_media(media, cond), layer_rank, layers, cq)
                 i = j
                 continue
@@ -499,18 +463,14 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
             // o @media aninhado), sem mexer na media.
             if kw == "supports" {
                 pre_start := j
-                for j < n && src[j] != '{' do j += 1
+                j = token_boundary(src, j, "{")
                 if j >= n { i = n; break }
                 cond := src[pre_start:j]
                 j += 1
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 if supports_condition(cond) {
                     parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, media, layer_rank, layers, cq)
                 }
@@ -520,18 +480,14 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
             // @container aninhado: mesma condição-como-media (proxy viewport)
             if kw == "container" {
                 pre_start := j
-                for j < n && src[j] != '{' do j += 1
+                j = token_boundary(src, j, "{")
                 if j >= n { i = n; break }
                 cond := parse_container_query(src[pre_start:j])
                 j += 1
-                depth := 1
                 blk_start := j
-                for j < n && depth > 0 {
-                    if src[j] == '{' do depth += 1
-                    else if src[j] == '}' do depth -= 1
-                    j += 1
-                }
-                blk_end := depth == 0 ? j - 1 : n
+                close := token_group_end(src, j-1)
+                blk_end := close < 0 ? n : close
+                j = close < 0 ? n : close + 1
                 parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, combine_media(media, cond), layer_rank, layers, cq)
                 i = j
                 continue
@@ -543,18 +499,17 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
         // segmento até '{' (regra aninhada), ';' (declaração) ou '}' (última
         // declaração do corpo). ()/[] protegem ; e { internos (ex.: url()).
         seg_start := i
-        depth := 0
-        kind: u8 = 0
-        for i < n {
-            ch := src[i]
-            if ch == '(' || ch == '[' do depth += 1
-            else if ch == ')' || ch == ']' { if depth > 0 do depth -= 1 }
-            else if depth == 0 && (ch == '{' || ch == ';' || ch == '}') {
-                kind = ch
-                break
+        boundaries := "{;}"
+        // A custom property's {} block is a value, not a nested rule.
+        if strings.has_prefix(src[i:], "--") {
+            name_end := i
+            if selector_ident(src, &name_end) {
+                for name_end < n && is_space(src[name_end]) do name_end += 1
+                if name_end < n && src[name_end] == ':' do boundaries = ";}"
             }
-            i += 1
         }
+        i = token_boundary(src, i, boundaries)
+        kind: u8 = i < n ? src[i] : 0
 
         if kind == '{' {
             nested_sel := strings.trim_space(src[seg_start:i])
@@ -1244,22 +1199,11 @@ calc_factor :: proc(s: string, p: ^int, conv: Calc_Conv) -> (f32, bool) {
 
 @(private)
 skip_at_rule :: proc(src: string, start: int) -> int {
-    i := start
-    n := len(src)
-    for i < n && src[i] != '{' && src[i] != ';' do i += 1
-    if i >= n do return n
+    i := token_boundary(src, start, "{;")
+    if i >= len(src) do return len(src)
     if src[i] == ';' do return i + 1
-    // bloco balanceado
-    depth := 0
-    for i < n {
-        if src[i] == '{' do depth += 1
-        else if src[i] == '}' {
-            depth -= 1
-            if depth == 0 do return i + 1
-        }
-        i += 1
-    }
-    return n
+    end := token_group_end(src, i)
+    return end < 0 ? len(src) : end + 1
 }
 
 // Separa uma lista de seletores por vírgula no nível superior — vírgulas
@@ -1268,18 +1212,12 @@ skip_at_rule :: proc(src: string, start: int) -> int {
 @(private)
 split_selector_list_top :: proc(text: string) -> []string {
     parts := make([dynamic]string, context.temp_allocator)
-    depth, start := 0, 0
-    quote: u8
-    for i := 0; i < len(text); i += 1 {
-        c := text[i]
-        if c == '\\' { i += 1; continue }
-        if quote != 0 { if c == quote do quote = 0; continue }
-        if c == '"' || c == '\'' { quote = c; continue }
-        switch c {
-        case '(', '[': depth += 1
-        case ')', ']': if depth > 0 do depth -= 1
-        case ',': if depth == 0 { append(&parts, text[start:i]); start = i + 1 }
-        }
+    start := 0
+    for start < len(text) {
+        end := token_index_top(text[start:], ',')
+        if end < 0 do break
+        append(&parts, text[start:start+end])
+        start += end + 1
     }
     append(&parts, text[start:])
     return parts[:]
@@ -1295,7 +1233,8 @@ parse_selectors :: proc(text: string) -> [dynamic]Selector {
 }
 
 @(private)
-parse_selector_list :: proc(text: string) -> [dynamic]Selector {
+parse_selector_list :: proc(raw_text: string) -> [dynamic]Selector {
+    text := strip_comments(raw_text, context.temp_allocator)
     sels: [dynamic]Selector
     valid := selectors_valid(text)
     for part in split_selector_list_top(text) {
@@ -1347,7 +1286,7 @@ parse_complex :: proc(sel: string) -> (Selector, bool) {
         for i < n {
             ch := sel[i]
             if ch == '\\' {
-                _, next, ok := layer_escape(sel, i)
+                _, next, ok := consume_escape(sel, i)
                 i = ok ? next : min(i+2, n)
                 continue
             }
@@ -1403,10 +1342,17 @@ css_unescape :: proc(s: string) -> string {
     i := 0
     for i < len(s) {
         if s[i] == '\\' {
-            cp, next, valid := layer_escape(s, i)
-            if !valid do break
-            if i+1 < len(s) && s[i+1] >= 128 do strings.write_byte(&sb, s[i+1])
-            else do strings.write_rune(&sb, cp)
+            cp, next, valid := consume_escape(s, i)
+            if !valid {
+                if next < len(s) && (s[next] == '\n' || s[next] == '\r' || s[next] == '\f') {
+                    cr := s[next] == '\r'
+                    i = next + 1
+                    if cr && i < len(s) && s[i] == '\n' do i += 1
+                    continue
+                }
+                break
+            }
+            strings.write_rune(&sb, cp)
             i = next
         } else {
             strings.write_byte(&sb, s[i])
@@ -1423,7 +1369,10 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
     i := 0
     n := len(key)
     tag_start := i
-    for i < n && key[i] != '.' && key[i] != '#' && key[i] != ':' && key[i] != '[' do i += 1
+    for i < n && key[i] != '.' && key[i] != '#' && key[i] != ':' && key[i] != '[' {
+        if key[i] == '\\' { _, end, _ := consume_escape(key, i); i = end
+        } else { i += 1 }
+    }
     // OWNED (ver nota de posse em free_compound): antes era fatia do `src` temp.
     if i > tag_start do out.tag = css_unescape(key[tag_start:i])
     if out.tag != "" && out.tag != "*" do out.specificity[2] += 1
@@ -1436,7 +1385,7 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
             name_start := i
             for i < n {
                 if key[i] == '\\' {
-                    _, next, ok := layer_escape(key, i)
+                    _, next, ok := consume_escape(key, i)
                     i = ok ? next : min(i+2, n)
                     continue
                 } // escape CSS: `\x` faz parte do nome
@@ -1724,8 +1673,12 @@ parse_attr_sel :: proc(body: string, out: ^Compound) {
     name := s
     val := ""
     op := Attr_Op.Exists
-    scan: for j in 0 ..< len(s) {
-        c := s[j]
+    l := Tokenizer{source = s}
+    scan: for {
+        tok := next_token(&l)
+        if tok.kind == .EOF do break
+        if tok.kind != .Delim do continue
+        j, c := tok.start, tok.delim
         if c == '=' {
             name = s[:j]; val = s[j + 1:]; op = .Equals
             break
@@ -1755,9 +1708,15 @@ parse_attr_sel :: proc(body: string, out: ^Compound) {
             val = strings.trim_space(val[:len(val) - 2])
         }
     }
-    val = strings.trim(val, "\"'")
+    if len(val) > 0 && (val[0] == '\'' || val[0] == '"') {
+        quoted := Tokenizer{source = val}
+        tok := next_token(&quoted)
+        if tok.kind == .String do val = val[1:tok.end-1]
+    }
     // OWNED (ver free_compound): antes eram fatias do `src` temp
-    append(&out.attrs, Attr_Sel{strings.to_lower(name), op, css_unescape(val), insensitive})
+    decoded_name := css_unescape(name)
+    defer delete(decoded_name)
+    append(&out.attrs, Attr_Sel{strings.to_lower(decoded_name), op, css_unescape(val), insensitive})
 }
 
 // Reconhece uma pseudo-classe estrutural pelo nome (+ argumento An+B quando
@@ -1930,25 +1889,12 @@ compound_spec :: proc(c: Compound) -> int {
 parse_decls :: proc(raw_text: string, allocator := context.allocator) -> map[string]string {
     text := declaration_text(raw_text)
     decls := make(map[string]string, allocator)
-    // separa por ';' no nível superior — ';' dentro de url(...)/parênteses ou
-    // aspas pertence ao valor (ex.: url(data:image/svg+xml;base64,…)).
-    n := len(text)
     start := 0
-    depth := 0
-    quote: u8 = 0
-    for i := 0; i < n; i += 1 {
-        ch := text[i]
-        if ch == '\\' { i += 1; continue }
-        if quote != 0 {
-            if ch == quote do quote = 0
-            continue
-        }
-        switch ch {
-        case '"', '\'': quote = ch
-        case '(':       depth += 1
-        case ')':       if depth > 0 do depth -= 1
-        case ';':       if depth == 0 { add_decl(&decls, text[start:i], allocator); start = i + 1 }
-        }
+    for start < len(text) {
+        end := declaration_end(text[start:])
+        if end < 0 do break
+        add_decl(&decls, text[start:start+end], allocator)
+        start += end + 1
     }
     add_decl(&decls, text[start:], allocator)
     return decls
@@ -1959,23 +1905,7 @@ parse_decls :: proc(raw_text: string, allocator := context.allocator) -> map[str
 // confundir com o ':' de url(data:…)/url(http://…). -1 se não houver.
 @(private)
 top_level_colon :: proc(s: string) -> int {
-    depth := 0
-    quote: u8 = 0
-    for i := 0; i < len(s); i += 1 {
-        ch := s[i]
-        if ch == '\\' { i += 1; continue }
-        if quote != 0 {
-            if ch == quote do quote = 0
-            continue
-        }
-        switch ch {
-        case '"', '\'': quote = ch
-        case '(':       depth += 1
-        case ')':       if depth > 0 do depth -= 1
-        case ':':       if depth == 0 do return i
-        }
-    }
-    return -1
+    return token_index_top(s, ':')
 }
 
 @(private)
@@ -2071,6 +2001,7 @@ split_important :: proc(val: string) -> (out: string, important: bool) {
     if !strings.equal_fold(tail, "important") do return val, false
     body := strings.trim_right_space(v[:len(v) - len("important")])
     if len(body) == 0 || body[len(body) - 1] != '!' do return val, false
+    if token_index_top(v, '!') != len(body)-1 do return val, false
     return strings.trim_right_space(body[:len(body) - 1]), true
 }
 
@@ -3478,12 +3409,12 @@ parse_keyframes :: proc(name, body: string, out: ^[dynamic]Keyframe_Set) {
         for i < n && is_space(body[i]) do i += 1
         if i >= n do break
         sel_start := i
-        for i < n && body[i] != '{' do i += 1
+        i = token_boundary(body, i, "{")
         if i >= n do break
         sel := body[sel_start:i]
         i += 1 // '{'
         decl_start := i
-        for i < n && body[i] != '}' do i += 1
+        i = token_boundary(body, i, "}")
         decl_text := body[decl_start:i]
         if i < n do i += 1 // '}'
         for part in strings.split(sel, ",", context.temp_allocator) {
@@ -3516,51 +3447,24 @@ is_space :: proc(c: u8) -> bool {
 @(private)
 strip_comments :: proc(s: string, allocator := context.allocator) -> string {
     if !strings.contains(s, "/*") do return strings.clone(s, allocator)
-    // Um comentário CSS é um LIMITE de token, não uma simples deleção: `120/**/75%`
-    // são dois tokens (120 e 75%), não `12075%`. Ao pular o comentário, se o byte
-    // anterior e o seguinte se fundiriam num só token (ambos "de palavra": alnum ou
-    // %), insere um espaço. Chars não-palavra (`.`, `,`, `(`, `;`…) já separam, então
-    // não recebem espaço — assim `.a/**/.b` continua `.a.b` (composto) e não vira
-    // `.a .b` (descendente).
-    is_word :: proc(c: u8) -> bool {
-        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '%' || c == '-' || c == '_' || c == '\\' || c >= 128
-    }
     sb := strings.builder_make(allocator)
-    i := 0
-    n := len(s)
-    prev: u8 = 0 // último byte escrito
-    quote: u8
-    for i < n {
-        if s[i] == '\\' {
-            end := min(i+2, n)
-            strings.write_string(&sb, s[i:end])
-            prev = s[end-1]
-            i = end
-            continue
+    l := Tokenizer{source = s}
+    pending := false
+    prev: u8
+    for {
+        t := next_token(&l)
+        if t.kind == .EOF do break
+        if t.kind == .Comment { pending = true; continue }
+        first := s[t.start]
+        if pending && (((token_name_byte(prev) || prev == '%') && (token_name_byte(first) || first == '\\' || first == '%')) ||
+            (prev == '\\' && token_name_byte(first)) ||
+            (prev >= '0' && prev <= '9' && first == '.') ||
+            (prev == '.' && first >= '0' && first <= '9')) {
+            strings.write_byte(&sb, ' ')
         }
-        if quote != 0 {
-            if s[i] == quote do quote = 0
-            strings.write_byte(&sb, s[i])
-            prev = s[i]
-            i += 1
-            continue
-        }
-        if s[i] == '\'' || s[i] == '"' do quote = s[i]
-        if i + 1 < n && s[i] == '/' && s[i + 1] == '*' {
-            end := strings.index(s[i:], "*/")
-            if end < 0 do break
-            i += end + 2
-            if prev != 0 && i < n && ((is_word(prev) && is_word(s[i])) ||
-                (prev >= '0' && prev <= '9' && s[i] == '.') ||
-                (prev == '.' && s[i] >= '0' && s[i] <= '9')) {
-                strings.write_byte(&sb, ' ')
-                prev = ' '
-            }
-        } else {
-            strings.write_byte(&sb, s[i])
-            prev = s[i]
-            i += 1
-        }
+        pending = false
+        strings.write_string(&sb, s[t.start:t.end])
+        prev = s[t.end-1]
     }
     return strings.to_string(sb)
 }

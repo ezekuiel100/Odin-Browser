@@ -25,51 +25,10 @@ layer_child :: proc(layers: ^Layer_Registry, parent: int, name: string) -> int {
 // Escapes são consumidos ANTES de reconhecer separadores. Um ponto/vírgula
 // escapado pertence ao identificador, nunca à hierarquia/lista. Strings
 // decodificadas vivem no temp_allocator, como o texto-fonte deste parse.
-@(private)
-layer_hex :: proc(c: u8) -> int {
-    if c >= '0' && c <= '9' do return int(c - '0')
-    if c >= 'a' && c <= 'f' do return int(c - 'a') + 10
-    if c >= 'A' && c <= 'F' do return int(c - 'A') + 10
-    return -1
-}
-
-@(private)
-layer_escape :: proc(s: string, start: int) -> (cp: rune, end: int, ok: bool) {
-    i := start + 1
-    if i >= len(s) || s[i] == '\n' || s[i] == '\r' || s[i] == '\f' do return 0, i, false
-    if layer_hex(s[i]) < 0 do return rune(s[i]), i + 1, true
-    value := 0
-    digits := 0
-    for i < len(s) && digits < 6 {
-        h := layer_hex(s[i])
-        if h < 0 do break
-        value = value * 16 + h
-        i += 1
-        digits += 1
-    }
-    if i < len(s) && is_space(s[i]) {
-        cr := s[i] == '\r'
-        i += 1
-        if cr && i < len(s) && s[i] == '\n' do i += 1
-    }
-    if value == 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff) do value = 0xfffd
-    return rune(value), i, true
-}
-
 // Encontrar { ou ; sem cortar escapes simples (ex.: @layer foo\;bar).
 @(private)
 layer_prelude_end :: proc(s: string, start: int) -> int {
-    i := start
-    for i < len(s) {
-        if s[i] == '\\' {
-            _, end, _ := layer_escape(s, i)
-            i = end
-            continue
-        }
-        if s[i] == '{' || s[i] == ';' do break
-        i += 1
-    }
-    return i
+    return token_boundary(s, start, "{;")
 }
 
 @(private)
@@ -94,11 +53,9 @@ layer_ident :: proc(s: string, start: int) -> (name: string, end: int, ok: bool)
     for i < len(s) {
         c := s[i]
         if c == '\\' {
-            cp, next, valid := layer_escape(s, i)
+            cp, next, valid := consume_escape(s, i)
             if !valid do return "", next, false
-            // Escape simples de byte UTF-8: preserve os bytes seguintes.
-            if i + 1 < len(s) && s[i + 1] >= 128 do strings.write_byte(&sb, s[i + 1])
-            else do strings.write_rune(&sb, cp)
+            strings.write_rune(&sb, cp)
             i = next
         } else if layer_ident_start(c) || c == '-' || (c >= '0' && c <= '9') {
             strings.write_byte(&sb, c)

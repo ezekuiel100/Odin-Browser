@@ -5,7 +5,7 @@ import "core:strings"
 // Shared syntax validation for stylesheets, DOM queries and feature detection.
 // Rendering retains recovered structures but disables invalid selector lists.
 selectors_valid :: proc(text: string) -> bool {
-    return selector_list_valid(text, false, false, 0)
+    return selector_list_valid(strip_comments(text, context.temp_allocator), false, false, 0)
 }
 
 selector_list_valid :: proc(text: string, forgiving, relative: bool, depth: int) -> bool {
@@ -17,10 +17,6 @@ selector_list_valid :: proc(text: string, forgiving, relative: bool, depth: int)
         any = any || ok
     }
     return any || forgiving
-}
-
-selector_hex :: proc(c: u8) -> bool {
-    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 selector_ident :: proc(s: string, pos: ^int) -> bool {
@@ -35,12 +31,9 @@ selector_ident :: proc(s: string, pos: ^int) -> bool {
     for pos^ < len(s) {
         c = s[pos^]
         if c == '\\' {
-            pos^ += 1
-            if pos^ >= len(s) || s[pos^] == '\n' || s[pos^] == '\r' || s[pos^] == '\f' do return false
-            count := 0
-            for pos^ < len(s) && selector_hex(s[pos^]) && count < 6 { pos^ += 1; count += 1 }
-            if count == 0 do pos^ += 1
-            else if pos^ < len(s) && is_space(s[pos^]) do pos^ += 1
+            _, end, ok := consume_escape(s, pos^)
+            if !ok do return false
+            pos^ = end
         } else if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c >= 128 {
             pos^ += 1
         } else { break }
@@ -50,28 +43,7 @@ selector_ident :: proc(s: string, pos: ^int) -> bool {
 
 // Quote and escape aware group scanner; rejects mismatched delimiters.
 selector_group_end :: proc(s: string, open: int, depth: int = 0) -> int {
-    if depth > 64 do return -1
-    close := s[open] == '[' ? u8(']') : u8(')')
-    i := open + 1
-    for i < len(s) {
-        c := s[i]
-        if c == '\\' { i += 2; continue }
-        if c == '"' || c == '\'' {
-            quote := c; i += 1
-            for i < len(s) && s[i] != quote {
-                if s[i] == '\\' do i += 1
-                else if s[i] == '\n' || s[i] == '\r' do return -1
-                i += 1
-            }
-            if i >= len(s) do return -1
-        } else if c == '[' || c == '(' {
-            i = selector_group_end(s, i, depth+1)
-            if i < 0 do return -1
-        } else if c == close { return i
-        } else if c == ']' || c == ')' { return -1 }
-        i += 1
-    }
-    return -1
+    return token_group_end(s, open)
 }
 
 selector_attr_valid :: proc(s: string) -> bool {
@@ -89,13 +61,10 @@ selector_attr_valid :: proc(s: string) -> bool {
     for i < len(s) && is_space(s[i]) do i += 1
     if i >= len(s) do return false
     if s[i] == '"' || s[i] == '\'' {
-        quote := s[i]; i += 1
-        for i < len(s) && s[i] != quote {
-            if s[i] == '\\' do i += 1
-            i += 1
-        }
-        if i >= len(s) do return false
-        i += 1
+        l := Tokenizer{source = s, pos = i}
+        tok := next_token(&l)
+        if tok.kind != .String do return false
+        i = tok.end
     } else if !selector_ident(s, &i) { return false }
     start := i
     for i < len(s) && is_space(s[i]) do i += 1

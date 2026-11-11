@@ -270,66 +270,25 @@ is_ws :: proc(c: u8) -> bool {
 // Índice do ')' que casa com o '(' em `open`. -1 se não fechar.
 @(private = "file")
 match_paren :: proc(s: string, open: int) -> int {
-    depth := 0
-    for i := open; i < len(s); i += 1 {
-        switch s[i] {
-        case '(': depth += 1
-        case ')':
-            depth -= 1
-            if depth == 0 do return i
-        }
-    }
-    return -1
+    return csspkg.token_group_end(s, open)
 }
 
 // Os parênteses fecham todos, e nenhum ')' aparece antes do seu '('? É o que
 // separa uma <declaration> de um pedaço solto de condição (`a:b) or (c:d`).
 @(private = "file")
 parens_balanced :: proc(s: string) -> bool {
-    depth := 0
-    for i := 0; i < len(s); i += 1 {
-        switch s[i] {
-        case '(': depth += 1
-        case ')':
-            depth -= 1
-            if depth < 0 do return false
-        }
-    }
-    return depth == 0
+    return csspkg.tokens_balanced(s)
 }
 
 // Índice do 1º byte `b` na profundidade 0. -1 se não houver.
 @(private = "file")
 index_top :: proc(s: string, b: u8) -> int {
-    depth := 0
-    for i := 0; i < len(s); i += 1 {
-        switch s[i] {
-        case '(': depth += 1
-        case ')': depth -= 1
-        case:
-            if depth == 0 && s[i] == b do return i
-        }
-    }
-    return -1
+    return csspkg.token_index_top(s, b)
 }
 
 // Índice da keyword `kw` (palavra inteira, case-insensitive) na profundidade 0.
 // Delimitada por whitespace / '(' / ')' / limites. -1 se não houver.
 @(private = "file")
 find_top_kw :: proc(s, kw: string) -> int {
-    depth := 0
-    for i := 0; i < len(s); i += 1 {
-        switch s[i] {
-        case '(': depth += 1; continue
-        case ')': depth -= 1; continue
-        }
-        if depth != 0 do continue
-        if i + len(kw) > len(s) do continue
-        if !strings.equal_fold(s[i:i + len(kw)], kw) do continue
-        before_ok := i == 0 || is_ws(s[i - 1]) || s[i - 1] == ')'
-        aj := i + len(kw)
-        after_ok := aj >= len(s) || is_ws(s[aj]) || s[aj] == '('
-        if before_ok && after_ok do return i
-    }
-    return -1
+    return csspkg.token_find_top_keyword(s, kw)
 }

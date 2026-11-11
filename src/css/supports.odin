@@ -149,62 +149,18 @@ sup_paren_inner :: proc(inner0: string, fn: Prop_Supported_Fn) -> (val: bool, ok
 // Índice do ')' que casa com o '(' em `open`. -1 se não fechar.
 @(private = "file")
 sup_match_paren :: proc(s: string, open: int) -> int {
-    depth := 0
-    quote: u8
-    for i := open; i < len(s); i += 1 {
-        if s[i] == '\\' { i += 1; continue }
-        if quote != 0 { if s[i] == quote do quote = 0; continue }
-        if s[i] == '"' || s[i] == '\'' { quote = s[i]; continue }
-        switch s[i] {
-        case '(': depth += 1
-        case ')':
-            depth -= 1
-            if depth == 0 do return i
-        }
-    }
-    return -1
+    return token_group_end(s, open)
 }
 
 // Índice do 1º byte `b` na profundidade 0. -1 se não houver.
 @(private = "file")
 sup_index_top :: proc(s: string, b: u8) -> int {
-    depth := 0
-    quote: u8
-    for i := 0; i < len(s); i += 1 {
-        if s[i] == '\\' { i += 1; continue }
-        if quote != 0 { if s[i] == quote do quote = 0; continue }
-        if s[i] == '"' || s[i] == '\'' { quote = s[i]; continue }
-        switch s[i] {
-        case '(': depth += 1
-        case ')': depth -= 1
-        case:
-            if depth == 0 && s[i] == b do return i
-        }
-    }
-    return -1
+    return token_index_top(s, b)
 }
 
 // Índice da keyword `kw` (palavra inteira, case-insensitive) na profundidade 0,
 // delimitada por espaço / '(' / ')' / limites. -1 se não houver.
 @(private = "file")
 sup_find_top_kw :: proc(s, kw: string) -> int {
-    depth := 0
-    quote: u8
-    for i := 0; i < len(s); i += 1 {
-        if s[i] == '\\' { i += 1; continue }
-        if quote != 0 { if s[i] == quote do quote = 0; continue }
-        if s[i] == '"' || s[i] == '\'' { quote = s[i]; continue }
-        switch s[i] {
-        case '(': depth += 1; continue
-        case ')': depth -= 1; continue
-        }
-        if depth != 0 do continue
-        if i + len(kw) > len(s) do continue
-        if !strings.equal_fold(s[i:i + len(kw)], kw) do continue
-        before_ok := i == 0 || is_space(s[i - 1]) || s[i - 1] == ')'
-        aj := i + len(kw)
-        after_ok := aj >= len(s) || is_space(s[aj]) || s[aj] == '('
-        if before_ok && after_ok do return i
-    }
-    return -1
+    return token_find_top_keyword(s, kw)
 }
