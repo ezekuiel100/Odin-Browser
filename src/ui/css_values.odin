@@ -18,6 +18,7 @@ css_value_valid :: proc(raw_prop, value: string) -> (valid, checked: bool) {
     switch v {
     case "inherit", "initial", "unset", "revert", "revert-layer": return true, true
     }
+    if valid, checked := css_value_family(prop, v); checked do return valid, true
     keywords := ""
     switch prop {
     case "display": keywords = "none flex inline-flex grid inline-grid inline-block block flow-root inline table inline-table table-row table-cell table-row-group table-header-group table-footer-group contents"

@@ -17,6 +17,19 @@ Declarações com var()/attr() aguardam substituição. Após resolver var(), um
 
 A detecção também rejeita recursos reconhecidos mas inertes: touch-action, hyphens, font-feature/variation-settings, scroll-snap, perspective e transform-style. writing-mode anuncia horizontal-tb, vertical-rl e vertical-lr; a cobertura e os limites estão em [WRITING-MODES.md](WRITING-MODES.md).
 
+## Validação adicional por famílias
+
+`src/ui/css_value_families.odin` amplia a mesma entrada compartilhada, antes do fallback:
+
+- Bordas, lados, outline e column-rule: até um componente de largura, estilo e cor, em qualquer ordem; duplicatas e componentes desconhecidos invalidam o shorthand inteiro.
+- border-radius e raios por canto: cardinalidade, valores não negativos e separação horizontal/vertical por barra apenas no shorthand; border-spacing e outline-offset distinguem comprimentos de porcentagens.
+- flex, flex-flow, alinhamento e place-*: ordem e quantidade de componentes, palavras compostas baseline/safe/unsafe e restrições de cada longhand.
+- columns/column-width, font-size, vertical-align, medidas de scroll-margin/padding e decoração de texto: palavras-chave, cardinalidade e restrições de sinal/unidade.
+- Longhands de duração, atraso, iterações, direção, preenchimento, execução e timing de animações/transições: listas sem itens vazios, segundos/milissegundos, limites numéricos, cubic-bezier e steps.
+- Palavras-chave de caption-side, empty-cells, resize, user-select, pointer-events, content-visibility e quebras de página/coluna.
+
+Os testes em `src/ui/css_value_families_test.odin` cobrem consultas CSS/JS, descarte de duplicatas inválidas com `!important`, preservação pelo CSSOM e fallback na cascata entre regras. Substituições var()/attr() continuam adiadas; funções matemáticas e cores usam os parsers existentes. Shorthands animation/transition, fundos, sombras, transformações e grades continuam fora desta ampliação; não se deve interpretar `checked = false` como gramática validada.
+
 ## Limites
 
 Comentários e escapes de nomes agora passam pela mesma normalização em declarações, consultas e validação CSSOM. Strings preservam comentários literais e aspas escapadas; comentários entre números e unidades não podem formar um token novo. Escapes de pontuação permanecem escapados para não virarem delimitadores. Isso ainda não substitui um tokenizer CSS completo.
