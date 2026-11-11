@@ -568,3 +568,38 @@ test_media_query_ponte_js :: proc(t: ^testing.T) {
     // devolve para `reduce` numa máquina sem a preferência ligada).
     testing.expect(t, !js_media_matches("(prefers-reduced-motion: reduce)"), "preferência não modelada")
 }
+
+@(test)
+test_inline_fragments_nested_images_and_scroll :: proc(t:^testing.T) {
+    c:=montar(`<style>body{margin:0}#outer{position:absolute;left:50px;top:40px;width:100px;transform:scale(2);transform-origin:0 0}img{width:20px;height:10px}</style><div id="outer"><span id="a"><span id="b"><img><br><img></span></span><span id="hidden" style="display:none">none</span></div>`,800,600,true)
+    defer desmontar(&c)
+    a,b:=por_id(c.dom,"a"),por_id(c.dom,"b")
+    x0,y0,w0,h0,ok:=js_element_fragment(a,0)
+    testing.expect(t,ok && w0==40 && h0==20)
+    x1,y1,w1,h1,ok1:=js_element_fragment(a,1)
+    testing.expect(t,ok1 && x1==x0 && y1>y0 && w1==40 && h1==20)
+    _,_,_,_,end:=js_element_fragment(a,2)
+    testing.expect(t,!end)
+    x,y,w,h,union_ok:=js_element_rect(a)
+    testing.expect(t,union_ok && x==x0 && y==y0 && w==40 && h==y1+h1-y0)
+    bx,by,bw,bh,bok:=js_element_rect(b)
+    testing.expect(t,bok && bx==x && by==y && bw==w && bh==h)
+    js_scroll_set(0,10)
+    _,scrolled,_,_,_:=js_element_fragment(a,0)
+    testing.expect(t,scrolled==y0-10)
+    eq(t,js_str(t,c.vm,`String(document.getElementById('a').getClientRects().length)`),"2","inline fragment API")
+    eq(t,js_str(t,c.vm,`String(document.getElementById('hidden').getClientRects().length)`),"0","display:none has no fragments")
+    eq(t,js_str(t,c.vm,`String(document.createElement('span').getClientRects().length)`),"0","detached node has no fragments")
+}
+
+@(test)
+test_inline_vertical_column_fragments :: proc(t:^testing.T) {
+    c:=montar(`<style>body{margin:0}#v{writing-mode:vertical-rl;width:100px;height:100px}img{width:20px;height:10px}</style><div id="v"><span id="s"><img><br><img></span></div>`)
+    defer desmontar(&c)
+    node:=por_id(c.dom,"s")
+    x0,y0,w0,h0,ok0:=js_element_fragment(node,0)
+    x1,y1,w1,h1,ok1:=js_element_fragment(node,1)
+    testing.expect(t,ok0 && ok1 && x1<x0 && y1==y0 && w0==20 && w1==20 && h0==10 && h1==10)
+    _,_,_,_,extra:=js_element_fragment(node,2)
+    testing.expect(t,!extra)
+}

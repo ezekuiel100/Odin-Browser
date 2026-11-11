@@ -61,11 +61,13 @@ g_computed_style: Computed_Style_Fn
 // Mesma fonte do g_element_rect (o ui a empurra junto com o mapa de estilos).
 // `g_element_box`: as duas caixas (conteúdo e borda) + o offset de padding, numa
 // chamada só — é o que o ResizeObserver pergunta de cada alvo a cada frame.
+Element_Fragment_Fn :: proc(node: ^dom.Node, index: int) -> (x, y, w, h: f32, ok: bool)
 Element_Rect_Fn   :: proc(node: ^dom.Node) -> (x, y, w, h: f32, ok: bool)
 Element_Metric_Fn :: proc(node: ^dom.Node, which: string) -> (v: f32, ok: bool)
 Element_Box_Fn    :: proc(node: ^dom.Node) -> (cw, ch, bw, bh, pad_x, pad_y: f32, ok: bool)
 Page_Scroll_Fn    :: proc() -> (x, y: f32)
 Viewport_Dims_Fn  :: proc() -> (w, h: f32)
+g_element_fragment: Element_Fragment_Fn
 g_element_rect:   Element_Rect_Fn
 g_element_metric: Element_Metric_Fn
 g_element_box:    Element_Box_Fn
@@ -2957,14 +2959,21 @@ native_get_bounding_client_rect :: proc(vm: ^Interp, this: Value, args: []Value)
     return make_dom_rect(vm, x, y, w, h)
 }
 
-// el.getClientRects(): lista (array-like) de DOMRects. Devolvemos UM retângulo —
-// a caixa de borda. ⚠️ degradação nomeada: um inline quebrado em várias linhas tem
-// um retângulo POR LINHA no navegador, e nós damos a caixa inteira.
+// Each fragment is borrowed from the UI's geometry cache and copied into JS.
 @(private = "file")
 native_get_client_rects :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a := new_array(vm)
-    x, y, w, h := node_rect(node_of(this))
-    append(&a.items, make_dom_rect(vm, x, y, w, h))
+    a:=new_array(vm)
+    node:=node_of(this)
+    if g_element_fragment!=nil {
+        for i:=0;;i+=1 {
+            x,y,w,h,ok:=g_element_fragment(node,i)
+            if !ok do break
+            append(&a.items,make_dom_rect(vm,x,y,w,h))
+        }
+    } else if g_element_rect!=nil && node!=nil {
+        x,y,w,h,ok:=g_element_rect(node)
+        if ok do append(&a.items,make_dom_rect(vm,x,y,w,h))
+    }
     return a
 }
 

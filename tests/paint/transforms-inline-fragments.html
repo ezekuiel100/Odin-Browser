@@ -1,0 +1,23 @@
+<!doctype html><style>
+body{margin:0;background:white;font:20px/1 monospace}
+.box{position:absolute;transform:scale(2);transform-origin:0 0}
+#wrap{left:30px;top:30px;width:85px}
+#merge{left:30px;top:200px;width:300px}
+#split{left:300px;top:30px;width:25px;word-break:break-all}
+#turn{position:absolute;left:450px;top:30px;transform:rotate(90deg);transform-origin:0 0;white-space:nowrap}
+#reference{position:absolute;left:300px;top:220px}
+.mark{position:absolute;top:350px;width:25px;height:25px;background:red}
+</style><div id="wrap" class="box"><span id="outer">aaa <b id="inner">bbb ccc</b> ddd</span></div>
+<div id="merge" class="box">abc<span id="middle">def</span>ghi</div><div id="split" class="box"><span id="long">MMMMMMMM</span></div>
+<div id="turn"><span id="rot">MMMM</span></div><div id="reference"><span id="ref">def</span> <span id="refrot">MMMM</span></div>
+<div id="m0" class="mark" style="left:30px"></div><div id="m1" class="mark" style="left:70px"></div><div id="m2" class="mark" style="left:110px"></div><div id="m3" class="mark" style="left:150px"></div>
+<script>setTimeout(function(){
+var a=document.getElementById('outer'),rs=a.getClientRects(),r=a.getBoundingClientRect();
+if(rs.length>=2&&r.width>0&&r.top===rs[0].top&&r.bottom===rs[rs.length-1].bottom)document.getElementById('m0').style.backgroundColor='green';
+var m=document.getElementById('middle').getBoundingClientRect(),ref=document.getElementById('ref').getBoundingClientRect();
+if(Math.abs(m.width-2*ref.width)<.1&&m.width>0&&m.left>30)document.getElementById('m1').style.backgroundColor='green';
+var s=document.getElementById('long').getClientRects();
+if(s.length>=3&&s[0].width>0&&s[s.length-1].width>0&&s[0].width<=50&&s[s.length-1].top>s[0].top)document.getElementById('m2').style.backgroundColor='green';
+var t=document.getElementById('rot').getBoundingClientRect(),tr=document.getElementById('refrot').getBoundingClientRect();
+if(Math.abs(t.height-tr.width)<.1&&Math.abs(t.width-tr.height)<.1&&t.height>0)document.getElementById('m3').style.backgroundColor='green';
+},0);</script>

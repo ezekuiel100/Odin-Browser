@@ -78,7 +78,7 @@ js_style_source_set :: proc(styles: map[^dompkg.Node]Computed, layout: ^Box, vw,
     g_js_have   = true
     g_js_vw, g_js_vh = vw, vh
     g_js_laid_out = laid_out
-    if g_js_boxes_ok { clear(&g_js_boxes) } // índice velho aponta p/ caixas liberadas
+    if g_js_boxes_ok { clear(&g_js_boxes); js_fragments_clear() } // índice velho aponta p/ caixas liberadas
     g_js_boxes_ok = false
     svg_css_bind(styles) // paint de SVG na main thread depois do worker
 }
@@ -91,7 +91,7 @@ js_style_source_clear :: proc() {
     g_js_laid_out = false
     g_js_scroll_x, g_js_scroll_y = 0, 0 // "sem página" ⇒ sem scroll; e evita que um
                                         // teste vaze scroll no seguinte (lição do M192)
-    if g_js_boxes_ok { clear(&g_js_boxes) }
+    if g_js_boxes_ok { clear(&g_js_boxes); js_fragments_clear() }
     g_js_boxes_ok = false
 }
 
@@ -101,6 +101,8 @@ js_style_source_free :: proc() {
     js_style_source_clear()
     delete(g_js_boxes)
     g_js_boxes = nil
+    delete(g_js_fragments)
+    g_js_fragments=nil
 }
 
 // FLUSH DE LAYOUT NA LEITURA. O JS do frame roda ANTES do layout_box (timers e
@@ -147,6 +149,7 @@ index_boxes :: proc(b: ^Box, ox, oy: f32) {
     if b.node != nil {
         if _, ja := g_js_boxes[b.node]; !ja do g_js_boxes[b.node] = Box_Ref{b, ox2, oy2}
     }
+    index_inline_fragments(b)
     for c in b.children do index_boxes(c, ox2, oy2)
     for it in b.inlines do if it.box!=nil do index_boxes(it.box,b.content_x+ox2+it.x,b.content_y+oy2+it.y)
 }
@@ -204,7 +207,7 @@ pinned_oy :: proc(r: Box_Ref) -> f32 {
 
 js_scroll_set :: proc(x, y: f32) {
     if x!=g_js_scroll_x || y!=g_js_scroll_y {
-        if g_js_boxes_ok do clear(&g_js_boxes)
+        if g_js_boxes_ok do clear(&g_js_boxes); js_fragments_clear()
         g_js_boxes_ok=false
     }
     g_js_scroll_x=x; g_js_scroll_y=y
@@ -256,7 +259,20 @@ js_element_box :: proc(node: ^dompkg.Node) -> (cw, ch, bw, bh, pad_x, pad_y: f32
 js_element_rect :: proc(node: ^dompkg.Node) -> (x, y, w, h: f32, ok: bool) {
     if node == nil || !g_js_have do return 0, 0, 0, 0, false
     r, found := box_ref_of(node)
-    if !found || r.b == nil do return 0, 0, 0, 0, false
+    if !found || r.b == nil {
+        x0,y0,w0,h0,has:=js_element_fragment(node,0)
+        if !has do return 0,0,0,0,false
+        right,bottom:=x0+w0,y0+h0
+        nonempty:=w0>0 && h0>0
+        for i:=1;;i+=1 {
+            x,y,w,h,ok:=js_element_fragment(node,i)
+            if !ok do break
+            if w==0 || h==0 do continue
+            if !nonempty { x0=x; y0=y; right=x+w; bottom=y+h; nonempty=true }
+            else { x0=min(x0,x); y0=min(y0,y); right=max(right,x+w); bottom=max(bottom,y+h) }
+        }
+        return x0,y0,right-x0,bottom-y0,true
+    }
     b := r.b
     x0, y0, x1, y1 := x_bounds(b.x_world, b.w, b.h)
     return x0, y0, x1-x0, y1-y0, true
@@ -734,4 +750,80 @@ flex_align_str :: proc(a: Flex_Align) -> string {
     case .End:     return "flex-end"
     }
     return "stretch"
+}
+
+// Local rectangles are merged before projection. Unioning projected word bounds
+// first would overestimate a rotated line's rectangle.
+Inline_Fragment :: struct { box:^Box, rect:Rect, line:int }
+@(private="file",thread_local) g_js_fragments:map[^dompkg.Node][dynamic]Inline_Fragment
+
+js_fragments_clear :: proc() {
+    for _,parts in g_js_fragments do delete(parts)
+    clear(&g_js_fragments)
+}
+index_inline_fragments :: proc(b:^Box) {
+    if len(b.inlines)==0 do return
+    if g_js_fragments==nil do g_js_fragments=make(map[^dompkg.Node][dynamic]Inline_Fragment)
+    for &it in b.inlines {
+        if it.hidden || it.kind==.Break || it.source==nil do continue
+        inline_source_fragments(b,&it,it.source,0)
+    }
+}
+inline_source_fragments :: proc(b:^Box,it:^Inline_Item,source:^Inline_Source,offset:int) {
+    if source==nil do return
+    if source.left!=nil {
+        inline_source_fragments(b,it,source.left,offset)
+        inline_source_fragments(b,it,source.right,offset+source.left.length)
+        return
+    }
+    lo,hi:=max(offset,it.source_start),min(offset+source.length,it.source_start+len(it.text))
+    x0,x1:=it.x,it.x+it.w
+    if it.kind==.Word {
+        if hi<=lo do return
+        prefix:=it^; prefix.text=it.text[:lo-it.source_start]; prefix.text_w=0
+        if lo!=it.source_start do x0+=word_width(&prefix)
+        prefix.text=it.text[:hi-it.source_start]; prefix.text_w=0
+        if hi!=it.source_start+len(it.text) do x1=it.x+word_width(&prefix)
+        if it.bidi_level%2==1 { x0,x1=it.x+it.w-(x1-it.x),it.x+it.w-(x0-it.x) }
+    }
+    // Include the painted inline border/padding, but not its outside margin.
+    if lo==it.source_start do x0-=it.ibl
+    if hi==it.source_start+len(it.text) do x1+=it.ibr
+    rect:=Rect{b.content_x-b.x+x0,b.content_y-b.y+it.y-it.ipt,x1-x0,it.h+it.ipt+it.ipb}
+    if b.writing_mode!=.Horizontal && it.kind==.Word {
+        a,z:=f32(0),it.h
+        prefix:=it^; prefix.text_w=0
+        if lo!=it.source_start { prefix.text=it.text[:lo-it.source_start]; a=word_width(&prefix) }
+        prefix.text_w=0
+        if hi!=it.source_start+len(it.text) { prefix.text=it.text[:hi-it.source_start]; z=word_width(&prefix) }
+        rect=Rect{b.content_x-b.x+it.x,b.content_y-b.y+it.y+a,it.w,z-a}
+    }
+    for node:=source.node;node!=nil && node!=b.node;node=node.parent {
+        if node.kind!=.Element do continue
+        if _,boxed:=g_js_boxes[node]; boxed do break
+        if c,ok:=g_js_styles[node]; ok && c.display_contents do continue
+        parts:=g_js_fragments[node]
+        last:=len(parts)-1
+        if last>=0 && parts[last].box==b && parts[last].line==it.line_id {
+            r:=&parts[last].rect
+            right,bottom:=max(r.x+r.w,rect.x+rect.w),max(r.y+r.h,rect.y+rect.h)
+            r.x=min(r.x,rect.x); r.y=min(r.y,rect.y); r.w=right-r.x; r.h=bottom-r.y
+        } else { append(&parts,Inline_Fragment{b,rect,it.line_id}) }
+        g_js_fragments[node]=parts
+    }
+}
+js_element_fragment :: proc(node:^dompkg.Node,index:int) -> (x,y,w,h:f32,ok:bool) {
+    if node==nil || !g_js_have || index<0 do return
+    ref,boxed:=box_ref_of(node) // also flushes layout and constructs both indexes
+    if boxed && ref.b!=nil {
+        if index!=0 do return
+        x0,y0,x1,y1:=x_bounds(ref.b.x_world,ref.b.w,ref.b.h)
+        return x0,y0,x1-x0,y1-y0,true
+    }
+    parts:=g_js_fragments[node]
+    if index>=len(parts) do return
+    part:=parts[index]; r:=part.rect
+    m:=part.box.x_world*x_translation(r.x,r.y,0)
+    x0,y0,x1,y1:=x_bounds(m,r.w,r.h)
+    return x0,y0,x1-x0,y1-y0,true
 }

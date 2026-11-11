@@ -55,7 +55,7 @@ layout_vertical_inline :: proc(b:^Box,limit:f32,defined_width:bool) -> f32 {
             for end<len(it.text) && !vertical_upright(it.text[end:],orientation) do end=text_cluster_end(it.text,end)
         }
         if end>=len(it.text) do continue
-        tail:=it^; tail.text=strings.clone(it.text[end:]); tail.split_tail=true
+        tail:=it^; tail.text=strings.clone(it.text[end:]); tail.split_tail=true; tail.source_start+=end
         tail.href=it.href!="" ? strings.clone(it.href) : ""; tail.pad_before=0; tail.space_before=false; tail.text_w=0
         head:=strings.clone(it.text[:end]); delete(it.text); it.text=head; it.text_w=0; it.pad_after=0
         inject_at(&b.inlines,i+1,tail)
@@ -69,6 +69,7 @@ layout_vertical_inline :: proc(b:^Box,limit:f32,defined_width:bool) -> f32 {
         shift:=align==.Right ? max(0,limit-used) : (align==.Center ? max(0,(limit-used)/2) : 0)
         for i in start..<end {
             it:= &b.inlines[i]
+            it.line_id=start
             it.x=offset+(width-it.w)/2
             it.y+=shift
         }

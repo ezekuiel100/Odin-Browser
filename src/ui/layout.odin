@@ -540,13 +540,25 @@ Box :: struct {
     align:     Text_Align,
     align_last: Text_Align, has_align_last: bool, // text-align-last (última linha)
     inlines:   [dynamic]Inline_Item,
+    inline_sources: [dynamic]^Inline_Source, // immutable provenance shared by split/coalesced words
     inline_effects: [dynamic]^Inline_Effect, // owned scopes, shared by word fragments
     inline_parent_effect: ^Inline_Effect, // out-of-flow descendants retain inline opacity
 
     children: [dynamic]^Box,
 }
 
+Inline_Source :: struct {
+    node: ^dompkg.Node,
+    left, right: ^Inline_Source,
+    length: int,
+    owner: ^Box,
+}
+
 Inline_Item :: struct {
+    source: ^Inline_Source,
+    source_start: int,
+    line_id: int,
+
     kind:  enum { Word, Image, Break, InlineBox },
     effect: ^Inline_Effect,
     invisible: bool, // independent of line-clamp/ellipsis
@@ -1242,6 +1254,12 @@ coalesce_words :: proc(items: ^[dynamic]Inline_Item) {
         cur := items[r]
         if w > 0 && words_mergeable(&items[w - 1], &cur) {
             a := &items[w - 1]
+            if a.source!=nil && cur.source!=nil {
+                source:=new(Inline_Source)
+                source^={left=a.source,right=cur.source,length=len(a.text)+len(cur.text),owner=a.source.owner}
+                append(&source.owner.inline_sources,source)
+                a.source=source
+            }
             merged := strings.concatenate({a.text, cur.text})
             delete(a.text); delete(cur.text)
             a.text = merged
@@ -1461,6 +1479,16 @@ build_inline_pseudo :: proc(pc: ^Computed, items: ^[dynamic]Inline_Item, st: Inl
 // Flatten inline content into words without losing paint scopes or out-of-flow boxes.
 @(private="file")
 build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, styles: map[^dompkg.Node]Computed, st: Inline_Style, base: string, pending, started: ^bool, ws: White_Space, root := false, grads: ^[dynamic]Inline_Grad = nil, owner: ^Box = nil) {
+    first:=len(items)
+    defer if owner!=nil {
+        for i in first..<len(items) {
+            if items[i].source!=nil do continue
+            source:=new(Inline_Source)
+            source^={node=node,length=len(items[i].text),owner=owner}
+            append(&owner.inline_sources,source)
+            items[i].source=source
+        }
+    }
     #partial switch node.kind {
     case .Text:
         add_words(items, node.text, st, pending, started, ws)
@@ -3296,6 +3324,7 @@ item_ascent :: proc(it: ^Inline_Item) -> f32 {
 @(private="file")
 finalize_line :: proc(b: ^Box, start, end: int, line_top, cw: f32, align: Text_Align) -> f32 {
     if start >= end do return 0
+    for j in start..<end do b.inlines[j].line_id=start
     for j := end - 1; j >= start && b.inlines[j].hanging_space; j -= 1 {
         b.inlines[j].w = 0
         b.inlines[j].hidden = true
@@ -3476,6 +3505,7 @@ layout_inline :: proc(b: ^Box, wrap_w: f32 = -1, nlines: ^int = nil) -> f32 {
                     rest.href = it.href != "" ? strings.clone(it.href) : ""
                     rest.text_w = 0
                     rest.split_tail = true
+                    rest.source_start += cut
                     rest.space_before = false
                     rest.pad_before = 0 // pad_before fica no 1º fragmento (head)
                     it.pad_after = 0    // pad_after vai p/ o último fragmento (rest)
@@ -11155,6 +11185,8 @@ free_layout :: proc(b: ^Box) {
         if it.box != nil    do free_layout(it.box)
     }
     delete(b.inlines)
+    for source in b.inline_sources do free(source)
+    delete(b.inline_sources)
     for effect in b.inline_effects { delete(effect.absolutes); free(effect) }
     delete(b.inline_effects)
     delete(b.inline_grads)

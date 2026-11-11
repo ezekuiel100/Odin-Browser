@@ -8619,6 +8619,7 @@ install_js_query_hook :: proc "contextless" () {
     jspkg.g_dom_matches = js_dom_matches
     jspkg.g_css_supports = css_supports_decl // CSS.supports (css_om.odin) — mesma razão de ciclo
     jspkg.g_computed_style = js_computed_style // getComputedStyle (computed_om.odin) — idem
+    jspkg.g_element_fragment = js_element_fragment
     jspkg.g_element_rect   = js_element_rect   // getBoundingClientRect  (idem)
     jspkg.g_element_metric = js_element_metric // offsetWidth/clientHeight/... (idem)
     jspkg.g_element_box    = js_element_box    // as duas caixas p/ o ResizeObserver (idem)
