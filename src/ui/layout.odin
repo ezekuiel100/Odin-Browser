@@ -8897,6 +8897,17 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // scroll de elemento: a roda sobre um container rolável ajusta seu scroll e é
     // CONSUMIDA (zera io.MouseWheel), evitando que a página role junto. Paint é
     // pai-primeiro, então o container externo captura antes (aninhados: externo vence).
+    // Rolagem automática do meio (autoscroll.odin): no aperto, o rolável mais
+    // interno sob o cursor vira o alvo (pai-primeiro ⇒ o último a gravar é o de
+    // dentro); nos frames seguintes, o alvo — achado por COMPARAÇÃO de ponteiro,
+    // o nó nunca é derreferenciado por aqui — recebe o deslocamento do frame.
+    if b.overflow_scroll && b.scroll_max > 0 && b.node != nil {
+        if over && im.IsMouseClicked(.Middle) do g_aux_scroller = rawptr(b.node)
+        if g_autoscroll_target != nil && rawptr(b.node) == g_autoscroll_target {
+            g_autoscroll_hit = true
+            b.scroll_y = clamp(b.scroll_y + g_autoscroll_dy, 0, b.scroll_max)
+        }
+    }
     if b.overflow_scroll && over && b.scroll_max > 0 {
         io := im.GetIO()
         if io.MouseWheel != 0 {

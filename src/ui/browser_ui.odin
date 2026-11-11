@@ -292,6 +292,7 @@ State :: struct {
     scroll_pending: bool,
     scroll_target:  f32,  // Y-página alvo (box.y é absoluto)
     scroll_smooth:  bool, // anima em vez de pular (scroll-behavior:smooth da raiz)
+    autoscroll:     Autoscroll, // rolagem automática do botão do meio (autoscroll.odin)
 }
 
 g_font_ui:  ^im.Font
@@ -679,6 +680,11 @@ run :: proc() {
                 // F9: grava o frame atual em capture.png (ver capture_frame).
                 if e.key.keysym.sym == .F9 do g_want_capture = true
             }
+            // janela perdeu o foco (Alt+Tab): a rolagem automática não pode seguir
+            // rolando sozinha com o usuário em outro programa.
+            if e.type == .WINDOWEVENT && e.window.event == .FOCUS_LOST {
+                autoscroll_stop(&s.autoscroll)
+            }
             // Ctrl + roda do mouse também dá zoom (padrão de navegador)
             if e.type == .MOUSEWHEEL {
                 ks := sdl2.GetModState()
@@ -701,6 +707,10 @@ run :: proc() {
         imgui_sdlr.NewFrame()
         imgui_sdl2.NewFrame()
         im.NewFrame()
+
+        // ANTES de qualquer widget: o clique que encerra a rolagem automática do
+        // meio tem de sumir para TODO leitor do mouse neste frame.
+        autoscroll_input(&s)
 
         images_poll(renderer) // sobe texturas prontas, inicia downloads pendentes
 
@@ -781,7 +791,12 @@ draw_browser :: proc(s: ^State) {
     draw_content(s)
     // soltura do meio FORA da página (aba carregando, faixa de abas, devtools):
     // o dispatch_page_aux não rodou, então o aperto pendente morre aqui.
-    if im.IsMouseReleased(.Middle) do aux_press_clear(s)
+    // Idem p/ a soltura engolida da rolagem automática: sem isto, uma que caísse
+    // fora da página ficaria pendurada e comeria a PRÓXIMA soltura legítima.
+    if im.IsMouseReleased(.Middle) {
+        aux_press_clear(s)
+        s.autoscroll.swallow_mid_release = false
+    }
     if g_devtools_open do draw_devtools(s)
     draw_status_bar(s)
 }
@@ -1145,6 +1160,10 @@ draw_content :: proc(s: ^State) {
             g_viewport_size = avail
             g_viewport_valid = true
 
+            // rolagem automática do meio: o deslocamento do frame vai p/ o paint
+            // (rolável interno) ou volta p/ ser aplicado na página logo abaixo.
+            auto_dy := autoscroll_prepare(s)
+
             paint_layout(s, tab.layout)
 
             // Informa ao ImGui a altura total do documento p/ habilitar o scroll da
@@ -1166,6 +1185,7 @@ draw_content :: proc(s: ^State) {
             if io.MouseWheel != 0 && im.IsWindowHovered({}) {
                 im.SetScrollY(im.GetScrollY() - io.MouseWheel * 60)
             }
+            autoscroll_finish(s, auto_dy)
 
             // scroll de âncora pendente (#id): pulo instantâneo, ou animação suave
             // se a raiz tem scroll-behavior:smooth. A roda do usuário cancela.
@@ -2224,6 +2244,14 @@ dispatch_page_aux :: proc(s: ^State, vw, vh: f32) {
     pressed  := im.IsMouseClicked(.Middle)
     released := im.IsMouseReleased(.Middle)
     if !pressed && !released do return
+    // a soltura do meio que ENCERROU a rolagem automática: o aperto foi engolido
+    // (autoscroll_input), então a soltura também não vira mouseup/auxclick.
+    if released && s.autoscroll.swallow_mid_release {
+        s.autoscroll.swallow_mid_release = false
+        aux_press_clear(s)
+        return
+    }
+    scroller := g_aux_scroller // gravado pelo paint deste frame; o dispatch pode refazer o layout
 
     tab_id := s.tabs[s.active].id
     vm     := s.tabs[s.active].vm
@@ -2234,10 +2262,15 @@ dispatch_page_aux :: proc(s: ^State, vw, vh: f32) {
         aux_press_clear(s)
         s.aux_press_tab  = tab_id
         s.aux_press_href = strings.clone(href)
+        down_prevented := false
         if node != nil && vm != nil {
-            f, _ := jspkg.dispatch_mouse_event(vm, node, "mousedown", 1, 4)
+            f, p := jspkg.dispatch_mouse_event(vm, node, "mousedown", 1, 4)
             fired |= f
+            down_prevented = p
         }
+        // fora de link: rolagem automática. `preventDefault` no mousedown a
+        // impede — é o que mapas/editores usam p/ ter o meio só p/ eles.
+        if href == "" && !down_prevented do autoscroll_try_start(s, tab_id, scroller)
     }
     if released {
         same_tab := s.aux_press_tab != 0 && s.aux_press_tab == tab_id
