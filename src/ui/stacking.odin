@@ -34,7 +34,8 @@ creates_stacking_context :: proc(b: ^Box) -> bool {
 
 // Offsets must match paint_box, including sticky and viewport-fixed boxes.
 stacking_offset :: proc(b: ^Box, ox, oy: f32) -> (x, y: f32) {
-    x = ox + b.rel_dx; y = oy + b.rel_dy
+    dx, dy := animation_translation_delta(b)
+    x = ox + b.rel_dx + dx; y = oy + b.rel_dy + dy
     if b.pos == .Fixed {
         y += im.GetScrollY()
     } else if b.pos == .Sticky && b.inset_has[0] && !b.inset_pct[0] {

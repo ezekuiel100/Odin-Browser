@@ -1,0 +1,165 @@
+﻿<anon# .> block x=0 y=0 w=800 h=2522
+  <html# .> block x=0 y=0 w=800 h=2522
+    <body# .> block x=0 y=0 w=800 h=2522
+      <div#fg_column_wrap .> block x=0 y=0 w=800 h=100
+        <div# .> flex x=0 y=0 w=200 h=100 dir=Column gap=10
+          <div#fg_column_wrap-a .> inline x=0 y=0 w=20 h=60
+          <div#fg_column_wrap-b .> inline x=30 y=0 w=30 h=60
+          <div#fg_column_wrap-c .> inline x=70 y=0 w=40 h=60
+      <div#fg_column_wrap_grow_per_line .> block x=0 y=120 w=800 h=100
+        <div# .> flex x=0 y=120 w=100 h=100 dir=Column gap=0
+          <div#fg_column_wrap_grow_per_line-a .> inline x=0 y=120 w=20 h=50
+          <div#fg_column_wrap_grow_per_line-b .> inline x=0 y=170 w=20 h=50
+          <div#fg_column_wrap_grow_per_line-c .> inline x=20 y=120 w=30 h=100
+      <div#fg_column_wrap_hypothetical_min .> block x=0 y=240 w=800 h=100
+        <div# .> flex x=0 y=240 w=100 h=100 dir=Column gap=0
+          <div#fg_column_wrap_hypothetical_min-a .> inline x=0 y=240 w=20 h=100
+          <div#fg_column_wrap_hypothetical_min-b .> inline x=20 y=240 w=30 h=100
+      <div#fg_column_wrap_indefinite_control .> block x=0 y=360 w=800 h=125
+        <div#fg_column_wrap_indefinite_control-g .> flex x=0 y=360 w=100 h=125 dir=Column gap=10
+          <div#fg_column_wrap_indefinite_control-a .> inline x=0 y=360 w=20 h=60
+          <div#fg_column_wrap_indefinite_control-b .> inline x=0 y=425 w=30 h=60
+      <div#fg_grid_fr_automatic_min .> block x=0 y=505 w=800 h=10
+        <div# .> grid x=0 y=505 w=100 h=10 cols=2 rows=0 gap=0
+          <div#fg_grid_fr_automatic_min-a .> block x=0 y=505 w=200 h=10
+            <div# .> inline x=0 y=505 w=200 h=10
+          <div#fg_grid_fr_automatic_min-b .> inline x=200 y=505 w=0 h=10
+      <div#fg_grid_fr_zero_min_control .> block x=0 y=535 w=800 h=10
+        <div# .> grid x=0 y=535 w=100 h=10 cols=2 rows=0 gap=0
+          <div#fg_grid_fr_zero_min_control-a .> block x=0 y=535 w=50 h=10
+            <div# .> inline x=0 y=535 w=200 h=10
+          <div#fg_grid_fr_zero_min_control-b .> inline x=50 y=535 w=50 h=10
+      <div#fg_grid_scroll_min_control .> block x=0 y=565 w=800 h=10
+        <div# .> grid x=0 y=565 w=100 h=10 cols=2 rows=0 gap=0
+          <div#fg_grid_scroll_min_control-a .> block x=0 y=565 w=50 h=10
+            <div# .> inline x=0 y=565 w=200 h=10
+          <div#fg_grid_scroll_min_control-b .> inline x=50 y=565 w=50 h=10
+      <div#fg_grid_min_content_track .> block x=0 y=595 w=800 h=20
+        <div#fg_grid_min_content_track-g .> grid x=0 y=595 w=400 h=20 cols=2 rows=0 gap=0
+          <div#fg_grid_min_content_track-a .> flex x=0 y=595 w=100 h=20 dir=Row gap=0
+            <div# .> inline x=0 y=595 w=100 h=10
+            <div# .> inline x=0 y=605 w=100 h=10
+          <div#fg_grid_min_content_track-b .> inline x=100 y=595 w=300 h=20
+      <div#fg_grid_max_content_no_shrink .> block x=0 y=635 w=800 h=10
+        <div#fg_grid_max_content_no_shrink-g .> grid x=0 y=635 w=120 h=10 cols=2 rows=0 gap=0
+          <div#fg_grid_max_content_no_shrink-a .> flex x=0 y=635 w=200 h=10 dir=Row gap=0
+            <div# .> inline x=0 y=635 w=100 h=10
+            <div# .> inline x=100 y=635 w=100 h=10
+          <div#fg_grid_max_content_no_shrink-b .> inline x=200 y=635 w=0 h=10
+      <div#fg_grid_fit_content_cap .> block x=0 y=665 w=800 h=20
+        <div#fg_grid_fit_content_cap-g .> grid x=0 y=665 w=400 h=20 cols=2 rows=0 gap=0
+          <div#fg_grid_fit_content_cap-a .> flex x=0 y=665 w=120 h=20 dir=Row gap=0
+            <div# .> inline x=0 y=665 w=100 h=10
+            <div# .> inline x=0 y=675 w=100 h=10
+          <div#fg_grid_fit_content_cap-b .> inline x=120 y=665 w=280 h=20
+      <div#fg_grid_auto_preserves_min_content .> block x=0 y=705 w=800 h=20
+        <div#fg_grid_auto_preserves_min_content-g .> grid x=0 y=705 w=60 h=20 cols=2 rows=0 gap=0
+          <div#fg_grid_auto_preserves_min_content-a .> flex x=0 y=705 w=100 h=20 dir=Row gap=0
+            <div# .> inline x=0 y=705 w=100 h=10
+            <div# .> inline x=0 y=715 w=100 h=10
+          <div#fg_grid_auto_preserves_min_content-b .> inline x=100 y=705 w=0 h=20
+      <div#fg_grid_minmax_intrinsic_min .> block x=0 y=745 w=800 h=10
+        <div#fg_grid_minmax_intrinsic_min-g .> grid x=0 y=745 w=120 h=10 cols=2 rows=0 gap=0
+          <div#fg_grid_minmax_intrinsic_min-a .> flex x=0 y=745 w=200 h=10 dir=Row gap=0
+            <div# .> inline x=0 y=745 w=100 h=10
+            <div# .> inline x=100 y=745 w=100 h=10
+          <div#fg_grid_minmax_intrinsic_min-b .> inline x=200 y=745 w=0 h=10
+      <div#fg_column_wrap_reverse_direction .> block x=0 y=775 w=800 h=100
+        <div# .> flex x=0 y=775 w=100 h=100 dir=Column gap=0
+          <div#fg_column_wrap_reverse_direction-a .> inline x=0 y=835 w=20 h=40
+          <div#fg_column_wrap_reverse_direction-b .> inline x=0 y=795 w=20 h=40
+          <div#fg_column_wrap_reverse_direction-c .> inline x=20 y=835 w=30 h=40
+      <div#fg_column_wrap_stretch_lines .> block x=0 y=895 w=800 h=100
+        <div# .> flex x=0 y=895 w=100 h=100 dir=Column gap=10
+          <div#fg_column_wrap_stretch_lines-a .> block x=0 y=895 w=45 h=60
+            <div# .> inline x=0 y=895 w=20 h=5
+          <div#fg_column_wrap_stretch_lines-b .> block x=55 y=895 w=45 h=60
+            <div# .> inline x=55 y=895 w=20 h=5
+      <div#fg_column_explicit_zero_gap .> block x=0 y=1015 w=800 h=40
+        <div# .> flex x=0 y=1015 w=800 h=40 dir=Column gap=10
+          <div# .> inline x=0 y=1015 w=800 h=20
+          <div#fg_column_explicit_zero_gap-b .> inline x=0 y=1035 w=800 h=20
+      <div#fg_flex_ratio_transferred_min .> block x=0 y=1075 w=800 h=50
+        <div# .> flex x=0 y=1075 w=60 h=50 dir=Row gap=0
+          <div#fg_flex_ratio_transferred_min-a .> inline x=0 y=1075 w=100 h=50
+      <div#fg_flex_ratio_base .> block x=0 y=1145 w=800 h=50
+        <div# .> flex x=0 y=1145 w=300 h=50 dir=Row gap=0
+          <div#fg_flex_ratio_base-a .> inline x=0 y=1145 w=100 h=50
+      <div#fg_flex_ratio_specified_cap .> block x=0 y=1215 w=800 h=50
+        <div# .> flex x=0 y=1215 w=20 h=50 dir=Row gap=0
+          <div#fg_flex_ratio_specified_cap-a .> inline x=0 y=1215 w=40 h=50
+      <div#fg_flex_ratio_percent_cross .> block x=0 y=1285 w=800 h=100
+        <div# .> flex x=0 y=1285 w=60 h=100 dir=Row gap=0
+          <div#fg_flex_ratio_percent_cross-a .> inline x=0 y=1285 w=100 h=50
+      <div#fg_grid_row_fr_minimum .> block x=0 y=1405 w=800 h=100
+        <div# .> grid x=0 y=1405 w=100 h=100 cols=0 rows=2 gap=0
+          <div#fg_grid_row_fr_minimum-a .> block x=0 y=1405 w=100 h=200
+            <div# .> inline x=0 y=1405 w=100 h=200
+          <div#fg_grid_row_fr_minimum-b .> inline x=0 y=1605 w=100 h=0
+      <div#fg_grid_row_zero_min_control .> block x=0 y=1525 w=800 h=100
+        <div# .> grid x=0 y=1525 w=100 h=100 cols=0 rows=2 gap=0
+          <div#fg_grid_row_zero_min_control-a .> block x=0 y=1525 w=100 h=50
+            <div# .> inline x=0 y=1525 w=100 h=200
+          <div#fg_grid_row_zero_min_control-b .> inline x=0 y=1575 w=100 h=50
+      <div#fg_column_wrap_reverse_cross .> block x=0 y=1645 w=800 h=100
+        <div# .> flex x=0 y=1645 w=100 h=100 dir=Column gap=0
+          <div#fg_column_wrap_reverse_cross-a .> inline x=80 y=1645 w=20 h=60
+          <div#fg_column_wrap_reverse_cross-b .> inline x=50 y=1645 w=30 h=60
+      <div#fg_row_reverse_wrap_collection .> block x=0 y=1765 w=800 h=20
+        <div# .> flex x=0 y=1765 w=100 h=20 dir=Row gap=0
+          <div#fg_row_reverse_wrap_collection-a .> inline x=60 y=1765 w=40 h=10
+          <div#fg_row_reverse_wrap_collection-b .> inline x=20 y=1765 w=40 h=10
+          <div#fg_row_reverse_wrap_collection-c .> inline x=60 y=1775 w=40 h=10
+      <div#fg_row_wrap_cross_gap .> block x=0 y=1805 w=800 h=27
+        <div# .> flex x=0 y=1805 w=50 h=27 dir=Row gap=20
+          <div# .> inline x=0 y=1805 w=40 h=10
+          <div#fg_row_wrap_cross_gap-b .> inline x=0 y=1822 w=40 h=10
+      <div#fg_row_wrap_single_line_alignment .> block x=0 y=1852 w=800 h=100
+        <div# .> flex x=0 y=1852 w=100 h=100 dir=Row gap=0
+          <div#fg_row_wrap_single_line_alignment-a .> inline x=0 y=1892 w=20 h=20
+      <div#fg_row_wrap_stretch_and_reverse .> block x=0 y=1972 w=800 h=100
+        <div# .> flex x=0 y=1972 w=50 h=100 dir=Row gap=0
+          <div#fg_row_wrap_stretch_and_reverse-a .> block x=0 y=2027 w=40 h=45
+            <div# .> inline x=0 y=2027 w=40 h=10
+          <div#fg_row_wrap_stretch_and_reverse-b .> block x=0 y=1972 w=40 h=45
+            <div# .> inline x=0 y=1972 w=40 h=10
+      <div#fg_grid_fit_content_percentage .> block x=0 y=2092 w=800 h=20
+        <div#fg_grid_fit_content_percentage-g .> grid x=0 y=2092 w=400 h=20 cols=2 rows=0 gap=0
+          <div#fg_grid_fit_content_percentage-a .> flex x=0 y=2092 w=120 h=20 dir=Row gap=0
+            <div# .> inline x=0 y=2092 w=100 h=10
+            <div# .> inline x=0 y=2102 w=100 h=10
+          <div#fg_grid_fit_content_percentage-b .> inline x=120 y=2092 w=280 h=20
+      <div#fg_grid_explicit_intrinsic_min_with_scroll .> block x=0 y=2132 w=800 h=10
+        <div# .> grid x=0 y=2132 w=100 h=10 cols=2 rows=0 gap=0
+          <div#fg_grid_explicit_intrinsic_min_with_scroll-a .> block x=0 y=2132 w=200 h=10
+            <div# .> inline x=0 y=2132 w=200 h=10
+          <div#fg_grid_explicit_intrinsic_min_with_scroll-b .> inline x=200 y=2132 w=0 h=10
+      <div#fg_grid_span_flexible_min_control .> block x=0 y=2162 w=800 h=10
+        <div# .> grid x=0 y=2162 w=100 h=10 cols=2 rows=0 gap=0
+          <div#fg_grid_span_flexible_min_control-a .> block x=0 y=2162 w=100 h=10
+            <div# .> inline x=0 y=2162 w=200 h=10
+      <div#fg_column_basis_content_box .> block x=0 y=2192 w=800 h=100
+        <div# .> flex x=0 y=2192 w=800 h=100 dir=Column gap=0
+          <div#fg_column_basis_content_box-a .> inline x=0 y=2192 w=800 h=40
+      <div#fg_flex_ratio_box_sizing .> block x=0 y=2312 w=800 h=70
+        <div# .> flex x=0 y=2312 w=10 h=70 dir=Row gap=0
+          <div#fg_flex_ratio_box_sizing-a .> inline x=0 y=2312 w=120 h=70
+          <div#fg_flex_ratio_box_sizing-b .> inline x=120 y=2312 w=100 h=50
+      <div#fg_grid_intrinsic_zero_min .> block x=0 y=2402 w=800 h=20
+        <div#fg_grid_intrinsic_zero_min-g .> grid x=0 y=2402 w=0 h=20 cols=2 rows=0 gap=0
+          <div#fg_grid_intrinsic_zero_min-a .> flex x=0 y=2402 w=0 h=20 dir=Row gap=0
+            <div# .> inline x=0 y=2402 w=100 h=10
+            <div# .> inline x=0 y=2412 w=100 h=10
+          <div#fg_grid_intrinsic_zero_min-b .> inline x=0 y=2402 w=0 h=20
+      <div#fg_grid_intrinsic_min_content .> block x=0 y=2442 w=800 h=20
+        <div#fg_grid_intrinsic_min_content-g .> grid x=0 y=2442 w=100 h=20 cols=2 rows=0 gap=0
+          <div#fg_grid_intrinsic_min_content-a .> flex x=0 y=2442 w=100 h=20 dir=Row gap=0
+            <div# .> inline x=0 y=2442 w=100 h=10
+            <div# .> inline x=0 y=2452 w=100 h=10
+          <div#fg_grid_intrinsic_min_content-b .> inline x=100 y=2442 w=0 h=20
+      <div#fg_grid_intrinsic_fit_content .> block x=0 y=2482 w=800 h=20
+        <div#fg_grid_intrinsic_fit_content-g .> grid x=0 y=2482 w=120 h=20 cols=2 rows=0 gap=0
+          <div#fg_grid_intrinsic_fit_content-a .> flex x=0 y=2482 w=120 h=20 dir=Row gap=0
+            <div# .> inline x=0 y=2482 w=100 h=10
+            <div# .> inline x=0 y=2492 w=100 h=10
+          <div#fg_grid_intrinsic_fit_content-b .> inline x=120 y=2482 w=0 h=20

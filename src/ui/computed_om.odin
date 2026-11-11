@@ -481,6 +481,9 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
         case .Center:  return "center"
         case .Right:   return "right"
         case .Justify: return "justify"
+        case .Start: return "start"
+        case .End: return "end"
+        case .Match_Parent: return "start"
         }
         return "left"
     case "text-transform":
@@ -503,10 +506,34 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
         case .Break_Spaces: return "break-spaces"
         }
         return "normal"
+    case "tab-size": return fmt.tprintf("%d", c.tab_size == 0 ? 8 : max(c.tab_size, 0))
+    case "text-align-last":
+        if !c.has_text_align_last do return "auto"
+        switch c.text_align_last {
+        case .Left: return "left"
+        case .Right: return "right"
+        case .Center: return "center"
+        case .Justify: return "justify"
+        case .Start, .Match_Parent: return "start"
+        case .End: return "end"
+        }
+        return "auto"
+    case "unicode-bidi":
+        switch c.unicode_bidi {
+        case .Normal: return "normal"
+        case .Embed: return "embed"
+        case .Isolate: return "isolate"
+        case .Override: return "bidi-override"
+        case .Isolate_Override: return "isolate-override"
+        case .Plaintext: return "plaintext"
+        }
+        return "normal"
+    case "writing-mode": return c.writing_mode==.Horizontal ? "horizontal-tb" : (c.writing_mode==.Vertical_Rl ? "vertical-rl" : "vertical-lr")
+    case "text-orientation": return c.text_orientation==.Mixed ? "mixed" : (c.text_orientation==.Upright ? "upright" : "sideways")
     case "direction": return c.direction == .Rtl ? "rtl" : "ltr"
     case "text-indent":
-        if c.text_indent_pct do return fmt.tprintf("%s%%", num_str(c.text_indent * 100))
-        return px(c.text_indent)
+        value := c.text_indent_pct ? fmt.tprintf("%s%%", num_str(c.text_indent * 100)) : px(c.text_indent)
+        return strings.concatenate({value, c.indent_hanging ? " hanging" : "", c.indent_each_line ? " each-line" : ""}, context.temp_allocator)
     case "text-decoration-line", "text-decoration":
         parts := make([dynamic]string, context.temp_allocator)
         if c.underline do append(&parts, "underline")

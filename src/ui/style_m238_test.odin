@@ -151,7 +151,7 @@ test_m238_initial_em_prop_que_herda :: proc(t: ^testing.T) {
     testing.expectf(t, fw_class(c2.weight) == .Regular, "font-weight:initial → normal; veio %v", c2.weight)
 
     c3 := test_compute_child(".g{text-align:center} .i{text-align: initial}")
-    testing.expectf(t, c3.text_align == .Left, "text-align:initial → left; veio %v", c3.text_align)
+    testing.expectf(t, c3.text_align == .Start, "text-align:initial → start; veio %v", c3.text_align)
 
     // `unset` numa prop que HERDA é igual a `inherit` → mantém o do pai
     c4 := test_compute_child(".g{color:#ff0000} .i{color: unset}")

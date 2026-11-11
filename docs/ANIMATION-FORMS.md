@@ -61,11 +61,12 @@ Verificacao em 10/11/2026:
 - Sabotagens separadas no parser de listas, na restauracao e no ciclo de eventos
   fazem os testes correspondentes falharem.
 
-Limites: os canais continuam restritos a opacidade, cores, rotacao e escala;
-nao ha animacao de layout nem interpolacao completa de transform (translate,
-matrizes e giros 3D). Continuam os oito stops por animacao e a aproximacao dos
-keyframes com propriedades ausentes: nao ha tracks independentes por propriedade
-nem endpoints implicitos derivados do estilo base. !important ainda nao suprime
+Atualizacao posterior: [ANIMATION-TRACKS.md](ANIMATION-TRACKS.md) descreve
+translacao animada, tracks independentes e endpoints implicitos implementados
+depois dos resultados historicos acima.
+
+Limites atuais: nao ha animacao de layout nem interpolacao completa de matrizes
+e giros 3D. Continuam os oito stops por animacao. !important ainda nao suprime
 o canal animado. Eventos em pseudo-elementos, animationcancel, construtor
 AnimationEvent, timeline Web Animations, scroll-driven animations e mudancas de
 fase por alteracao de delay/duracao depois de iniciado/finalizado nao estao

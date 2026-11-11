@@ -796,7 +796,19 @@ filter_deg :: proc(s: string) -> f32 {
     return 0
 }
 
-Text_Align :: enum u8 { Left, Center, Right, Justify }
+Unicode_Bidi :: enum u8 { Normal, Embed, Isolate, Override, Isolate_Override, Plaintext }
+Bidi_Scope :: struct { node: ^dompkg.Node, mode: Unicode_Bidi, direction: Directionality }
+
+Writing_Mode :: enum u8 { Horizontal, Vertical_Rl, Vertical_Lr }
+Text_Orientation :: enum u8 { Mixed, Upright, Sideways }
+
+Text_Align :: enum u8 { Left, Center, Right, Justify, Start, End, Match_Parent }
+
+align_physical :: proc(a: Text_Align, d: Directionality) -> Text_Align {
+    if a == .Start || a == .Match_Parent do return d == .Rtl ? .Right : .Left
+    if a == .End do return d == .Rtl ? .Left : .Right
+    return a
+}
 // text-decoration-style: como a linha é traçada.
 Deco_Style :: enum u8 { Solid, Double, Dotted, Dashed, Wavy }
 // sentinela p/ deco_color "não definido" (usa a cor do texto). 0xFFFFFFFF = branco
@@ -986,6 +998,7 @@ Anim_Stop :: struct {
     has_bg:      bool, bg:      u32,
     has_rot:     bool, rot:     f32, // rotação (rad)
     has_scale:   bool, sx, sy:  f32, // escala
+    has_translate: bool, tx, ty, tx_percent, ty_percent: f32,
     has_timing: bool, timing: Timing,
 }
 Anim :: struct {
@@ -1000,6 +1013,7 @@ Anim :: struct {
     timing: Timing,
     n:         int,  // nº de stops preenchidos
     stops:     [ANIM_MAX_STOPS]Anim_Stop,
+    underlying: Anim_Stop,
 }
 
 // mix-blend-mode. Dois grupos: (a) LINEARES, realizáveis direto com blend modes
@@ -1074,6 +1088,7 @@ Computed :: struct {
     // das não-herdadas. `pretty`/`stable` seguem inertes (algoritmo diferente).
     text_balance:    bool,
     text_indent:     f32,  // text-indent: recuo da 1ª linha (herda; px OU fração se _pct)
+    indent_each_line, indent_hanging: bool,
     text_indent_pct: bool, // text-indent é % (do content-width do bloco, resolvido no layout)
     white_space:    White_Space, // nowrap/pre (herda; padrão Normal)
     break_word:     bool, // overflow-wrap:break-word/anywhere (herda)
@@ -1092,6 +1107,9 @@ Computed :: struct {
     deco_set:      bool, // autor definiu text-decoration? (p/ o UA sublinhar links só quando não)
     quotes_raw:    string, // valor cru da prop `quotes` (herda; slice persistente, não-owned)
     lang:          string, // idioma efetivo (atributo lang herdado; slice do DOM, não-owned)
+    unicode_bidi: Unicode_Bidi,
+    writing_mode: Writing_Mode,
+    text_orientation: Text_Orientation,
     direction:     Directionality, // prop CSS `direction` (HERDA; Ltr=default). Resolve props lógicas.
     deco_color:    u32,  // text-decoration-color (DECO_UNSET = usa a cor do texto)
     deco_style:    Deco_Style, // text-decoration-style (solid/double/dotted/dashed/wavy)
@@ -1546,7 +1564,7 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
     // declarar font-size, e herdar a base da página anterior seria pior que o bug
     // que isto conserta.
     g_root_font_size = 16 * g_zoom
-    root_inherit := Computed{color = DEFAULT_TEXT, font_size = 16 * g_zoom, line_height = 1.3, deco_color = DECO_UNSET}
+    root_inherit := Computed{color = DEFAULT_TEXT, font_size = 16 * g_zoom, line_height = 1.3, deco_color = DECO_UNSET, text_align = .Start}
     root_vars := make(map[string]string, context.temp_allocator) // variáveis CSS (--x)
     // `@property … { inherits: false }`: as regras sintéticas vêm marcadas com
     // `reg_noinherit`. Coletamos aqui UMA vez (a lista é minúscula — o Tailwind
@@ -1646,7 +1664,7 @@ apply_ua_defaults :: proc(n: ^dompkg.Node, comp: ^Computed) {
 @(private="file")
 ua_textarea_look :: proc(comp: ^Computed, disabled: bool) {
     comp.display_inline_block = true
-    comp.text_align = .Left
+    comp.text_align = .Start
     comp.cursor     = .Text
     comp.white_space = .Pre // textarea preserva espaços/quebras
     // <textarea> é redimensionável por padrão em todas as UAs (é o que dá sentido
@@ -1697,7 +1715,7 @@ ua_checkbox_look :: proc(comp: ^Computed, is_radio: bool, checked: bool, disable
 @(private="file")
 ua_textfield_look :: proc(n: ^dompkg.Node, comp: ^Computed, disabled: bool) {
     comp.display_inline_block = true
-    comp.text_align = .Left
+    comp.text_align = .Start
     comp.cursor     = .Text
     comp.has_bg = true; comp.bg = 0xffffff
     comp.has_border = true
@@ -1748,10 +1766,16 @@ ua_button_look :: proc(comp: ^Computed, disabled: bool) {
 @(private="file")
 compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string, rules: ^[dynamic]csspkg.Rule, idx: ^Rule_Index, styles: ^map[^dompkg.Node]Computed, viewport_w: f32, viewport_h: f32 = 720, kf: []csspkg.Keyframe_Set = nil, noinh: []Noinherit_Prop = nil) {
     comp := inherit
+    if d, ok := n.attrs["dir"]; ok {
+        if strings.equal_fold(d, "rtl") { comp.direction = .Rtl }
+        else if strings.equal_fold(d, "ltr") { comp.direction = .Ltr }
+        else if strings.equal_fold(d, "auto") { comp.direction = dir_from_text(n) }
+    }
     // lang efetivo: atributo `lang` do elemento sobrepõe o herdado (usado p/ as
     // aspas default de <q> quando não há prop `quotes`).
     if l, ok := n.attrs["lang"]; ok && l != "" do comp.lang = l
     // estas propriedades não herdam — zera antes de aplicar as deste nó
+    comp.unicode_bidi = .Normal
     comp.svg_css = nil              // fill/stroke de regra CSS é por-elemento (M246)
     comp.counter_reset_raw = ""     // counter-reset/increment/set não herdam
     comp.counter_increment_raw = ""
@@ -1935,7 +1959,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         cands := make([dynamic]int, 0, 32, context.temp_allocator)
         node_passes: Pass_Set // que passes as regras candidatas deste nó pedem
         query_candidates(idx, n, &cands, &node_passes)
-        merged := collect_decls(n, rules, cands[:], viewport_w, .None, .None, styles, idx.pass_mask)
+        merged := collect_decls(n, rules, cands[:], viewport_w, .None, .None, styles, idx.pass_mask, comp.direction, vars, comp.writing_mode)
 
         // custom properties (--nome) definidas aqui sobrescrevem p/ a subárvore
         own := false
@@ -2118,8 +2142,13 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
             if _, x := kw(merged, "visibility");     x do comp.invisible      = ini.invisible
             if _, x := kw(merged, "text-transform"); x do comp.text_transform = ini.text_transform
             if _, x := kw(merged, "list-style-type"); x do comp.list_style    = ini.list_style
+            if _,x:=kw(merged,"writing-mode"); x do comp.writing_mode=.Horizontal
+            if _,x:=kw(merged,"text-orientation"); x do comp.text_orientation=.Mixed
             if _, x := kw(merged, "direction");      x do comp.direction      = ini.direction
+            if _, x := kw(merged, "text-indent"); x { comp.text_indent = 0; comp.text_indent_pct = false; comp.indent_each_line = false; comp.indent_hanging = false }
+            if _, x := kw(merged, "text-align-last"); x do comp.has_text_align_last = false
         }
+        if comp.text_align == .Match_Parent do comp.text_align = align_physical(inherit.text_align, inherit.direction)
         resolve_animation(&comp, merged, kf, elem_vars, viewport_w, viewport_h)
         collect_svg_css(&comp, merged, elem_vars, viewport_w, viewport_h)
         delete(merged)
@@ -2218,7 +2247,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         // deltas de PINTURA (sem re-layout). Ativado por frame em paint_box.
         hov: map[string]string
         if .Hover in node_passes {
-            hov = collect_decls(n, rules, cands[:], viewport_w, .None, .Hover, styles, idx.pass_mask)
+            hov = collect_decls(n, rules, cands[:], viewport_w, .None, .Hover, styles, idx.pass_mask, comp.direction, elem_vars, comp.writing_mode)
         }
         defer delete(hov)
         if len(hov) > 0 {
@@ -2314,7 +2343,7 @@ free_styles :: proc(styles: map[^dompkg.Node]Computed) {
 
 @(private="file")
 compute_pseudo :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]string, rules: ^[dynamic]csspkg.Rule, candidates: []int, kind: csspkg.Pseudo_Kind, vw: f32, vh: f32, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil) -> ^Computed {
-    decls := collect_decls(n, rules, candidates, vw, kind, .None, styles, masks)
+    decls := collect_decls(n, rules, candidates, vw, kind, .None, styles, masks, parent.direction, vars, parent.writing_mode)
     defer delete(decls)
     if _, ok := decls["content"]; !ok do return nil // sem content → sem pseudo
 
@@ -2324,6 +2353,11 @@ compute_pseudo :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]strin
         italic = parent.italic, weight = parent.weight,
         font_fam_id = parent.font_fam_id, invisible = parent.invisible,
         white_space = parent.white_space, text_transform = parent.text_transform,
+        direction = parent.direction, text_align = parent.text_align,
+        writing_mode = parent.writing_mode, text_orientation = parent.text_orientation,
+        tab_size = parent.tab_size, word_spacing = parent.word_spacing,
+        text_indent = parent.text_indent, text_indent_pct = parent.text_indent_pct,
+        indent_each_line = parent.indent_each_line, indent_hanging = parent.indent_hanging,
         letter_spacing = parent.letter_spacing, font_kerning = parent.font_kerning,
         opacity = 1.0, deco_color = DECO_UNSET,
         // transform neutro (escala 1, origem 50%, matriz identidade). Sem isto os
@@ -2347,7 +2381,7 @@ compute_pseudo :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]strin
 // nenhuma regra ::first-letter. Herda cor/fonte/etc do elemento pai.
 @(private="file")
 compute_first_letter :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]string, rules: ^[dynamic]csspkg.Rule, candidates: []int, vw: f32, vh: f32, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil) -> ^Computed {
-    decls := collect_decls(n, rules, candidates, vw, .FirstLetter, .None, styles, masks)
+    decls := collect_decls(n, rules, candidates, vw, .FirstLetter, .None, styles, masks, parent.direction, vars, parent.writing_mode)
     defer delete(decls)
     if len(decls) == 0 do return nil // sem regra ::first-letter
 
@@ -2377,7 +2411,7 @@ compute_first_letter :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string
 // No github.com o "Enter your email" saía sobreposto ao "you@domain.com".
 @(private="file")
 compute_placeholder :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]string, rules: ^[dynamic]csspkg.Rule, candidates: []int, vw: f32, vh: f32, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil) -> ^Computed {
-    decls := collect_decls(n, rules, candidates, vw, .Placeholder, .None, styles, masks)
+    decls := collect_decls(n, rules, candidates, vw, .Placeholder, .None, styles, masks, parent.direction, vars, parent.writing_mode)
     defer delete(decls)
     if len(decls) == 0 do return nil
 
@@ -2646,7 +2680,7 @@ when CASCADEPROBE {
     }
 }
 
-collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates: []int, viewport_w: f32, want: csspkg.Pseudo_Kind = .None, state: csspkg.Element_State = .None, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil) -> map[string]string {
+collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates: []int, viewport_w: f32, want: csspkg.Pseudo_Kind = .None, state: csspkg.Element_State = .None, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil, inherited_dir: Directionality = .Ltr, inherited_vars: map[string]string = nil, inherited_mode: Writing_Mode = .Horizontal) -> map[string]string {
     Win :: struct { spec: Cascade_Priority, order: int, val: string }
     wins := make(map[string]Win, context.temp_allocator)
     // Não reduzir antes do rollback: precisamos inclusive dos perdedores da camada.
@@ -2979,12 +3013,28 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         }
     }
 
-    // ── Propriedades lógicas → físicas (assume writing-mode horizontal-tb, ltr) ──
+    // ── Propriedades lógicas → físicas (horizontal-tb, direção calculada) ──
     // O resto do motor só conhece top/right/bottom/left. Traduzimos as lógicas
     // (inline = eixo horizontal, block = vertical) reinjetando-as via consider()
     // com a mesma spec/ordem, para que compitam na cascata como as físicas.
     // start = left/top, end = right/bottom. Depois removemos a lógica do mapa.
     {
+        mode := inherited_mode
+        if w, ok := wins["writing-mode"]; ok {
+            mode_vars := clone_vars(inherited_vars)
+            defer delete(mode_vars)
+            for prop,val in wins do if strings.has_prefix(prop,"--") do mode_vars[prop]=val.val
+            v := strings.to_lower(strings.trim_space(resolve_var(w.val,mode_vars)),context.temp_allocator)
+            if v=="vertical-rl" { mode=.Vertical_Rl } else if v=="vertical-lr" { mode=.Vertical_Lr } else if v=="horizontal-tb" || v=="initial" { mode=.Horizontal }
+        }
+        direction := inherited_dir
+        if w, ok := wins["direction"]; ok {
+            local_vars := clone_vars(inherited_vars)
+            defer delete(local_vars)
+            for prop, v in wins do if strings.has_prefix(prop, "--") do local_vars[prop] = v.val
+            d := strings.to_lower(strings.trim_space(resolve_var(w.val, local_vars)), context.temp_allocator)
+            if d == "rtl" { direction = .Rtl } else if d == "ltr" || d == "initial" { direction = .Ltr }
+        }
         Single :: struct { logical, physical: string }
         singles := [?]Single{
             // tamanho lógico (horizontal-tb: inline=width, block=height)
@@ -3036,7 +3086,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         }
         for m in singles {
             if w, ok := wins[m.logical]; ok {
-                consider(&wins, m.physical, w.spec, w.order, w.val)
+                consider(&wins, logical_physical(m.physical,m.logical,mode,direction), w.spec, w.order, w.val)
                 delete_key(&wins, m.logical)
             }
         }
@@ -3068,8 +3118,8 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
                 start_v, end_v := w.val, w.val
                 if len(toks) >= 2 { start_v = toks[0]; end_v = toks[1] }
                 else if len(toks) == 1 { start_v = toks[0]; end_v = toks[0] }
-                consider(&wins, m.side_start, w.spec, w.order, start_v)
-                consider(&wins, m.side_end,   w.spec, w.order, end_v)
+                consider(&wins, logical_physical(m.side_start,m.logical,mode,direction), w.spec, w.order, start_v)
+                consider(&wins, logical_physical(m.side_end,m.logical,mode,direction), w.spec, w.order, end_v)
                 delete_key(&wins, m.logical)
             }
         }
@@ -3082,8 +3132,8 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         }
         for m in boths {
             if w, ok := wins[m.logical]; ok {
-                consider(&wins, m.side_a, w.spec, w.order, w.val)
-                consider(&wins, m.side_b, w.spec, w.order, w.val)
+                consider(&wins, logical_physical(m.side_a,m.logical,mode,direction), w.spec, w.order, w.val)
+                consider(&wins, logical_physical(m.side_b,m.logical,mode,direction), w.spec, w.order, w.val)
                 delete_key(&wins, m.logical)
             }
         }
@@ -3452,7 +3502,7 @@ install_value_usable :: proc "contextless" () {
 // Valores INICIAIS de todas as propriedades (o "zero" da spec). Os campos que
 // não aparecem aqui têm inicial = zero do tipo.
 computed_initial :: proc() -> Computed {
-    return Computed{color = DEFAULT_TEXT, font_size = 16 * g_zoom, line_height = 1.3, opacity = 1.0,
+    return Computed{text_align = .Start, color = DEFAULT_TEXT, font_size = 16 * g_zoom, line_height = 1.3, opacity = 1.0,
                     obj_pos_x = 0.5, obj_pos_y = 0.5, transform_sx = 1, transform_sy = 1,
                     transform_ox = 0.5, transform_oy = 0.5, xf_a = 1, xf_d = 1, deco_color = DECO_UNSET,
                     // Estes seis DIVERGIAM do bloco de reset das não-herdadas de
@@ -3686,11 +3736,11 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         }
     }
     // tab-size (HERDA): nº de espaços por tab em <pre>. Só a forma numérica (a de
-    // comprimento é aproximada como default). 0 = default (8).
+    // comprimento é rejeitada). Campo interno: 0 = default 8, -1 = tab zero.
     if v, ok := decls["tab-size"]; ok {
-        if n, k := strconv.parse_int(strings.trim_space(resolve_var(v, vars))); k && n >= 0 do comp.tab_size = n
+        if n, k := strconv.parse_int(strings.trim_space(resolve_var(v, vars))); k && n >= 0 do comp.tab_size = n == 0 ? -1 : n
     } else if v, ok := decls["-moz-tab-size"]; ok {
-        if n, k := strconv.parse_int(strings.trim_space(resolve_var(v, vars))); k && n >= 0 do comp.tab_size = n
+        if n, k := strconv.parse_int(strings.trim_space(resolve_var(v, vars))); k && n >= 0 do comp.tab_size = n == 0 ? -1 : n
     }
     // appearance (não herda): `none` suprime a marca nativa do controle (checkbox/
     // radio custom). Aceita variantes prefixadas; a não-prefixada vence por vir por último.
@@ -3768,6 +3818,30 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         case "horizontal", "inline": comp.resize = .Horizontal
         case "vertical", "block":    comp.resize = .Vertical
         case:                        comp.resize = .None // none/inherit/lixo
+        }
+    }
+    if v,ok:=decls["unicode-bidi"]; ok {
+        switch strings.to_lower(strings.trim_space(resolve_var(v,vars)),context.temp_allocator) {
+        case "normal": comp.unicode_bidi=.Normal
+        case "embed": comp.unicode_bidi=.Embed
+        case "isolate": comp.unicode_bidi=.Isolate
+        case "bidi-override": comp.unicode_bidi=.Override
+        case "isolate-override": comp.unicode_bidi=.Isolate_Override
+        case "plaintext": comp.unicode_bidi=.Plaintext
+        }
+    }
+    if v,ok:=decls["writing-mode"]; ok {
+        switch strings.to_lower(strings.trim_space(resolve_var(v,vars)),context.temp_allocator) {
+        case "horizontal-tb": comp.writing_mode=.Horizontal
+        case "vertical-rl": comp.writing_mode=.Vertical_Rl
+        case "vertical-lr": comp.writing_mode=.Vertical_Lr
+        }
+    }
+    if v,ok:=decls["text-orientation"]; ok {
+        switch strings.to_lower(strings.trim_space(resolve_var(v,vars)),context.temp_allocator) {
+        case "mixed": comp.text_orientation=.Mixed
+        case "upright": comp.text_orientation=.Upright
+        case "sideways": comp.text_orientation=.Sideways
         }
     }
     if v, ok := decls["direction"]; ok {
@@ -4468,10 +4542,14 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         }
     }
     if v, ok := decls["text-indent"]; ok {
-        // só a <length-percentage>; keywords each-line/hanging ignoradas.
+        comp.indent_each_line = false; comp.indent_hanging = false
         lv := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
-        first := lv
-        if sp := strings.index_byte(lv, ' '); sp >= 0 do first = lv[:sp]
+        first := ""
+        for token in split_top_level(lv) {
+            if token == "each-line" { comp.indent_each_line = true }
+            else if token == "hanging" { comp.indent_hanging = true }
+            else { first = token }
+        }
         if px, pct, k := parse_len(first, comp.font_size, vw, vh); k {
             comp.text_indent = px // parse_len já devolve fração p/ %
             comp.text_indent_pct = pct
@@ -4520,18 +4598,23 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     if v, ok := decls["text-align"]; ok {
         switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
         case "center":        comp.text_align = .Center
-        case "right", "end":  comp.text_align = .Right
+        case "right": comp.text_align = .Right
+        case "end": comp.text_align = .End
+        case "match-parent": comp.text_align = .Match_Parent
         case "justify":       comp.text_align = .Justify
-        case "left", "start": comp.text_align = .Left
+        case "left": comp.text_align = .Left
+        case "start": comp.text_align = .Start
         }
     }
     // text-align-last (HERDA): alinhamento da ÚLTIMA linha do bloco. `auto` = segue text-align.
     if v, ok := decls["text-align-last"]; ok {
         switch strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator) {
         case "center":        comp.text_align_last = .Center; comp.has_text_align_last = true
-        case "right", "end":  comp.text_align_last = .Right;  comp.has_text_align_last = true
+        case "right": comp.text_align_last = .Right; comp.has_text_align_last = true
+        case "end": comp.text_align_last = .End; comp.has_text_align_last = true
         case "justify":       comp.text_align_last = .Justify; comp.has_text_align_last = true
-        case "left", "start": comp.text_align_last = .Left;   comp.has_text_align_last = true
+        case "left": comp.text_align_last = .Left; comp.has_text_align_last = true
+        case "start": comp.text_align_last = .Start; comp.has_text_align_last = true
         case "auto":          comp.has_text_align_last = false
         }
     }
@@ -8191,6 +8274,14 @@ resolve_animation_one :: proc(comp: ^Computed, decls: map[string]string, kf: []c
     comp.anim.reverse = rev; comp.anim.fill_before = before; comp.anim.fill_after = after
     comp.anim.timing = timing; comp.anim.paused = paused
     comp.anim.n = 0
+    comp.anim.underlying = Anim_Stop{
+        opacity = comp.opacity, color = comp.color, bg = comp.bg,
+        rot = comp.transform_rot, sx = comp.transform_sx, sy = comp.transform_sy,
+        tx = comp.transform_tx_pct ? 0 : comp.transform_tx,
+        ty = comp.transform_ty_pct ? 0 : comp.transform_ty,
+        tx_percent = comp.transform_tx_pct ? comp.transform_tx : 0,
+        ty_percent = comp.transform_ty_pct ? comp.transform_ty : 0,
+    }
     for st in set.stops {
         if comp.anim.n >= ANIM_MAX_STOPS do break
         as := Anim_Stop{ pct = st.pct }
@@ -8200,7 +8291,7 @@ resolve_animation_one :: proc(comp: ^Computed, decls: map[string]string, kf: []c
             }
         }
         if ov, ok := st.decls["opacity"]; ok {
-            if f, k := strconv.parse_f64(strings.trim_space(ov)); k { as.has_opacity = true; as.opacity = clamp(f32(f), 0, 1) }
+            if f, k := strconv.parse_f64(strings.trim_space(resolve_var(ov, vars))); k { as.has_opacity = true; as.opacity = clamp(f32(f), 0, 1) }
         }
         if cv, ok := st.decls["color"]; ok {
             if c, k := csspkg.parse_color(resolve_var(cv, vars)); k { as.has_color = true; as.color = c }
@@ -8214,13 +8305,18 @@ resolve_animation_one :: proc(comp: ^Computed, decls: map[string]string, kf: []c
         if tv, ok := st.decls["transform"]; ok {
             tmp := Computed{transform_sx = 1, transform_sy = 1}
             parse_transform(&tmp, resolve_var(tv, vars), comp.font_size, vw, vh)
+            as.has_translate = true
+            as.tx = tmp.transform_tx_pct ? 0 : tmp.transform_tx
+            as.ty = tmp.transform_ty_pct ? 0 : tmp.transform_ty
+            as.tx_percent = tmp.transform_tx_pct ? tmp.transform_tx : 0
+            as.ty_percent = tmp.transform_ty_pct ? tmp.transform_ty : 0
             as.has_rot = true; as.rot = tmp.transform_rot
             as.has_scale = true; as.sx = tmp.transform_sx; as.sy = tmp.transform_sy
         }
         comp.anim.stops[comp.anim.n] = as
         comp.anim.n += 1
     }
-    comp.anim.active = comp.anim.n >= 2 // precisa de ≥2 stops p/ interpolar
+    comp.anim.active = comp.anim.n > 0 // implicit endpoints permit a single keyframe
 }
 
 // Como test_compute_one, mas com um ATRIBUTO arbitrário no elemento — p/ testar
@@ -8426,7 +8522,6 @@ css_supports_decl :: proc(raw_prop: string, value: string) -> bool {
          "font-feature-settings", "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop",
          "perspective", "perspective-origin", "transform-style":
         return false
-    case "writing-mode": return v == "horizontal-tb"
     }
     if valid, checked := css_value_valid(prop, value); checked do return valid
 

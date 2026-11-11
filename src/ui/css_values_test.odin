@@ -92,7 +92,7 @@ css_values_support_queries_agree :: proc(t: ^testing.T) {
 @(test)
 css_values_inert_features :: proc(t: ^testing.T) {
     testing.expect(t, !css_supports_decl("touch-action", "none"))
-    testing.expect(t, !css_supports_decl("writing-mode", "vertical-rl"))
+    testing.expect(t, css_supports_decl("writing-mode", "vertical-rl"))
     testing.expect(t, !css_supports_decl("scroll-snap-type", "x mandatory"))
     testing.expect(t, css_supports_decl("writing-mode", "horizontal-tb"))
 }

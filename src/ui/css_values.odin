@@ -34,10 +34,15 @@ css_value_valid :: proc(prop, value: string) -> (valid, checked: bool) {
     case "table-layout": keywords = "auto fixed"
     case "font-kerning": keywords = "auto normal none"
     case "font-style": keywords = "normal italic oblique"
+    case "unicode-bidi": keywords = "normal embed isolate bidi-override isolate-override plaintext"
+    case "writing-mode": keywords = "horizontal-tb vertical-rl vertical-lr"
+    case "text-orientation": keywords = "mixed upright sideways"
     case "direction": keywords = "ltr rtl"
     case "white-space": keywords = "normal nowrap pre pre-wrap pre-line break-spaces"
     case "overflow-wrap", "word-wrap": keywords = "normal break-word anywhere"
     case "word-break": keywords = "normal break-all break-word"
+    case "text-align": keywords = "start end left right center justify match-parent"
+    case "text-align-last": keywords = "auto start end left right center justify"
     case "text-transform": keywords = "none uppercase lowercase capitalize"
     case "scroll-behavior": keywords = "auto smooth"
     case "all": return false, true // only CSS-wide keywords, handled above
@@ -56,6 +61,22 @@ css_value_valid :: proc(prop, value: string) -> (valid, checked: bool) {
         return false, true
     }
     switch prop {
+    case "tab-size", "-moz-tab-size":
+        n, ok := strconv.parse_int(v)
+        return ok && n >= 0, true
+    case "text-indent":
+        length_seen, each, hanging := false, false, false
+        for token in split_top_level(v) {
+            if token == "each-line" { if each do return false, true; each = true }
+            else if token == "hanging" { if hanging do return false, true; hanging = true }
+            else {
+                if length_seen do return false, true
+                ok, _ := css_value_valid("margin-left", token)
+                if !ok || token == "auto" do return false, true
+                length_seen = true
+            }
+        }
+        return length_seen, true
     case "aspect-ratio":
         parts := split_top_level(v)
         if len(parts) > 0 && parts[0] == "auto" { v = strings.trim_space(v[4:]) }

@@ -30,8 +30,30 @@ A ampliação da suíte expôs uma falha de alocador em `url_http_segue_normal`:
 
 ## Limites
 
-Não implementa um algoritmo completo de quebra Unicode (UAX #14), segmentação de grafemas (UAX #29), bidi ou shaping de escritas complexas. Quebras entre trechos com estilos distintos ainda usam o modelo de itens existente. Hifenização automática, soft hyphen, regras linguísticas CJK e tab stops reais continuam pendentes; tabs preservados continuam expandidos para uma quantidade fixa de espaços. `word-break:break-word` mantém a representação legada compartilhada com overflow-wrap.
+Não implementa um algoritmo completo de quebra Unicode (UAX #14) ou segmentação de grafemas (UAX #29). Bidi, shaping e escrita vertical passaram a ter suporte na rodada descrita em [WRITING-MODES.md](WRITING-MODES.md). Quebras entre trechos com estilos distintos ainda usam o modelo de itens existente. Hifenização automática, soft hyphen e regras linguísticas CJK continuam pendentes. Tabs preservados agora usam tab stops; veja a rodada de direção horizontal abaixo. `word-break:break-word` mantém a representação legada compartilhada com overflow-wrap.
 
 ## Referência
 
 [CSS Text Module Level 3](https://www.w3.org/TR/css-text-3/): white-space, overflow-wrap, word-break e processamento de espaços.
+## Direção horizontal e recuos (item 3)
+
+- O alinhamento inicial é `start`. `text-align:start/end` e `text-align-last:start/end` são resolvidos na direção do bloco, sem converter o valor herdado para uma direção física. `match-parent` fixa o alinhamento físico conforme a direção do pai.
+- `dir=ltr/rtl/auto` participa do estilo; CSS `direction` pode sobrescrever essa base. A direção semântica usada por `:dir()` continua separada.
+- Margens, padding, insets, bordas e raios de canto lógicos passam a mapear inline-start/end conforme LTR/RTL horizontal, incluindo direção herdada e `var()`. Importância, especificidade e ordem entre regras continuam passando pela cascata existente.
+- `text-indent` aceita `each-line` e `hanging`, inclusive juntos e em ordem livre. Distingue quebras forçadas de quebras automáticas, mantém percentuais e admite recuos negativos. O recuo de blocos RTL alinhados ao início é reservado à direita.
+- Tabs preservados são itens sem glifo e avançam até o próximo tab stop a partir da borda do conteúdo. A largura é recalculada no layout e nas medidas intrínsecas; `tab-size:0` tem largura zero. O padrão continua oito espaços.
+- Validação de valores, `CSS.supports()` e serialização de `getComputedStyle` cobrem as novas opções.
+
+### Testes desta rodada
+
+`src/ui/text_direction_test.odin` usa fonte sintética para verificar alinhamento RTL, direção herdada, propriedades lógicas, prioridade física com !important, match-parent, recuos em linhas forçadas/automáticas, tab stops, medidas intrínsecas, nova disposição e CSSOM. O teste legado de text-align:initial foi atualizado para exigir start.
+
+### Limites preservados
+
+Esta primeira rodada cobria a direção horizontal e a formatação de parágrafos. O suporte seguinte está em [WRITING-MODES.md](WRITING-MODES.md). Naquela rodada, não implementava `writing-mode:vertical-rl/vertical-lr`, `text-orientation`, bidi completo (UAX #9), isolamento/override de `unicode-bidi`, shaping complexo ou reordenação visual de runs RTL. O comportamento descrito acima era de alinhamento; a rodada seguinte acrescenta ordem visual e passa a reconhecer vertical-rl/vertical-lr como suportados.
+
+`tab-size` nesta implementação aceita inteiros não negativos; comprimentos e números fracionários continuam fora da gramática suportada. Espaçamento de palavras por span e recuos em contextos complexos com floats, múltiplos blocos anônimos ou transbordamento continuam com limitações do modelo de itens. A cascata ainda não preserva a ordem individual de declarações diferentes dentro da mesma regra: conflitos entre lados físicos e lógicos com a mesma prioridade nessa situação permanecem uma limitação anterior.
+
+Referências: [CSS Text 3](https://www.w3.org/TR/css-text-3/) e [CSS Logical Properties 1](https://www.w3.org/TR/css-logical-1/).
+
+Validação desta rodada: 3.112 testes de pacote passaram (934 UI, 178 CSS, 1.877 JS e 123 nos demais pacotes); 21/21 goldens e 111/111 verificações principais de pintura passaram com `_local/text-modes/final.exe`. A imagem de `tests/layout/text-direction.html` foi inspecionada. Executável instalado em `browser.exe`, com cópia anterior em `_local/text-modes/browser-before-install.exe`. Logs em `_local/text-modes/`.

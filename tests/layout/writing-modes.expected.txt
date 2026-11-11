@@ -1,0 +1,8 @@
+﻿<anon# .> block x=0 y=0 w=800 h=384
+  <html# .> block x=0 y=0 w=800 h=384
+    <body# .> block x=0 y=0 w=800 h=384
+      <anon# .> inline x=0 y=0 w=800 h=190
+      <div#arabic .rtl> inline x=12 y=202 w=380 h=34
+      <div#hebrew .rtl> inline x=12 y=248 w=380 h=34
+      <div#mixed .> inline x=12 y=293 w=776 h=34
+      <div#indic .> inline x=12 y=339 w=776 h=34

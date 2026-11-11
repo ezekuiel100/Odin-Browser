@@ -104,3 +104,18 @@ animation_restore_tree :: proc(root, old: ^Box) {
     animation_index(old, &index)
     animation_restore(root, index)
 }
+
+
+// Shared by paint and deferred stacking entries, so overflow clips use the
+// same animated origin as the subtree. Last effect on transform wins.
+animation_translation_delta :: proc(b: ^Box) -> (dx, dy: f32) {
+    for &player in b.animations {
+        if !player.anim.active do continue
+        ev := eval_anim(&player.anim, player.elapsed)
+        if ev.has_translate {
+            dx = ev.tx + ev.tx_percent*b.w - (b.transform_tx_pct ? b.transform_tx*b.w : b.transform_tx)
+            dy = ev.ty + ev.ty_percent*b.h - (b.transform_ty_pct ? b.transform_ty*b.h : b.transform_ty)
+        }
+    }
+    return
+}

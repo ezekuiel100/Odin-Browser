@@ -15,11 +15,11 @@ CSS.supports() e @supports usam a mesma validação e, com a UI carregada, o mes
 
 Declarações com var()/attr() aguardam substituição. Após resolver var(), um shorthand inválido é descartado inteiro, sem reativar um candidato anterior. Os setters style.prop e style.setProperty preservam a declaração anterior quando recebem valores inválidos das gramáticas cobertas. Remover com string vazia continua funcionando.
 
-A detecção também rejeita recursos reconhecidos mas inertes: touch-action, hyphens, font-feature/variation-settings, scroll-snap, perspective e transform-style. writing-mode só anuncia horizontal-tb.
+A detecção também rejeita recursos reconhecidos mas inertes: touch-action, hyphens, font-feature/variation-settings, scroll-snap, perspective e transform-style. writing-mode anuncia horizontal-tb, vertical-rl e vertical-lr; a cobertura e os limites estão em [WRITING-MODES.md](WRITING-MODES.md).
 
 ## Limites
 
-A cobertura ainda não é uma implementação completa das gramáticas CSS. As famílias não enumeradas conservam seus parsers e o juiz de efeito legado para duplicatas; valores desconhecidos nessas famílias ainda podem gerar falsos positivos. Funções matemáticas e cores delegam aos parsers existentes e conservam suas aproximações. Não houve reimplementação completa de CSSStyleDeclaration (cssText, serialização, prioridade de setProperty), tokenização de comentários/escapes ou validação de seletores. O pacote JS isolado, sem UI, mantém seu fallback sintático.
+A cobertura ainda não é uma implementação completa das gramáticas CSS. As famílias não enumeradas conservam seus parsers e o juiz de efeito legado para duplicatas; valores desconhecidos nessas famílias ainda podem gerar falsos positivos. Funções matemáticas e cores delegam aos parsers existentes e conservam suas aproximações. Não houve reimplementação completa de CSSStyleDeclaration (cssText, serialização, prioridade de setProperty), tokenização completa de comentários e escapes. A etapa de validação e consultas está descrita em [CSS-SELECTORS.md](CSS-SELECTORS.md). O pacote JS isolado, sem UI, mantém seu fallback sintático.
 
 ## Referências e testes
 

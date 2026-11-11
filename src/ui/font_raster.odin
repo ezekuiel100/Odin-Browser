@@ -19,6 +19,7 @@ NATIVE_FONT_LIMIT :: 64
 NATIVE_FONT_PIXEL_BUDGET :: 24 * 1024 * 1024
 
 native_fonts_reset :: proc() {
+    shaped_text_clear()
     delete(g_native_fonts)
     g_native_fonts = nil
     g_native_font_pixels = 0
