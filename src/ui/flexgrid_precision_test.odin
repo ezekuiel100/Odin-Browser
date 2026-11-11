@@ -355,3 +355,49 @@ fg_intrinsic_percentage_column_gap :: proc(t: ^testing.T) {
     r := fg_geometry(`<body style="margin:0"><div id="g" style="display:grid;width:max-content;grid-template-columns:50px 50px;column-gap:10%"><div></div><div id="b"></div></div></body>`)
     fg_eq(t,r["g"].w,100); fg_eq(t,r["b"].x,60)
 }
+
+@(test)
+fg_grid_baseline_percentage_final_size :: proc(t: ^testing.T) {
+    r := fg_geometry(`<body style="margin:0"><div style="display:grid;width:100px;grid-template-columns:50px 50px;grid-template-rows:100px;align-items:baseline"><div id="a" style="height:50%"></div><div id="b" style="height:30px"></div></div></body>`)
+    fg_eq(t,r["a"].y,0); fg_eq(t,r["b"].y,20)
+}
+
+@(test)
+fg_grid_intrinsic_mixed_spans_order :: proc(t: ^testing.T) {
+    for reverse in 0..<2 {
+        first := `<div style="grid-column:1 / span 2;grid-row:1;width:100px;height:10px"></div>`
+        second := `<div style="grid-column:2 / span 2;grid-row:2;width:100px;height:10px"></div>`
+        r := fg_geometry(strings.concatenate({`<body style="margin:0"><div id="g" style="display:grid;width:max-content;grid-template-columns:20px auto auto">`, reverse==0 ? first : second, reverse==0 ? second : first, `<div id="a" style="grid-column:2;grid-row:3"></div><div id="b" style="grid-column:3;grid-row:3"></div></div></body>`},context.temp_allocator))
+        fg_eq(t,r["g"].w,150); fg_eq(t,r["a"].w,80); fg_eq(t,r["b"].w,50)
+    }
+}
+
+@(test)
+fg_flex_cyclic_column_gap_intrinsic :: proc(t: ^testing.T) {
+    r := fg_geometry(`<body style="margin:0"><div id="g" style="display:flex;width:max-content;column-gap:10%"><div style="width:50px;height:10px"></div><div id="b" style="width:50px;height:10px"></div></div></body>`)
+    fg_eq(t,r["g"].w,100); fg_eq(t,r["b"].x,50)
+}
+
+@(test)
+fg_orthogonal_intrinsic_minimum :: proc(t: ^testing.T) {
+    r := fg_geometry(`<body style="margin:0"><div style="display:flex;width:70px"><div id="a" style="writing-mode:vertical-rl;height:100px;line-height:0"><span style="display:inline-block;width:50px;height:100px"></span><span style="display:inline-block;width:50px;height:100px"></span></div></div></body>`)
+    fg_eq(t,r["a"].w,100)
+}
+
+@(test)
+fg_grid_last_baseline_percentage_final_size :: proc(t: ^testing.T) {
+    r := fg_geometry(`<body style="margin:0"><div style="display:grid;width:100px;grid-template-columns:50px 50px;grid-template-rows:100px;align-items:last baseline"><div id="a" style="height:50%"></div><div id="b" style="height:30px"></div></div></body>`)
+    fg_eq(t,r["a"].y,50); fg_eq(t,r["b"].y,70)
+}
+
+@(test)
+fg_flex_definite_column_gap_control :: proc(t: ^testing.T) {
+    r := fg_geometry(`<body style="margin:0"><div style="display:flex;width:100px;column-gap:10%"><div id="a" style="width:50px;height:10px;min-width:0"></div><div id="b" style="width:50px;height:10px;min-width:0"></div></div></body>`)
+    fg_eq(t,r["a"].w,45); fg_eq(t,r["b"].x,55)
+}
+
+@(test)
+fg_orthogonal_grid_minimum_border_box :: proc(t: ^testing.T) {
+    r := fg_geometry(`<body style="margin:0"><div style="display:grid;width:70px;grid-template-columns:1fr"><div id="a" style="writing-mode:vertical-lr;height:120px;box-sizing:border-box;padding:10px;line-height:0"><span style="display:inline-block;width:50px;height:100px"></span><span style="display:inline-block;width:50px;height:100px"></span></div></div></body>`)
+    fg_eq(t,r["a"].w,120)
+}

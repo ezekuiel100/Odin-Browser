@@ -2815,7 +2815,10 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
     // inline (largura) p/ gap/column-gap, bloco (altura DEFINIDA) p/ row-gap. Com o
     // eixo de bloco indefinido a % resolve p/ zero (spec css-align §8.1), sobrando
     // só o offset do calc. Feito aqui porque flex/grid leem b.gap/b.row_gap abaixo.
-    if b.gap_pct do b.gap = max(0, b.gap_frac * b.content_w + b.gap_off)
+    if b.gap_pct {
+        // An intrinsic flex width cannot provide a definite basis for its own gap.
+        b.gap = b.is_flex && b.width_mc ? 0 : max(0, b.gap_frac * b.content_w + b.gap_off)
+    }
     if b.row_gap_pct {
         b.row_gap = avail_h >= 0 ? max(0, b.row_gap_frac * avail_h + b.row_gap_off) : max(0, b.row_gap_off)
     }
@@ -4358,14 +4361,6 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     row_h := grid_row_heights(b, items[:], widths, xs, col_of, cspan_of, row_of, rspan_of, nrows, col_gap, row_gap, ch, has_h)
     column_first := make([]f32, nc, context.temp_allocator)
     column_last := make([]f32, nc, context.temp_allocator)
-    for it, i in items {
-        ji, _ := grid_item_align(b,it)
-        if ji == .Baseline do column_first[col_of[i]] = max(column_first[col_of[i]],box_vertical_baseline(it)+it.margin[3])
-        if ji == .LastBaseline {
-            end := col_of[i]+cspan_of[i]-1
-            column_last[end] = max(column_last[end],it.w-box_vertical_baseline(it,true)+it.margin[1])
-        }
-    }
     baseline_first := make([]f32, nrows, context.temp_allocator)
     baseline_last := make([]f32, nrows, context.temp_allocator)
     baseline_descent := make([]f32, nrows, context.temp_allocator)
@@ -4445,13 +4440,37 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // comportamento base — controles de formulário dependem dele p/ o intrínseco).
         aw: f32 = (it.def_w || it.width_mc) ? sw : fw
         layout_box(it, cx, cy, aw, fw, fh, cb_h=sh)
+    }
+    // Rebuild baseline sharing groups after percentages and shrink-to-fit sizes
+    // resolve. The measuring pass may have had different item dimensions.
+    for r in 0 ..< nrows { baseline_first[r] = 0; baseline_last[r] = 0 }
+    for c in 0 ..< nc { column_first[c] = 0; column_last[c] = 0 }
+    for it, i in items {
+        ji, ai := grid_item_align(b, it)
+        if ai == .Baseline do baseline_first[row_of[i]] = max(baseline_first[row_of[i]],box_baseline(it)+it.margin[0])
+        if ai == .LastBaseline {
+            r := row_of[i]+rspan_of[i]-1
+            baseline_last[r] = max(baseline_last[r],it.h-box_baseline(it,true)+it.margin[2])
+        }
+        if ji == .Baseline do column_first[col_of[i]] = max(column_first[col_of[i]],box_vertical_baseline(it)+it.margin[3])
+        if ji == .LastBaseline {
+            c := col_of[i]+cspan_of[i]-1
+            column_last[c] = max(column_last[c],it.w-box_vertical_baseline(it,true)+it.margin[1])
+        }
+    }
+    for it, i in items {
+        sw := grid_extent(xs, widths, col_of[i], cspan_of[i])
+        sh := grid_extent(row_y, row_h, row_of[i], rspan_of[i])
+        ji, ai := grid_item_align(b, it)
+        stretch_w := ji == .Stretch && !it.def_w && !it.width_mc
+        stretch_h := ai == .Stretch && !it.has_height && !it.has_height_pct && !it.height_mc
         xoff: f32 = stretch_w ? 0 : flex_align(ji, sw, it.w)
         if ji == .Baseline do xoff = column_first[col_of[i]]-box_vertical_baseline(it)-it.margin[3]
         if ji == .LastBaseline do xoff = sw-column_last[col_of[i]+cspan_of[i]-1]-box_vertical_baseline(it,true)-it.margin[3]
         yoff: f32 = stretch_h ? 0 : flex_align(ai, sh, it.h)
         if ai == .Baseline do yoff = baseline_first[row_of[i]] - box_baseline(it) - it.margin[0]
         if ai == .LastBaseline do yoff = sh - baseline_last[row_of[i]+rspan_of[i]-1] - box_baseline(it, true) - it.margin[0]
-        if xoff != 0 || yoff != 0 do layout_box(it, cx + xoff, cy + yoff, aw, fw, fh, cb_h=sh)
+        if xoff != 0 || yoff != 0 do translate_subtree(it, xoff, yoff)
     }
 
     total: f32 = 0
@@ -5651,7 +5670,11 @@ measure_min_content_w :: proc(b: ^Box, ignore_specified := false) -> f32 {
         return b.box_sizing == .Border ? b.width : b.width + extra
     }
     content: f32 = 0
-    if b.is_inline {
+    if b.is_inline && b.writing_mode != .Horizontal {
+        // Physical width is the vertical block extent, for both intrinsic constraints.
+        layout_vertical_inline(b, orthogonal_inline_limit(b), false)
+        content = b.vertical_block_extent
+    } else if b.is_inline {
         content = inline_min_width(b)
     } else if b.is_flex && b.flex_dir == .Row && !b.flex_wrap {
         // linha flex que NÃO quebra: os itens não podem empilhar, então o
@@ -5663,7 +5686,7 @@ measure_min_content_w :: proc(b: ^Box, ignore_specified := false) -> f32 {
             content += measure_min_content_w(c) + c.margin[3] + c.margin[1]
             nvis += 1
         }
-        if nvis > 1 do content += b.gap * f32(nvis - 1)
+        if nvis > 1 do content += (b.gap_pct ? f32(0) : b.gap) * f32(nvis - 1)
     } else if b.kind == .Image {
         // `width` em % resolve contra o container: como contribuição intrínseca ela
         // é 0 (a imagem PODE encolher). Sem esta guarda, um logo de 1920px com
@@ -5750,9 +5773,7 @@ measure_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
     }
     content: f32 = 0
     if b.is_inline && b.writing_mode!=.Horizontal {
-        limit:=b.has_height ? b.height : max(1,g_viewport_h)
-        if b.has_height && b.box_sizing==.Border do limit=max(0,limit-b.padding[0]-b.padding[2]-bw_y(b))
-        layout_vertical_inline(b,limit,false)
+        layout_vertical_inline(b,orthogonal_inline_limit(b),false)
         content=b.vertical_block_extent
     } else if b.is_inline {
         content = inline_max_width(b)
@@ -5765,7 +5786,7 @@ measure_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
             content += measure_intrinsic_w(c) + c.margin[3] + c.margin[1]
             visible += 1
         }
-        if visible > 1 do content += b.gap * f32(visible - 1)
+        if visible > 1 do content += (b.gap_pct ? f32(0) : b.gap) * f32(visible - 1)
     } else if b.kind == .Image {
         iw, _ := image_dims(b)
         content = iw
@@ -5870,6 +5891,7 @@ grid_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
     // paga os gaps que ele mesmo atravessa e as trilhas de px FIXO; o resto é
     // repartido igualmente entre as trilhas intrínsecas que ele cobre.
     for span in 2 ..= ncols {
+        planned := make([]f32, ncols, context.temp_allocator)
         for it, i in items {
             s := cspan_of[i]
             if s != span do continue
@@ -5889,7 +5911,7 @@ grid_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
                 }
                 if has_fr {
                     grid_resolve_fr(span_tracks, span_widths, need)
-                    for k in 0 ..< s do if span_tracks[k].kind == .Fr do colw[c0+k] = max(colw[c0+k], span_widths[k])
+                    for k in 0 ..< s do if span_tracks[k].kind == .Fr do planned[c0+k] = max(planned[c0+k], span_widths[k]-colw[c0+k])
                     continue
                 }
             }
@@ -5912,9 +5934,10 @@ grid_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
                 t := grid_track_at(b, c)
                 if t.kind == .Fixed do continue
                 if min_content && t.kind == .Fr do continue
-                colw[c] += extra
+                planned[c] = max(planned[c], extra)
             }
         }
+        for c in 0 ..< ncols do colw[c] += planned[c]
     }
 
     // In an indefinite axis, all flexible tracks share one fraction. A wide
@@ -11392,4 +11415,12 @@ tab_advance :: proc(it: ^Inline_Item, x, word_spacing: f32) -> f32 {
     advance := step - (x - math.floor(x / step) * step)
     if advance < space_adv(it) * 0.5 do advance += step
     return advance
+}
+
+// Available inline extent shared by physical-width intrinsic measurements.
+@(private="file")
+orthogonal_inline_limit :: proc(b: ^Box) -> f32 {
+    limit := b.has_height ? b.height : max(1, g_viewport_h)
+    if b.has_height && b.box_sizing == .Border do limit = max(0, limit-b.padding[0]-b.padding[2]-bw_y(b))
+    return limit
 }

@@ -60,3 +60,21 @@ Não é uma implementação integral dos algoritmos das especificações. Contin
 - [Flexbox: resolução dos comprimentos flexíveis](https://www.w3.org/TR/css-flexbox-1/#resolve-flexible-lengths)
 - [Grid: expansão de trilhas flexíveis](https://www.w3.org/TR/css-grid-2/#algo-flex-tracks)
 - [Grid: cálculo da fração](https://www.w3.org/TR/css-grid-2/#algo-find-fr-size)
+
+
+## Precisão adicional — 11/11/2026
+
+Esta etapa corrige quatro casos concretos sobre o suporte parcial existente:
+
+- Grid reconstrói os grupos de primeira/última baseline depois de resolver as dimensões finais dos itens. Uma altura percentual numa linha definida já não usa a baseline da medição com altura auto. O posicionamento final translada a subárvore sem executar novamente o layout.
+- A medição intrínseca de Grid acumula aumentos planejados para spans de mesmo comprimento, incluindo spans que combinam trilhas fixas e auto. As contribuições deixam de depender da ordem dos itens no DOM; a distribuição de frações também usa as bases anteriores ao grupo.
+- Flex com largura intrínseca trata column-gap percentual cíclico como zero; a medição intrínseca não reaproveita o gap percentual resolvido por um layout anterior. Largura definida continua resolvendo o percentual normalmente.
+- O min-content físico de conteúdo inline vertical usa a extensão de bloco vertical, com a mesma altura disponível e conversão de border-box usadas na medição max-content. Isso preserva o mínimo automático em Flex e Grid para filhos ortogonais com altura definida.
+
+Cobertura: sete testes novos em `src/ui/flexgrid_precision_test.odin`, incluindo ordem invertida dos spans, primeira/última baseline, controle percentual definido e vertical-lr com padding/border-box. Os quatro primeiros reproduziram falhas antes da correção. A fixture `tests/layout/flexgrid-next.html` cobre os sete cenários no executável; o golden foi conferido pelas dimensões e posições esperadas. Nenhum golden existente foi alterado.
+
+Validação: UI 1036/1036; 23/23 goldens de layout, incluindo a fixture nova. CSS 182/182; HTML 81/81; rede 4/4; Brotli 20/20; WOFF2 10/10; varfont 8/8. Na execução conjunta, JS teve uma falha em `cssom_shared_token_boundaries`, de alterações concorrentes no tokenizer/CSS.supports, fora deste patch. O executável de validação foi gerado em `_local/flexgrid_precision_next.exe`, sem substituir `browser.exe`.
+
+WPT Grid selecionado: 28/30, sem erros; as falhas foram `grid-with-orthogonal-child-within-flexbox` (5050 pixels) e `stretch-grid-item-text-input-overflow` (644 pixels), os mesmos casos e diffs registrados anteriormente.
+
+Os algoritmos completos continuam parciais: escrita vertical dos próprios containers Flex/Grid, propagação da altura disponível a descendentes ortogonais sem altura própria, ciclos percentuais gerais, distribuição de spans entre funções intrínsecas diferentes e crescimento integral por limites de trilha ainda exigem trabalho. Esta etapa não altera a expectativa do WPT ortogonal histórico nem mede desempenho/sites reais.
