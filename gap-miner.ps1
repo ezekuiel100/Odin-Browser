@@ -155,6 +155,7 @@ function Status-Of($r) {
     return "OK"
 }
 
+$inertAgg = @{}
 $cssAgg   = @{}  # prop      -> @{Sites; Count}
 $jsAgg    = @{}  # mensagem  -> @{Sites; Example}
 $globAgg  = @{}  # global faltando  -> @{Sites; Example}
@@ -180,6 +181,11 @@ foreach ($r in $reports) {
             if (-not $cssAgg.ContainsKey($p.Name)) { $cssAgg[$p.Name] = @{ Sites = 0; Count = 0 } }
             $cssAgg[$p.Name].Sites += 1
             $cssAgg[$p.Name].Count += [int]$p.Value
+        }
+        foreach ($p in $r.css_inert.PSObject.Properties) {
+            if (-not $inertAgg.ContainsKey($p.Name)) { $inertAgg[$p.Name] = @{ Sites = 0; Count = 0 } }
+            $inertAgg[$p.Name].Sites += 1
+            $inertAgg[$p.Name].Count += [int]$p.Value
         }
         $seen = @{}
         # Rejeicoes NAO TRATADAS entram no mesmo ranking: desde o M130 (async virou
@@ -250,7 +256,7 @@ foreach ($r in $reports) {
 }
 
 [void]$md.AppendLine()
-[void]$md.AppendLine("## CSS nao suportado (por n. de sites)")
+[void]$md.AppendLine("## CSS desconhecido (por n. de sites)")
 [void]$md.AppendLine()
 [void]$md.AppendLine("| Propriedade | Sites | Ocorrencias |")
 [void]$md.AppendLine("|---|---:|---:|")
@@ -263,6 +269,18 @@ foreach ($e in $cssTop) {
 [void]$md.AppendLine()
 [void]$md.AppendLine("_$($cssAgg.Count) propriedades distintas no total._")
 
+[void]$md.AppendLine()
+[void]$md.AppendLine("## CSS reconhecido sem efeito (gaps confirmados, por n. de sites)")
+[void]$md.AppendLine()
+[void]$md.AppendLine("Inventario parcial: ausencia aqui nao comprova implementacao. JSONs antigos sem css_inert nao medem esta categoria.")
+[void]$md.AppendLine()
+[void]$md.AppendLine("| Propriedade | Sites | Ocorrencias |")
+[void]$md.AppendLine("|---|---:|---:|")
+$i = 0
+foreach ($e in ($inertAgg.GetEnumerator() | Sort-Object { $_.Value.Sites }, { $_.Value.Count } -Descending)) {
+    [void]$md.AppendLine("| ``$($e.Key)`` | $($e.Value.Sites) | $($e.Value.Count) |")
+    $i++; if ($i -ge $Top) { break }
+}
 [void]$md.AppendLine()
 [void]$md.AppendLine("## Globais/APIs faltando (ReferenceError)")
 [void]$md.AppendLine()

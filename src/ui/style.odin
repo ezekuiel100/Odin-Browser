@@ -91,6 +91,27 @@ Noinherit_Prop :: struct { name, initial: string }
 // Coletor de propriedades CSS não implementadas.
 // Chame css_unknown_report() para imprimir o relatório no console.
 g_css_unknown: map[string]int
+g_css_inert: map[string]int
+
+// Confirmed recognition-only features. Keep this shared with CSS.supports.
+// This is a confirmed subset, not a complete audit of recognized properties.
+css_prop_is_inert :: proc(prop: string) -> bool {
+    switch prop {
+    case "touch-action", "hyphens", "-webkit-hyphens", "font-variation-settings",
+         "font-feature-settings", "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop":
+        return true
+    }
+    return false
+}
+
+css_gap_count :: proc(counts: ^map[string]int, prop: string) {
+    if counts^ == nil do counts^ = make(map[string]int)
+    if _, exists := counts^[prop]; exists {
+        counts^[prop] += 1
+    } else {
+        counts^[strings.clone(prop)] = 1
+    }
+}
 
 // `fill`/`stroke`/`stroke-width` vindos da CASCATA (regra CSS, não do atributo
 // de apresentação). Esparso: só o nó que DECLAROU alguma prop ganha um `^Svg_Css`
@@ -440,13 +461,17 @@ css_prop_is_known :: proc(p: string) -> bool {
 }
 
 css_unknown_report :: proc() {
-    if len(g_css_unknown) == 0 do return
+    css_gap_report(g_css_unknown, "css_unknown.txt", "CSS propriedades desconhecidas")
+    css_gap_report(g_css_inert, "css_inert.txt", "CSS reconhecidas sem efeito (gaps confirmados)")
+}
+
+css_gap_report :: proc(counts: map[string]int, path, title: string) {
     // ordena por frequência (selection sort simples)
-    keys := make([]string, len(g_css_unknown), context.temp_allocator)
-    i := 0; for k in g_css_unknown { keys[i] = k; i += 1 }
+    keys := make([]string, len(counts), context.temp_allocator)
+    i := 0; for k in counts { keys[i] = k; i += 1 }
     for a := 0; a < len(keys); a += 1 {
         for b := a + 1; b < len(keys); b += 1 {
-            if g_css_unknown[keys[b]] > g_css_unknown[keys[a]] {
+            if counts[keys[b]] > counts[keys[a]] {
                 keys[a], keys[b] = keys[b], keys[a]
             }
         }
@@ -454,13 +479,13 @@ css_unknown_report :: proc() {
     buf: strings.Builder
     strings.builder_init(&buf, context.allocator)
     defer strings.builder_destroy(&buf)
-    strings.write_string(&buf, "\n=== CSS props nao implementadas (por frequencia) ===\n")
+    fmt.sbprintf(&buf, "\n=== %s (por frequencia) ===\n", title)
     for k in keys {
-        fmt.sbprintf(&buf, "  %-35s %d\n", k, g_css_unknown[k])
+        fmt.sbprintf(&buf, "  %-35s %d\n", k, counts[k])
     }
     strings.write_string(&buf, "====================================================\n")
     content := strings.to_string(buf)
-    _ = os.write_entire_file("C:\\Users\\Adm\\Desktop\\browser\\css_unknown.txt", content)
+    _ = os.write_entire_file(path, content)
 }
 
 // Um comprimento de clip-path: "50%" → {0.5, true}; "10px"/"1em" → {px, false}.
@@ -5140,14 +5165,10 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     // Coletor de props não implementadas (para debug/inventário)
     for prop in decls {
         if strings.has_prefix(prop, "--") do continue // custom props são esperadas
-        if !css_prop_is_known(prop) {
-            if g_css_unknown == nil do g_css_unknown = make(map[string]int)
-            if _, exists := g_css_unknown[prop]; exists {
-                g_css_unknown[prop] += 1
-            } else {
-                permanent := strings.clone(prop) // chave precisa durar além do temp allocator
-                g_css_unknown[permanent] = 1
-            }
+        if css_prop_is_inert(prop) {
+            css_gap_count(&g_css_inert, prop)
+        } else if !css_prop_is_known(prop) {
+            css_gap_count(&g_css_unknown, prop)
         }
     }
 }
@@ -8627,12 +8648,7 @@ css_supports_decl :: proc(raw_prop: string, raw_value: string) -> bool {
     if value_has_unsupported_unit(v) do return false
     if value_has_unsupported_fn(v) do return false
     // Recognizing a property for diagnostics is not implementation support.
-    switch prop {
-    case "touch-action", "hyphens", "-webkit-hyphens", "font-variation-settings",
-         "font-feature-settings", "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop",
-         "transform-style":
-        return false
-    }
+    if css_prop_is_inert(prop) || prop == "transform-style" do return false
     if valid, checked := css_value_valid(prop, value); checked do return valid
 
     return true

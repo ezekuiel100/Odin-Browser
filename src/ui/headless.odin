@@ -615,6 +615,15 @@ diag_write_json :: proc(path, url: string, root: ^Box, page_w: f32, vm: ^jspkg.I
         fmt.sbprintf(&sb, "\":%d", v)
     }
     strings.write_string(&sb, "}")
+    strings.write_string(&sb, ",\"css_inert\":{")
+    first = true
+    for k, v in g_css_inert {
+        if !first do strings.write_string(&sb, ",")
+        first = false
+        strings.write_string(&sb, "\""); diag_json_esc(&sb, k)
+        fmt.sbprintf(&sb, "\":%d", v)
+    }
+    strings.write_string(&sb, "}")
 
     strings.write_string(&sb, ",\"js_uncaught\":[")
     if vm != nil {

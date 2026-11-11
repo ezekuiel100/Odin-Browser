@@ -127,3 +127,27 @@ css_values_unknown_support_conditions :: proc(t: ^testing.T) {
     testing.expect(t, csspkg.supports_condition("not future-feature(x)"))
     testing.expect(t, sup_js(t, `CSS.supports('not future-feature(x)')`))
 }
+
+@(test)
+css_inert_diagnostics :: proc(t: ^testing.T) {
+    // Isolate global diagnostic state from other style tests.
+    old_unknown, old_inert := g_css_unknown, g_css_inert
+    g_css_unknown, g_css_inert = nil, nil
+    defer { g_css_unknown, g_css_inert = old_unknown, old_inert }
+    test_apply(`hyphens: auto; -webkit-hyphens: auto;
+        font-feature-settings: "liga"; font-variation-settings: "wght" 600;
+        scroll-snap-type: x mandatory; scroll-snap-align: start; scroll-snap-stop: always;
+        width: 10px; --custom: 1; unknown-gap-prop: foo`)
+    props := []string{"hyphens", "-webkit-hyphens", "font-feature-settings", "font-variation-settings",
+                         "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop"}
+    for prop in props {
+        testing.expect_value(t, g_css_inert[prop], 1)
+        testing.expect_value(t, g_css_unknown[prop], 0)
+        testing.expect(t, !css_supports_decl(prop, "initial"))
+    }
+    testing.expect_value(t, len(g_css_inert), 7)
+    testing.expect_value(t, g_css_unknown["unknown-gap-prop"], 1)
+    testing.expect_value(t, len(g_css_unknown), 1)
+    test_apply("hyphens: auto")
+    testing.expect_value(t, g_css_inert["hyphens"], 2)
+}
