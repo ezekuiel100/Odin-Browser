@@ -1927,7 +1927,8 @@ compound_spec :: proc(c: Compound) -> int {
 
 // Parseia um bloco de declarações ("color:red; font-weight:bold").
 // Também serve para o atributo style="" inline.
-parse_decls :: proc(text: string, allocator := context.allocator) -> map[string]string {
+parse_decls :: proc(raw_text: string, allocator := context.allocator) -> map[string]string {
+    text := declaration_text(raw_text)
     decls := make(map[string]string, allocator)
     // separa por ';' no nível superior — ';' dentro de url(...)/parênteses ou
     // aspas pertence ao valor (ex.: url(data:image/svg+xml;base64,…)).
@@ -1937,6 +1938,7 @@ parse_decls :: proc(text: string, allocator := context.allocator) -> map[string]
     quote: u8 = 0
     for i := 0; i < n; i += 1 {
         ch := text[i]
+        if ch == '\\' { i += 1; continue }
         if quote != 0 {
             if ch == quote do quote = 0
             continue
@@ -1961,6 +1963,7 @@ top_level_colon :: proc(s: string) -> int {
     quote: u8 = 0
     for i := 0; i < len(s); i += 1 {
         ch := s[i]
+        if ch == '\\' { i += 1; continue }
         if quote != 0 {
             if ch == quote do quote = 0
             continue
@@ -3520,18 +3523,36 @@ strip_comments :: proc(s: string, allocator := context.allocator) -> string {
     // não recebem espaço — assim `.a/**/.b` continua `.a.b` (composto) e não vira
     // `.a .b` (descendente).
     is_word :: proc(c: u8) -> bool {
-        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '%'
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '%' || c == '-' || c == '_' || c == '\\' || c >= 128
     }
     sb := strings.builder_make(allocator)
     i := 0
     n := len(s)
     prev: u8 = 0 // último byte escrito
+    quote: u8
     for i < n {
+        if s[i] == '\\' {
+            end := min(i+2, n)
+            strings.write_string(&sb, s[i:end])
+            prev = s[end-1]
+            i = end
+            continue
+        }
+        if quote != 0 {
+            if s[i] == quote do quote = 0
+            strings.write_byte(&sb, s[i])
+            prev = s[i]
+            i += 1
+            continue
+        }
+        if s[i] == '\'' || s[i] == '"' do quote = s[i]
         if i + 1 < n && s[i] == '/' && s[i + 1] == '*' {
             end := strings.index(s[i:], "*/")
             if end < 0 do break
             i += end + 2
-            if prev != 0 && i < n && is_word(prev) && is_word(s[i]) {
+            if prev != 0 && i < n && ((is_word(prev) && is_word(s[i])) ||
+                (prev >= '0' && prev <= '9' && s[i] == '.') ||
+                (prev == '.' && s[i] >= '0' && s[i] <= '9')) {
                 strings.write_byte(&sb, ' ')
                 prev = ' '
             }

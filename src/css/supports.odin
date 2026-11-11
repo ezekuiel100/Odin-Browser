@@ -22,19 +22,20 @@ supports_condition :: proc(cond: string) -> bool {
 // Variante com hook EXPLÍCITO. Os testes usam esta forma para não escrever no
 // global `g_prop_supported` — global mutável + runner paralelo de testes é a
 // receita de flake que já mordeu este projeto (M192/M216/M217).
-supports_condition_with :: proc(cond: string, fn: Prop_Supported_Fn) -> bool {
+supports_condition_with :: proc(raw_cond: string, fn: Prop_Supported_Fn) -> bool {
+    cond := declaration_text(raw_cond)
     val, ok := sup_or(cond, fn)
     return ok && val // malformed conditions do not enable a feature
 }
 
 // Uma declaração `(prop: value)` da condição.
 supports_declaration :: proc(prop, value: string, fn: Prop_Supported_Fn) -> bool {
-    p := strings.to_lower(strings.trim_space(prop), context.temp_allocator)
-    v := strings.trim_space(value)
+    p := strings.to_lower(strings.trim_space(declaration_text(prop)), context.temp_allocator)
+    v := strings.trim_space(declaration_text(value))
     if p == "" || v == "" do return false
     if g_value_valid != nil && !g_value_valid(p, v) do return false
     // `!important` dentro de @supports é inválido por spec.
-    if strings.contains(strings.to_lower(v, context.temp_allocator), "!important") do return false
+    if sup_index_top(v, '!') >= 0 do return false
     // Custom property: quem PARSEIA a declaração a suporta — e nós parseamos
     // (`var()` + cascata de `--x` existem). `@supports (--x: y)` é o teste
     // clássico de "tem custom properties?" e TEM de dar true, senão derrubamos

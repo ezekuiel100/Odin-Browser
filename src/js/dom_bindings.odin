@@ -19,6 +19,7 @@ package js
 
 import "core:strings"
 import "core:fmt" // só o probe do MEMBERPROBE usa
+import csspkg "../css"
 import dom "../dom"
 import htmlp "../html" // p/ innerHTML= (parse de fragmento); html só importa dom — sem ciclo
 import net "../net"    // p/ buscar <script src> injetado dinamicamente (chunk webpack)
@@ -145,6 +146,7 @@ install_dom :: proc(vm: ^Interp, root: ^dom.Node) {
     vm.dom_style_methods = make(map[string]^Function)
     vm.dom_style_methods["setProperty"]       = mk_dom(vm, style_set_property)
     vm.dom_style_methods["getPropertyValue"]  = mk_dom(vm, style_get_property)
+    vm.dom_style_methods["getPropertyPriority"] = mk_dom(vm, style_get_priority)
     vm.dom_style_methods["removeProperty"]    = mk_dom(vm, style_remove_property)
 
     vm.event_prevent_fn = mk_dom(vm, event_prevent_default)
@@ -3499,19 +3501,15 @@ append_decl :: proc(sb: ^strings.Builder, k, v: string) {
 // Valor da propriedade kebab `prop` no atributo style="" (ou "" se ausente).
 @(private = "file")
 inline_style_get :: proc(node: ^dom.Node, prop: string) -> string {
-    rest := node.attrs["style"] // "" se ausente (map devolve zero-value)
-    for len(rest) > 0 {
-        decl: string
-        if semi := strings.index_byte(rest, ';'); semi < 0 {
-            decl = rest; rest = ""
-        } else {
-            decl = rest[:semi]; rest = rest[semi + 1:]
-        }
-        colon := strings.index_byte(decl, ':')
-        if colon < 0 do continue
-        if strings.trim_space(decl[:colon]) == prop do return strings.trim_space(decl[colon + 1:])
-    }
-    return ""
+    decls := csspkg.parse_decls(node.attrs["style"], context.temp_allocator)
+    value, _ := csspkg.split_important(decls[style_property_name(prop)])
+    return value
+}
+
+@(private = "file")
+style_property_name :: proc(prop: string) -> string {
+    if strings.has_prefix(prop, "--") do return prop
+    return strings.to_lower(prop, context.temp_allocator)
 }
 
 // Define (val!="") ou remove (val=="") a propriedade kebab `prop` no atributo
@@ -3522,10 +3520,10 @@ inline_style_set :: proc(vm: ^Interp, node: ^dom.Node, prop: string, val: string
     strings.builder_init(&sb)
     defer strings.builder_destroy(&sb)
     replaced := false
-    rest := node.attrs["style"]
+    rest := csspkg.declaration_text(node.attrs["style"])
     for len(rest) > 0 {
         decl: string
-        if semi := strings.index_byte(rest, ';'); semi < 0 {
+        if semi := csspkg.declaration_end(rest); semi < 0 {
             decl = rest; rest = ""
         } else {
             decl = rest[:semi]; rest = rest[semi + 1:]
@@ -3535,7 +3533,7 @@ inline_style_set :: proc(vm: ^Interp, node: ^dom.Node, prop: string, val: string
             if len(strings.trim_space(decl)) == 0 do continue // ; extra
             continue // declaração malformada: descarta
         }
-        k := strings.trim_space(decl[:colon])
+        k := style_property_name(strings.trim_space(decl[:colon]))
         if k == prop {
             replaced = true
             if val != "" do append_decl(&sb, prop, val) // val=="" => remove (não reemite)
@@ -3567,7 +3565,12 @@ style_prop_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
 style_prop_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> bool {
     node := cast(^dom.Node) o.host
     if name == "cssText" {
-        set_attr_val(vm, node, "style", val)
+        b := strings.builder_make(context.temp_allocator)
+        to_text(&b, val)
+        decls := csspkg.parse_decls(strings.to_string(b), context.temp_allocator)
+        out := strings.builder_make(context.temp_allocator)
+        for k, v in decls do append_decl(&out, k, v)
+        set_attr_str(vm, node, "style", strings.to_string(out))
         return true
     }
     kb: strings.Builder
@@ -3592,14 +3595,22 @@ style_prop_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> boo
 style_set_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     node := node_of(this)
     if node == nil || len(args) < 1 do return nil
-    prop, ok := args[0].(string)
+    raw_prop, ok := args[0].(string)
     if !ok do return nil
+    prop := style_property_name(raw_prop)
     vb: strings.Builder
     strings.builder_init(&vb)
     defer strings.builder_destroy(&vb)
     to_text(&vb, arg(args, 1))
     text := strings.trim_space(strings.to_string(vb))
     if text != "" && g_css_value_valid != nil && !g_css_value_valid(prop, text) do return nil
+    if text != "" && len(args) > 2 {
+        priority, _ := args[2].(string)
+        if priority != "" {
+            if !strings.equal_fold(priority, "important") do return nil
+            text = strings.concatenate({text, " !important"}, context.temp_allocator)
+        }
+    }
     inline_style_set(vm, node, prop, text)
     return nil
 }
@@ -3614,11 +3625,26 @@ style_get_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 }
 
 @(private = "file")
+style_get_priority :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    node := node_of(this)
+    if node == nil || len(args) < 1 do return own_str(vm, "")
+    prop, ok := args[0].(string)
+    if !ok do return own_str(vm, "")
+    decls := csspkg.parse_decls(node.attrs["style"], context.temp_allocator)
+    _, important := csspkg.split_important(decls[style_property_name(prop)])
+    return own_str(vm, important ? "important" : "")
+}
+
+@(private = "file")
 style_remove_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     node := node_of(this)
     if node == nil || len(args) < 1 do return nil
-    if prop, ok := args[0].(string); ok do inline_style_set(vm, node, prop, "")
-    return nil
+    if prop, ok := args[0].(string); ok {
+        value := own_str(vm, inline_style_get(node, prop))
+        inline_style_set(vm, node, style_property_name(prop), "")
+        return value
+    }
+    return own_str(vm, "")
 }
 
 // el.dataset.<name> <-> atributo data-<kebab(name)>. Ausente devolve undefined.

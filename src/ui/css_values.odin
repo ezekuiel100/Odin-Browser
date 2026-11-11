@@ -7,13 +7,14 @@ import jspkg "../js"
 
 // A syntax decision is separate from feature support. Uncovered grammars keep
 // their existing parser; callers must not confuse `checked = false` with proof.
-css_value_valid :: proc(prop, value: string) -> (valid, checked: bool) {
-    v := strings.to_lower(strings.trim_space(value), context.temp_allocator)
+css_value_valid :: proc(raw_prop, value: string) -> (valid, checked: bool) {
+    prop := strings.to_lower(strings.trim_space(csspkg.declaration_text(raw_prop)), context.temp_allocator)
+    v := strings.to_lower(strings.trim_space(csspkg.declaration_text(value)), context.temp_allocator)
     if v == "" do return false, true
     if !css_value_balanced(v) do return false, true
     if strings.has_prefix(prop, "--") do return true, true
     // Substitution is checked at computed-value time, not against a dummy map.
-    if strings.contains(v, "var(") || strings.contains(v, "attr(") do return true, false
+    if css_value_substitution(v) do return true, false
     switch v {
     case "inherit", "initial", "unset", "revert", "revert-layer": return true, true
     }
@@ -36,6 +37,8 @@ css_value_valid :: proc(prop, value: string) -> (valid, checked: bool) {
     case "font-style": keywords = "normal italic oblique"
     case "unicode-bidi": keywords = "normal embed isolate bidi-override isolate-override plaintext"
     case "writing-mode": keywords = "horizontal-tb vertical-rl vertical-lr"
+    case "text-overflow": keywords = "clip ellipsis"
+    case "backface-visibility": keywords = "visible hidden"
     case "text-orientation": keywords = "mixed upright sideways"
     case "direction": keywords = "ltr rtl"
     case "white-space": keywords = "normal nowrap pre pre-wrap pre-line break-spaces"
@@ -61,6 +64,19 @@ css_value_valid :: proc(prop, value: string) -> (valid, checked: bool) {
         return false, true
     }
     switch prop {
+    case "font-weight":
+        if v == "normal" || v == "bold" || v == "bolder" || v == "lighter" do return true, true
+        n, ok := css_number(v)
+        return ok && n >= 1 && n <= 1000, true
+    case "line-height":
+        if v == "normal" do return true, true
+        if n, ok := css_number(v); ok do return n >= 0, true
+        return css_value_valid("padding-top", v)
+    case "letter-spacing", "word-spacing":
+        if v == "normal" do return true, true
+        if strings.contains(v, "%") do return false, true
+        ok, _ := css_value_valid("margin-left", v)
+        return ok && v != "auto", true
     case "tab-size", "-moz-tab-size":
         n, ok := strconv.parse_int(v)
         return ok && n >= 0, true
@@ -171,7 +187,12 @@ css_value_balanced :: proc(v: string) -> bool {
     quote: u8
     for i := 0; i < len(v); i += 1 {
         c := v[i]
-        if c == '\\' { i += 1; continue }
+        if c == '\\' {
+            if i+1 >= len(v) do return false
+            if quote == 0 && (v[i+1] == '\n' || v[i+1] == '\r' || v[i+1] == '\f') do return false
+            i += 1
+            continue
+        }
         if quote != 0 {
             if c == quote do quote = 0
             else if c == '\n' || c == '\r' do return false
@@ -195,6 +216,26 @@ css_number :: proc(v: string) -> (f64, bool) {
     if v == "" do return 0, false
     if csspkg.scan_number_end(v, 0, true) != len(v) do return 0, false
     return strconv.parse_f64(v)
+}
+
+// Function names in strings or longer identifiers are not substitutions.
+css_value_substitution :: proc(v: string) -> bool {
+    quote: u8
+    for i := 0; i < len(v); i += 1 {
+        c := v[i]
+        if c == '\\' { i += 1; continue }
+        if quote != 0 {
+            if c == quote do quote = 0
+            continue
+        }
+        if c == '\'' || c == '"' { quote = c; continue }
+        if i > 0 {
+            p := v[i-1]
+            if (p >= 'a' && p <= 'z') || p == '-' || p == '_' || p >= 128 do continue
+        }
+        if strings.has_prefix(v[i:], "var(") || strings.has_prefix(v[i:], "attr(") do return true
+    }
+    return false
 }
 
 // Called for EVERY declaration, before duplicate handling or cascade priority.

@@ -8518,8 +8518,9 @@ install_js_query_hook :: proc "contextless" () {
 //
 // Shared value grammar first, then implementation capability checks. Grammars
 // not yet covered retain the legacy parser policy; see docs/CSS-VALUES.md.
-css_supports_decl :: proc(raw_prop: string, value: string) -> bool {
-    prop := strings.to_lower(strings.trim_space(raw_prop), context.temp_allocator)
+css_supports_decl :: proc(raw_prop: string, raw_value: string) -> bool {
+    prop := strings.to_lower(strings.trim_space(csspkg.declaration_text(raw_prop)), context.temp_allocator)
+    value := csspkg.declaration_text(raw_value)
     if valid, _ := css_value_valid(prop, value); !valid do return false
     if strings.has_prefix(prop, "--") do return true // custom property: nós parseamos
     if !css_prop_is_known(prop) do return false

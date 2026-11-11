@@ -5,6 +5,7 @@ package js
 
 import "core:fmt"
 import "core:strings"
+import csspkg "../css"
 
 // Hook do CSS.supports: `css_prop_is_known` vive no pacote ui (conhece a tabela
 // de props do motor de estilo); o js não pode importá-lo (ciclo). O ui instala
@@ -95,10 +96,10 @@ css_supports_pair :: proc(prop, value: string) -> bool {
     p := strings.trim_space(prop)
     v := strings.trim_space(value)
     if p == "" || v == "" do return false
-    lv := strings.to_lower(v, context.temp_allocator)
-    if strings.contains(lv, "!important") do return false
     lp := strings.to_lower(p, context.temp_allocator)
     if g_css_supports != nil do return g_css_supports(lp, v)
+    lv := strings.to_lower(v, context.temp_allocator)
+    if strings.contains(lv, "!important") do return false
     return css_ident_plausible(lp) // fallback headless (sem pacote ui)
 }
 
@@ -148,7 +149,7 @@ css_ident_plausible :: proc(p: string) -> bool {
 // e o feature-detect via texto ficava respondendo "não suporto" para TUDO.
 @(private = "file")
 css_supports_cond :: proc(s0: string) -> bool {
-    s := strings.trim_space(s0)
+    s := strings.trim_space(csspkg.declaration_text(s0))
     if s == "" do return false
     if g_css_condition_supports != nil {
         if g_css_condition_supports(s) do return true
