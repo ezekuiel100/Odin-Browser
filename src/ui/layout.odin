@@ -383,6 +383,7 @@ Box :: struct {
     opacity: f32,  // 1.0 = opaco
     isolate: bool, // isolation:isolate — força grupo de composição
     clip_path: Clip_Shape, // clip-path — recorta a subárvore (máscara CPU na layer)
+    mask_image: Mask_Image,
     mask_grad: csspkg.Gradient, // mask-image: <gradient> — máscara alpha na layer
     blend_mode: Blend_Mode, // mix-blend-mode (Normal = sem blend)
     filters: [MAX_FILTERS]Filter_Op, n_filters: int, // filter (aplicados em ordem)
@@ -671,7 +672,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
 
         if node.tag == "img" {
             b := new_box(); b.kind = .Image; b.node = node
-            apply_box(b, comp)
+            apply_box(b, comp, base)
             // `data:` NÃO é excluído aqui (M192): a URI é a própria fonte, e quem a
             // decodifica é `netpkg.fetch` (net.odin, `fetch_data_uri`) — o mesmo
             // caminho de qualquer imagem. `resolve_url` já a devolve intacta de
@@ -690,7 +691,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
         if node.tag == "svg" {
             b := new_box(); b.kind = .Image; b.node = node
             b.is_svg = true; b.svg_fg = comp.color
-            apply_box(b, comp)
+            apply_box(b, comp, base)
             return b
         }
 
@@ -701,7 +702,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
         if node.tag == "canvas" {
             b := new_box(); b.kind = .Image; b.node = node
             b.is_canvas = true
-            apply_box(b, comp)
+            apply_box(b, comp, base)
             return b
         }
 
@@ -709,7 +710,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
         // é layout de fluxo) — vira caixa própria com InputTextMultiline sobreposto.
         if node.tag == "textarea" {
             b := new_box(); b.kind = .Block; b.node = node
-            apply_box(b, comp)
+            apply_box(b, comp, base)
             set_textarea_control(b, node, comp)
             return b
         }
@@ -721,13 +722,13 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
         // popup do paint.
         if node.tag == "select" {
             b := new_box(); b.kind = .Block; b.node = node
-            apply_box(b, comp)
+            apply_box(b, comp, base)
             set_select_control(b, node, comp)
             return b
         }
 
         b := new_box(); b.kind = .Block; b.node = node
-        apply_box(b, comp)
+        apply_box(b, comp, base)
         if comp.bg_img != "" do b.bg_img = netpkg.resolve_url(base, comp.bg_img, context.allocator)
         adopt_bimg(b, comp.bimg, base)
         adopt_bg_extra(b, comp, base)
@@ -933,7 +934,7 @@ inject_first_letter :: proc(b: ^Box, flc: ^Computed, base: string) {
 @(private="file")
 build_first_letter_box :: proc(pc: ^Computed, text: string, base: string) -> ^Box {
     pb := new_box(); pb.kind = .Block
-    apply_box(pb, pc^)
+    apply_box(pb, pc^, base)
     pb.is_inline = true
     font, scale, fem := l_pick_font(pc.font_size, pc.weight, pc.font_fam_id, pc.font_family, pc.italic)
     it := Inline_Item{
@@ -967,7 +968,7 @@ pseudo_inline_word :: proc(pc: Computed) -> Inline_Item {
 @(private="file")
 build_pseudo_box :: proc(pc: ^Computed, base: string) -> ^Box {
     pb := new_box(); pb.kind = .Block
-    apply_box(pb, pc^)
+    apply_box(pb, pc^, base)
     if pc.bg_img != "" do pb.bg_img = netpkg.resolve_url(base, pc.bg_img, context.allocator)
     adopt_bimg(pb, pc.bimg, base)
     adopt_bg_extra(pb, pc^, base)
@@ -2414,7 +2415,7 @@ adopt_bg_extra :: proc(b: ^Box, comp: Computed, base: string) {
 }
 
 @(private="file")
-apply_box :: proc(b: ^Box, comp: Computed) {
+apply_box :: proc(b: ^Box, comp: Computed, base: string = "") {
     b.margin     = comp.margin
     b.has_margin = comp.has_margin
     b.padding    = comp.padding
@@ -2444,6 +2445,8 @@ apply_box :: proc(b: ^Box, comp: Computed) {
     b.scroll_smooth  = comp.scroll_smooth
     b.clip_path      = comp.clip_path
     b.mask_grad      = comp.mask_grad
+    b.mask_image = comp.mask_image
+    if comp.mask_image.url != "" do b.mask_image.url = netpkg.resolve_url(base, comp.mask_image.url, context.allocator)
     b.scroll_margin_top  = comp.scroll_margin_top
     b.scroll_padding_top = comp.scroll_padding_top
     b.overscroll_contain = comp.overscroll_contain
@@ -6753,7 +6756,7 @@ PC_XformEnd    :: struct { cx, cy, a, b, c, d: f32 }
 // inclusive pelo PC_InlineText de cada palavra. Uma tentativa de carregar o bbox
 // previsto aqui foi revertida por isso (Odin não aceita `when` em campo de
 // struct, então não dá para condicioná-los).
-PC_LayerBegin  :: struct { opacity: f32, blend: Blend_Mode, filters: [MAX_FILTERS]Filter_Op, n_filters: int, node: rawptr, backdrop: u32, clip: Clip_Shape, mask: csspkg.Gradient, cbx, cby, cbw, cbh: f32 }
+PC_LayerBegin  :: struct { opacity: f32, blend: Blend_Mode, filters: [MAX_FILTERS]Filter_Op, n_filters: int, node: rawptr, backdrop: u32, clip: Clip_Shape, mask: csspkg.Gradient, cbx, cby, cbw, cbh: f32, mask_image: ^Mask_Image }
 PC_LayerEnd    :: struct {}
 PC_RoundClipBegin :: struct { node: rawptr, p0, p1: im.Vec2, rounding: Image_Rounding }
 // backdrop-filter: filtra o BACKDROP (o `dl` acumulado até aqui) na região do
@@ -6867,8 +6870,10 @@ replay_seg :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, cull := fals
         case PC_LayerEnd:
             return i + 1
         case PC_LayerBegin:
+            mask_image := Mask_Image{}
+            if v.mask_image != nil do mask_image = v.mask_image^
             lf := v.filters // cópia local addressable p/ fatiar o array
-            i = composite_layer(cmds, i + 1, dl, v.opacity, v.blend, lf[:v.n_filters], v.node, v.backdrop, v.clip, v.mask, v.cbx, v.cby, v.cbw, v.cbh)
+            i = composite_layer(cmds, i + 1, dl, v.opacity, v.blend, lf[:v.n_filters], v.node, v.backdrop, v.clip, v.mask, v.cbx, v.cby, v.cbw, v.cbh, mask_image = mask_image)
             // A layer pode ter empilhado/desempilhado clip no `dl` pai.
             if cull { cmin = im.DrawList_GetClipRectMin(dl); cmax = im.DrawList_GetClipRectMax(dl) }
             continue
@@ -7049,7 +7054,7 @@ buf_premul :: proc(buf: []u8) {
 }
 
 @(private="file")
-composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity: f32, blend: Blend_Mode, filters: []Filter_Op, node: rawptr, backdrop: u32, clip := Clip_Shape{}, mask := csspkg.Gradient{}, cbx: f32 = 0, cby: f32 = 0, cbw: f32 = 0, cbh: f32 = 0, rounding := Image_Rounding{}, round_clip := false) -> int {
+composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity: f32, blend: Blend_Mode, filters: []Filter_Op, node: rawptr, backdrop: u32, clip := Clip_Shape{}, mask := csspkg.Gradient{}, cbx: f32 = 0, cby: f32 = 0, cbw: f32 = 0, cbh: f32 = 0, rounding := Image_Rounding{}, round_clip := false, mask_image := Mask_Image{}) -> int {
     if g_renderer == nil {
         return replay_seg(cmds, start, dl) // fallback: sem compositing
     }
@@ -7211,6 +7216,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     has_filter := len(filters) > 0
     has_clip   := clip.kind != .None
     has_mask   := mask.active && mask.n >= 2
+    has_image_mask := mask_image.url != ""
     // blend não-linear por-canal (overlay/hard-light/soft-light/color-dodge/
     // color-burn/difference): não expressável como blend do SDL → kernel CPU sobre
     // a textura, contra o backdrop sólido. Todos ficam contíguos no fim do enum
@@ -7259,6 +7265,11 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
             h = fnv(h, mask.cols[i]); h = fnv(h, transmute(u32)mask.pos[i]); h = fnv(h, u32(mask.pos_set[i] ? 1 : 0))
         }
         h = fnv(h, transmute(u32)(cbx - fx)); h = fnv(h, transmute(u32)(cby - fy))
+        h = fnv(h, transmute(u32)cbw); h = fnv(h, transmute(u32)cbh)
+    }
+    if has_image_mask {
+        h = fnv(h, mask_image_hash(mask_image))
+        h = fnv(h, transmute(u32)(cbx-fx)); h = fnv(h, transmute(u32)(cby-fy))
         h = fnv(h, transmute(u32)cbw); h = fnv(h, transmute(u32)cbh)
     }
     for f in filters {
@@ -7355,7 +7366,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     // que o AddImage normal componha αs·B + (1−αs)·backdrop sobre o framebuffer.
     comp_tex := tex
     intermediate: ^sdl2.Texture = nil // a textura .TARGET vira descartável quando processada na CPU
-    if has_filter || cpu_blend || has_clip || has_mask || round_clip {
+    if has_filter || cpu_blend || has_clip || has_mask || has_image_mask || round_clip {
         pw, ph := int(iw), int(ih)
         buf := make([]u8, pw * ph * 4, context.temp_allocator)
         rect := sdl2.Rect{0, 0, iw, ih}
@@ -7369,6 +7380,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
             // sobre o conteúdo inteiro, como na spec: clip/mask são o passo final).
             if has_clip do apply_clip_mask(buf, pw, ph, clip, cbx - fx, cby - fy, cbw, cbh)
             if has_mask do apply_mask_gradient(buf, pw, ph, mask, cbx - fx, cby - fy, cbw, cbh)
+            if has_image_mask do apply_svg_image_mask(buf, pw, ph, mask_image, cbx-fx, cby-fy, cbw, cbh)
             if round_clip do apply_round_clip(buf, pw, ph, cbx-fx, cby-fy, cbw, cbh, rounding)
             buf_premul(buf) // volta à convenção da textura (ver premul_blend)
             t2 := sdl2.CreateTexture(g_renderer, .ABGR8888, .STATIC, iw, ih)
@@ -9467,7 +9479,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // da página. Só faz sentido com filhos (senão o grupo é vazio).
     // clip-path exige layer: o clip do ImGui é RETANGULAR, então a forma é aplicada
     // como máscara alpha na CPU sobre a textura da layer (mesmo caminho dos filtros).
-    want_layer := (own_a < 1 && (len(b.children) > 0 || len(b.inlines) > 0)) || b.blend_mode != .Normal || b.n_filters > 0 || (b.isolate && (len(b.children) > 0 || len(b.inlines) > 0)) || b.clip_path.kind != .None || b.mask_grad.active
+    want_layer := (own_a < 1 && (len(b.children) > 0 || len(b.inlines) > 0)) || b.blend_mode != .Normal || b.n_filters > 0 || (b.isolate && (len(b.children) > 0 || len(b.inlines) > 0)) || b.clip_path.kind != .None || b.mask_grad.active || b.mask_image.url != ""
     // Scissor rectangles do not follow transform_vertices. Rasterize local clips
     // before transforming the group, so a scaled/rotated card and its contents
     // share the same transformed edge (including clips in nested wrappers).
@@ -9519,7 +9531,8 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
             append(&g_pred_bbox, Pred_BBox{px0, py0, px1, py1, b.sub_safe, b.has_abs, len(b.children), rawptr(b.node), diag_desc(b),
                 b.n_filters, b.n_filters > 0 ? b.filters[0].amount : 0, b.w, b.grad.active, b.bg_img != "", b.bg_fixed, len(b.bg_extra)})
         }
-        emit(pt, PC_LayerBegin{own_a, b.blend_mode, b.filters, b.n_filters, rawptr(b.node), g_bg_behind, b.clip_path, b.mask_grad, screen.x, screen.y, b.w, b.h})
+        b.mask_image = mask_for_box(b)
+        emit(pt, PC_LayerBegin{own_a, b.blend_mode, b.filters, b.n_filters, rawptr(b.node), g_bg_behind, b.clip_path, b.mask_grad, screen.x, screen.y, b.w, b.h, &b.mask_image})
     }
 
     // raio por canto: um único `radius` (o maior) + flags de quais cantos
@@ -11242,6 +11255,7 @@ free_layout :: proc(b: ^Box) {
     delete(b.inline_grads)
     if b.img_url != ""   do delete(b.img_url)
     if b.bg_img != ""    do delete(b.bg_img)
+    if b.mask_image.url != "" do delete(b.mask_image.url)
     if b.bimg.src  != "" do delete(b.bimg.src)
     if b.bimg.grad != "" do delete(b.bimg.grad)
     for lay in b.bg_extra do if lay.img != "" do delete(lay.img) // urls resolvidas em adopt_bg_extra
@@ -11423,4 +11437,59 @@ orthogonal_inline_limit :: proc(b: ^Box) -> f32 {
     limit := b.has_height ? b.height : max(1, g_viewport_h)
     if b.has_height && b.box_sizing == .Border do limit = max(0, limit-b.padding[0]-b.padding[2]-bw_y(b))
     return limit
+}
+
+emit_mask_image :: proc(pt: ^Painter, m: Mask_Image, img: ^Img, bx, by, bw, bh: f32, surface := im.Vec2{1e6,1e6}) {
+    if img == nil || img.state != .Ready || !img.is_svg || img.svg_root == nil do return
+    x, y, dw, dh := mask_tile_geometry(m, f32(img.w), f32(img.h), bx, by, bw, bh)
+    if dw < 0.01 || dh < 0.01 do return
+    lo := im.Vec2{bx+m.clip_inset[3], by+m.clip_inset[0]}
+    hi := im.Vec2{bx+bw-m.clip_inset[1], by+bh-m.clip_inset[2]}
+    if m.no_clip { lo = {-1e6, -1e6}; hi = {1e6, 1e6} }
+    // Keep tiling bounded by the offscreen surface rather than no-clip infinity.
+    lo.x = max(lo.x, 0); lo.y = max(lo.y, 0); hi.x = min(hi.x, surface.x); hi.y = min(hi.y, surface.y)
+    if !m.no_repeat[0] do x -= dw*math.ceil((x-lo.x)/dw)
+    if !m.no_repeat[1] do y -= dh*math.ceil((y-lo.y)/dh)
+    start_x := x
+    for row := 0; row < 512 && y < hi.y; row += 1 {
+        x = start_x
+        for col := 0; col < 512 && x < hi.x; col += 1 {
+            emit_bg_svg_tile(pt, img, {x,y}, dw, dh, lo, hi, 1)
+            if m.no_repeat[0] do break
+            x += dw
+        }
+        if m.no_repeat[1] do break
+        y += dh
+    }
+}
+
+apply_svg_image_mask :: proc(dst: []u8, w, h: int, m: Mask_Image, bx, by, bw, bh: f32) {
+    pixels := make([]u8, w*h*4, context.temp_allocator)
+    img := image_get(m.url)
+    if img.state == .Ready && img.is_svg && img.svg_root != nil {
+        tex := sdl2.CreateTexture(g_renderer, .ABGR8888, .TARGET, c.int(w), c.int(h))
+        if tex != nil {
+            defer sdl2.DestroyTexture(tex)
+            prev := sdl2.GetRenderTarget(g_renderer)
+            defer sdl2.SetRenderTarget(g_renderer, prev)
+            sdl2.SetRenderTarget(g_renderer, tex)
+            sdl2.SetRenderDrawColor(g_renderer, 0, 0, 0, 0); sdl2.RenderClear(g_renderer)
+            pt: Painter
+            defer delete(pt.cmds)
+            emit_mask_image(&pt, m, img, bx, by, bw, bh, {f32(w),f32(h)})
+            ld: im.DrawList
+            ld._Data = im.GetDrawListSharedData()
+            im.DrawList__ResetForNewFrame(&ld)
+            defer im.DrawList__ClearFreeMemory(&ld)
+            im.DrawList_PushTextureID(&ld, im.GetIO().Fonts.TexID)
+            im.DrawList_PushClipRect(&ld, {0,0}, {f32(w),f32(h)}, false)
+            replay_seg(pt.cmds[:], 0, &ld)
+            lists := [1]^im.DrawList{&ld}
+            dd := im.DrawData{Valid=true, CmdListsCount=1, CmdLists={Size=1, Capacity=1, Data=&lists[0]}, TotalVtxCount=ld.VtxBuffer.Size, TotalIdxCount=ld.IdxBuffer.Size, DisplaySize={f32(w),f32(h)}, FramebufferScale={1,1}}
+            imgui_sdlr.RenderDrawData(&dd, g_renderer)
+            rect := sdl2.Rect{0,0,c.int(w),c.int(h)}
+            sdl2.RenderReadPixels(g_renderer, &rect, u32(sdl2.PixelFormatEnum.ABGR8888), raw_data(pixels), c.int(w*4))
+        }
+    }
+    apply_image_mask_pixels(dst, pixels, m.luminance)
 }

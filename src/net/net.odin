@@ -127,6 +127,25 @@ fetch_data_uri :: proc(url: string) -> Response {
     }
     meta    := rest[:comma]
     payload := rest[comma + 1:]
+    // data: URLs contain URL-escaped bytes, including SVG markup and sometimes
+    // the base64 alphabet itself. A '+' is literal here, not a form-space.
+    if strings.contains(payload, "%") {
+        hex :: proc(c: u8) -> int {
+            if c >= '0' && c <= '9' do return int(c-'0')
+            if c >= 'a' && c <= 'f' do return int(c-'a')+10
+            if c >= 'A' && c <= 'F' do return int(c-'A')+10
+            return -1
+        }
+        decoded := make([dynamic]u8, 0, len(payload), context.temp_allocator)
+        for i := 0; i < len(payload); i += 1 {
+            if payload[i] == '%' && i+2 < len(payload) {
+                a, b := hex(payload[i+1]), hex(payload[i+2])
+                if a >= 0 && b >= 0 { append(&decoded, u8(a*16+b)); i += 2; continue }
+            }
+            append(&decoded, payload[i])
+        }
+        payload = string(decoded[:])
+    }
 
     if strings.contains(meta, ";base64") {
         // base64 pode conter quebras de linha/espaços; o decoder não os tolera.
@@ -148,7 +167,7 @@ fetch_data_uri :: proc(url: string) -> Response {
         return {body = string(decoded), status = 200, ok = true}
     }
 
-    // texto plano (percent-encoding não é decodificado — raro em <script src>)
+    // Caller owns the response body, just as for HTTP and base64 data URLs.
     return {body = strings.clone(payload), status = 200, ok = true}
 }
 

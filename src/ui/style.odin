@@ -655,11 +655,15 @@ parse_clip_rect :: proc(comp: ^Computed, value: string, fs, vw, vh: f32) {
     comp.clip_path.inset = vals
 }
 
-// mask-image / -webkit-mask-image (e o shorthand `mask`): extrai o PRIMEIRO
-// gradiente do valor. `none`/vazio/url()/imagem raster → sem máscara. Reusa
-// csspkg.parse_gradient (mesmo parser do background linear/radial/conic).
-parse_mask_image :: proc(comp: ^Computed, value: string) {
+// Single SVG image URL or the existing gradient mask. Image longhands preserve
+// independent sizing/position values; only the shorthand resets them.
+parse_mask_image :: proc(comp: ^Computed, raw_value: string) {
     comp.mask_grad = {}
+    value := raw_value
+    layers := bg_split_layers(value)
+    if len(layers) > 0 do value = layers[0]
+    comp.mask_image.url = mask_extract_url(value)
+    if comp.mask_image.url != "" do return
     s := strings.trim_space(value)
     lo := strings.to_lower(s, context.temp_allocator)
     if s == "" || lo == "none" do return
@@ -1373,6 +1377,7 @@ Computed :: struct {
     opacity: f32,  // 1.0 = opaco (padrão)
     isolate: bool, // isolation:isolate — força grupo de composição (stacking/blend); não herda
     clip_path: Clip_Shape, // clip-path (forma básica; não herda). kind=None = sem recorte
+    mask_image: Mask_Image,
     mask_grad: csspkg.Gradient, // mask-image: <gradient> — máscara alpha (não herda). active=false = sem máscara
     blend_mode: Blend_Mode, // mix-blend-mode (Normal = sem blend)
     filters: [MAX_FILTERS]Filter_Op, n_filters: int, // filter (aplicados em ordem)
@@ -1976,6 +1981,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.opacity   = 1.0
     comp.isolate   = false // isolation não herda
     comp.clip_path = {}    // clip-path não herda
+    comp.mask_image = {}
     comp.mask_grad = {}    // mask-image não herda
     comp.table_fixed = false // table-layout não herda
     comp.blend_mode = .Normal
@@ -2947,6 +2953,17 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             if len(prop) > 1 && prop[0] == '-' && !strings.has_prefix(prop, "--") do append(&prefixed, prop)
         }
         for prop in prefixed {
+            // Positioned image masks share semantics with their WebKit aliases.
+            // Canonicalize before shorthand/longhand competition, retaining the
+            // original priority rather than preferring standard spelling later.
+            if prop == "-webkit-mask" || prop == "-webkit-mask-image" || prop == "-webkit-mask-size" ||
+               prop == "-webkit-mask-position" || prop == "-webkit-mask-repeat" ||
+               prop == "-webkit-mask-origin" || prop == "-webkit-mask-clip" {
+                w := wins[prop]
+                alias(&wins, prop[len("-webkit-"):], w.spec, w.order, w.val)
+                delete_key(&wins, prop)
+                continue
+            }
             if css_prop_is_known(prop) do continue // já tem semântica própria
             base := ""
             for pfx in ([?]string{"-webkit-", "-moz-", "-ms-", "-o-"}) {
@@ -3349,6 +3366,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             {"padding", {"padding-top", "padding-right", "padding-bottom", "padding-left"}},
             {"inset",   {"top", "right", "bottom", "left"}},
             {"gap",      {"row-gap", "column-gap"}},
+            {"mask", {"mask-image", "mask-size", "mask-position", "mask-repeat", "mask-mode", "mask-origin", "mask-clip"}},
             {"overflow", {"overflow-x", "overflow-y"}},
             {"outline",  {"outline-width", "outline-style", "outline-color"}},
             {"text-decoration", {"text-decoration-line", "text-decoration-style",
@@ -4104,22 +4122,7 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     } else if v, ok := decls["-webkit-clip-path"]; ok {
         parse_clip_path(comp, resolve_var(v, vars), comp.font_size, vw, vh)
     }
-    // mask-image: <gradient> — máscara alpha reusando a máquina de layer do
-    // clip-path (multiplica o alpha em vez de zerar). mask-mode default
-    // (match-source) p/ um <image>/gradiente = ALPHA do gradiente, então
-    // linear-gradient(black,transparent) faz fade-out. url()/imagem raster → sem
-    // máscara (parse_gradient falha → active=false). `mask` shorthand: tentamos
-    // parsear o valor inteiro como gradiente (o restante — size/repeat/position —
-    // é ignorado; cobrimos sempre o border-box). `none` limpa.
-    if v, ok := decls["mask-image"]; ok {
-        parse_mask_image(comp, resolve_var(v, vars))
-    } else if v, ok := decls["-webkit-mask-image"]; ok {
-        parse_mask_image(comp, resolve_var(v, vars))
-    } else if v, ok := decls["mask"]; ok {
-        parse_mask_image(comp, resolve_var(v, vars))
-    } else if v, ok := decls["-webkit-mask"]; ok {
-        parse_mask_image(comp, resolve_var(v, vars))
-    }
+    mask_apply_properties(comp, decls, vars, comp.font_size, vw, vh)
     individual:=XList{}
     defer delete(individual.ops)
     // Individual properties precede the transform list in T * R * S order.
@@ -8823,4 +8826,151 @@ query_selector_matches :: proc(sel: csspkg.Selector, n, scope: ^dompkg.Node) -> 
         if p.pseudo == .Before || p.pseudo == .After || p.pseudo == .FirstLetter || p.pseudo == .Placeholder do return false
     }
     return selector_matches_node(sel, n, scope)
+}
+
+mask_parse_size :: proc(m: ^Mask_Image, value: string, fs, vw, vh: f32) {
+    m.size = .Auto; m.dimension_set = {}; m.dimension_pct = {}; m.dimensions = {}
+    for tok, i in split_top_level(value) {
+        if i >= 2 do break
+        switch tok {
+        case "cover": m.size = .Cover
+        case "contain": m.size = .Contain
+        case "auto":
+        case:
+            if v, pct, ok := parse_len(tok, fs, vw, vh); ok && v >= 0 {
+                m.dimensions[i] = v; m.dimension_set[i] = true; m.dimension_pct[i] = pct
+            }
+        }
+    }
+}
+
+mask_extract_url :: proc(value: string) -> string {
+    s := strings.trim_space(value)
+    lo := strings.to_lower(s, context.temp_allocator)
+    if !strings.has_prefix(lo, "url(") do return ""
+    end := csspkg.token_group_end(s, 3)
+    if end < 0 do return ""
+    inner := strings.trim_space(s[4:end])
+    if len(inner) >= 2 && (inner[0] == '"' || inner[0] == '\'') && inner[len(inner)-1] == inner[0] do inner = inner[1:len(inner)-1]
+    return inner
+}
+
+// Slash is a structural token even in center/contain. Quoted SVG data and
+// division within calc() remain untouched by the shared CSS tokenizer.
+mask_shorthand_fields :: proc(value: string) -> []string {
+    lexer := csspkg.Tokenizer{source=value}
+    parts := make([dynamic]string, context.temp_allocator)
+    start := 0
+    for {
+        tok := csspkg.next_token(&lexer)
+        if tok.kind == .EOF do break
+        if tok.kind != .Delim do continue
+        if tok.delim == '(' {
+            end := csspkg.token_group_end(value, tok.start)
+            if end < 0 do break
+            lexer.pos = end+1
+        } else if tok.delim == '/' {
+            append(&parts, value[start:tok.start], " / ")
+            start = tok.end
+        }
+    }
+    if len(parts) == 0 do return split_top_level(value)
+    append(&parts, value[start:])
+    return split_top_level(strings.concatenate(parts[:], context.temp_allocator))
+}
+
+mask_parse_position :: proc(m: ^Mask_Image, value: string, fs, vw, vh: f32) {
+    toks := split_top_level(value)
+    m.position = {0.5, 0.5}; m.position_px = {}
+    for tok, i in toks {
+        if i >= 2 do break
+        axis := i
+        if tok == "top" || tok == "bottom" do axis = 1
+        if tok == "left" || tok == "right" do axis = 0
+        switch tok {
+        case "left", "top": m.position[axis] = 0
+        case "right", "bottom": m.position[axis] = 1
+        case "center": m.position[axis] = 0.5
+        case:
+            if v, pct, ok := parse_len(tok, fs, vw, vh); ok {
+                m.position[axis] = pct ? v : 0
+                m.position_px[axis] = pct ? 0 : v
+            }
+        }
+    }
+}
+
+mask_parse_repeat :: proc(m: ^Mask_Image, value: string) {
+    switch value {
+    case "repeat-x": m.no_repeat = {false, true}
+    case "repeat-y": m.no_repeat = {true, false}
+    case:
+        toks := split_top_level(value)
+        if len(toks) > 0 do m.no_repeat = {toks[0] == "no-repeat", toks[0] == "no-repeat"}
+        if len(toks) > 1 do m.no_repeat[1] = toks[1] == "no-repeat"
+    }
+}
+
+mask_parse_box :: proc(s: string) -> Bg_Clip {
+    switch s {
+    case "padding-box": return .Padding
+    case "content-box": return .Content
+    }
+    return .Border
+}
+
+mask_apply_properties :: proc(comp: ^Computed, decls: map[string]string, vars: map[string]string, fs, vw, vh: f32) {
+    // Shorthand first; cascade collection removes losing longhands.
+    short, has_short := decls["mask"]
+    if !has_short do short, has_short = decls["-webkit-mask"]
+    if has_short {
+        comp.mask_image = {}
+        parse_mask_image(comp, resolve_var(short, vars))
+        m := &comp.mask_image
+        pos, sizes := make([dynamic]string, context.temp_allocator), make([dynamic]string, context.temp_allocator)
+        after_slash, boxes := false, 0
+        for tok in mask_shorthand_fields(resolve_var(short, vars)) {
+            if tok == "/" { after_slash = true; continue }
+            if strings.has_prefix(tok, "url(") || strings.contains(tok, "gradient(") || tok == "none" do continue
+            switch tok {
+            case "repeat", "no-repeat", "repeat-x", "repeat-y": mask_parse_repeat(m, tok)
+            case "alpha", "match-source": m.luminance = false
+            case "luminance": m.luminance = true
+            case "border-box", "padding-box", "content-box":
+                if boxes == 0 { m.origin = mask_parse_box(tok); m.clip = m.origin
+                } else { m.clip = mask_parse_box(tok) }
+                boxes += 1
+            case "no-clip": m.no_clip = true
+            case:
+                if after_slash { append(&sizes, tok) } else { append(&pos, tok) }
+            }
+        }
+        if len(pos) > 0 do mask_parse_position(m, strings.join(pos[:], " ", context.temp_allocator), fs, vw, vh)
+        if len(sizes) > 0 do mask_parse_size(m, strings.join(sizes[:], " ", context.temp_allocator), fs, vw, vh)
+    }
+    image, has_image := decls["mask-image"]
+    if !has_image do image, has_image = decls["-webkit-mask-image"]
+    if has_image do parse_mask_image(comp, resolve_var(image, vars))
+    for pair in ([?]struct { suffix, standard, prefixed: string }{
+        {"size", "mask-size", "-webkit-mask-size"},
+        {"position", "mask-position", "-webkit-mask-position"},
+        {"repeat", "mask-repeat", "-webkit-mask-repeat"},
+        {"mode", "mask-mode", "-webkit-mask-mode"},
+        {"origin", "mask-origin", "-webkit-mask-origin"},
+        {"clip", "mask-clip", "-webkit-mask-clip"},
+    }) {
+        val, ok := decls[pair.standard]
+        if !ok do val, ok = decls[pair.prefixed]
+        if !ok do continue
+        v := strings.to_lower(strings.trim_space(resolve_var(val, vars)), context.temp_allocator)
+        m := &comp.mask_image
+        switch pair.suffix {
+        case "size": mask_parse_size(m, v, fs, vw, vh)
+        case "position": mask_parse_position(m, v, fs, vw, vh)
+        case "repeat": mask_parse_repeat(m, v)
+        case "mode": m.luminance = v == "luminance"
+        case "origin": m.origin = mask_parse_box(v)
+        case "clip": m.clip = mask_parse_box(v); m.no_clip = v == "no-clip"
+        }
+    }
 }

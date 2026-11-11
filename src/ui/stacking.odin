@@ -29,7 +29,7 @@ creates_stacking_context :: proc(b: ^Box) -> bool {
            b.opacity < 1 || b.n_filters > 0 || b.n_backdrop > 0 ||
            b.blend_mode != .Normal || b.isolate || b.stacking_hint ||
            b.has_transform || b.has_xform_matrix || b.perspective>0 || b.preserve_3d ||
-           b.clip_path.kind != .None || b.mask_grad.active ||
+           b.clip_path.kind != .None || b.mask_grad.active || b.mask_image.url != "" ||
            stacking_animation_context(b)
 }
 

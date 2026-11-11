@@ -383,7 +383,7 @@ x_parse_origin :: proc(value:string,fs,vw,vh:f32) -> (x,y,px,py,pz:f32) {
 
 x_preserves :: proc(b:^Box) -> bool {
     return b.preserve_3d && b.opacity>=1 && b.n_filters==0 && !b.overflow_hidden &&
-        b.blend_mode==.Normal && !b.isolate && b.clip_path.kind==.None && !b.mask_grad.active
+        b.blend_mode==.Normal && !b.isolate && b.clip_path.kind==.None && !b.mask_grad.active && b.mask_image.url == ""
 }
 
 // Geometry uses the same screen-space pivot and baked translation as paint.
