@@ -335,6 +335,9 @@ State :: struct {
     scroll_target:  f32,  // Y-página alvo (box.y é absoluto)
     scroll_smooth:  bool, // anima em vez de pular (scroll-behavior:smooth da raiz)
     autoscroll:     Autoscroll, // rolagem automática do botão do meio (autoscroll.odin)
+    wheel:          [2]Wheel_Axis, // roda suave da página, {X, Y} (wheel_smooth.odin)
+    wheel_root:     ^dompkg.Node,
+    wheel_tab:      int,
     page_max_x:     f32,  // limite da rolagem HORIZONTAL da página ativa (deste frame)
 }
 
@@ -636,6 +639,7 @@ mem_tracking_report :: proc() {
 }
 
 run :: proc() {
+    defer painter_cache_free()
     // Instalado ANTES de qualquer alocação Odin (p/ não gerar falso "free
     // inválido"). Os workers adotam via dbg_adopt_allocator.
     when ODIN_DEBUG {
@@ -696,6 +700,9 @@ run :: proc() {
     defer delete(s.tabs)
     bookmarks_load() // carrega favoritos salvos (bookmarks.txt) p/ a página de nova aba
     append(&s.tabs, make_tab("Nova aba"))
+    when WHEELPROBE {
+        if u := wheel_probe_startup_url(); u != "" do start_navigation(&s, u) // ela clona
+    }
 
     bg := vec(WIN_BG)
     e: sdl2.Event
@@ -1205,6 +1212,11 @@ draw_content :: proc(s: ^State) {
             // rolagem lateral em TODA página alta. `html/body{overflow-x:hidden}`
             // (propagado ao viewport) zera o eixo.
             page_w := box_scroll_extent_x(tab.layout)
+            if s.wheel_root != tab.dom || s.wheel_tab != s.active {
+                s.wheel = {}
+                s.wheel_root = tab.dom
+                s.wheel_tab = s.active
+            }
             s.page_max_x = page_x_blocked(tab.layout) ? 0 : max(0, page_w - avail.x)
 
             // rolagem automática do meio: o deslocamento do frame vai p/ o paint
@@ -1229,15 +1241,38 @@ draw_content :: proc(s: ^State) {
             im.Dummy({1, 1})
 
             // scroll da página: aplica a roda RESTANTE (não consumida por um
-            // elemento rolável durante o paint). ImGui clampa à extensão do conteúdo.
+            // elemento rolável durante o paint), ANIMADA (wheel_smooth.odin). O
+            // passo roda TODO frame — a animação continua depois que a roda parou.
+            // Eixo X: roda horizontal (touchpad/roda inclinável) e Shift+roda, que
+            // já chega aqui convertida (wheel_shift_to_h). Roda >0 = p/ cima/esquerda.
             io := im.GetIO()
-            if io.MouseWheel != 0 && im.IsWindowHovered({}) {
-                im.SetScrollY(im.GetScrollY() - io.MouseWheel * 60)
-            }
-            // eixo X: roda horizontal (touchpad/roda inclinável) e Shift+roda, que
-            // já chega aqui convertida (wheel_shift_to_h). >0 = p/ a esquerda.
-            if io.MouseWheelH != 0 && im.IsWindowHovered({}) && s.page_max_x > 0 {
-                im.SetScrollX(clamp(im.GetScrollX() - io.MouseWheelH * 60, 0, s.page_max_x))
+            hov := im.IsWindowHovered({})
+            wy := hov ? -io.MouseWheel * WHEEL_STEP_PX : 0
+            wx := hov && s.page_max_x > 0 ? -io.MouseWheelH * WHEEL_STEP_PX : 0
+            if s.autoscroll.on {
+                // o autoscroll escreve o scroll neste MESMO frame: dois escritores
+                // brigariam. A roda segue com o salto seco de antes.
+                wheel_axis_stop(&s.wheel[0]); wheel_axis_stop(&s.wheel[1])
+                if wy != 0 do im.SetScrollY(im.GetScrollY() + wy)
+                if wx != 0 do im.SetScrollX(clamp(im.GetScrollX() + wx, 0, s.page_max_x))
+            } else {
+                // âncora pendente sem roda neste frame: a âncora é a dona
+                if s.scroll_pending && io.MouseWheel == 0 do wheel_axis_stop(&s.wheel[1])
+                when WHEELPROBE { wp_on := s.wheel[1].on; wp_cur := im.GetScrollY() }
+                if v, ok := wheel_axis_step(&s.wheel[1], im.GetScrollY(), im.GetScrollMaxY(), wy, io.DeltaTime); ok {
+                    im.SetScrollY(v)
+                    when WHEELPROBE {
+                        fmt.eprintfln("[wheel] t=%d ms dt=%.1f ms roda=%.0f lido=%.0f escrito=%.0f alvo=%.0f%s",
+                            sdl2.GetTicks(), io.DeltaTime * 1000, wy, wp_cur, v, s.wheel[1].target, s.wheel[1].on ? "" : " FIM")
+                    }
+                } else {
+                    when WHEELPROBE {
+                        if wp_on do fmt.eprintfln("[wheel] t=%d ms LARGOU (lido=%.0f ≠ último escrito)", sdl2.GetTicks(), wp_cur)
+                    }
+                }
+                if v, ok := wheel_axis_step(&s.wheel[0], im.GetScrollX(), s.page_max_x, wx, io.DeltaTime); ok {
+                    im.SetScrollX(v)
+                }
             }
             // o conteúdo encolheu (ou o eixo foi bloqueado): devolve o X ao limite
             if im.GetScrollX() > s.page_max_x do im.SetScrollX(s.page_max_x)

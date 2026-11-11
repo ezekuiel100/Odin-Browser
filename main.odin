@@ -200,6 +200,7 @@ main :: proc() {
         ok := ui.headless_diagnose(args[2], json_path)
         when ui.UIPROF do ui.uiprof_report()
         when ui.CULLPROBE do ui.cullprobe_report()
+        when ui.PAINTPROF do ui.paintprof_report()
         when ui.GCSPROBE do ui.gcs_probe_report()
         when js.JSPROF do js.prof_report()
         os.exit(0 if ok else 1)

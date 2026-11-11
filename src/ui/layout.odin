@@ -11,6 +11,7 @@ package ui
 // Também há floats, flex, grid (colunas), tabelas e position (exceto sticky).
 
 import "core:strings"
+import "base:runtime"
 import "core:strconv"
 import "core:fmt"
 import "core:math"
@@ -319,6 +320,7 @@ Box :: struct {
     scroll_max:      f32,  // scroll máximo = altura natural - altura visível
     scroll_x:        f32,  // idem no eixo X (só com ovf_scroll_x)
     scroll_max_x:    f32,  // quanto o conteúdo em fluxo passa da borda direita
+    wheel:          [2]Wheel_Axis, // animação local; preservada no restyle
     float:  Float_Side,    // float:left/right (fora do fluxo vertical normal)
     clear:  Clear_Side,    // clear:left/right/both
     has_maxw: bool, maxw: f32, maxw_pct: bool,
@@ -5195,6 +5197,49 @@ when CULLPROBE {
     }
 }
 
+// ── Sonda do RECORD por trecho (`-define:PAINTPROF=true`) ────────────────────
+// Tempo PRÓPRIO de cada paint_box (descontados os paint_box filhos), fatiado por
+// trecho, + o paint_inline à parte. Existe para achar o termo que cresce com o
+// nº de IRMÃOS (medido 11/11: record 0,4 → 0,9 → 10 → 774 ms/frame para 500 →
+// 4.000 divs irmãos; altura da página não influi).
+PAINTPROF :: #config(PAINTPROF, false)
+
+when PAINTPROF {
+    PP_SEGS :: [?]string{"entrada+geom", "hover", "roda+trans+anim", "xform+layer", "fundo+borda", "resto"}
+    Paint_Prof :: struct {
+        frames:      int,
+        calls:       int,
+        self_ms:     f64,
+        seg:         [len(PP_SEGS)]f64,
+        inline_ms:   f64, // paint_inline, próprio (sem os paint_box de InlineBox)
+        inline_n:    int,
+        append_fail: int,    // emit cujo append NÃO entrou no buffer
+        append_fail_info: [2]int, // {cap no 1º fracasso, Allocator_Error}
+    }
+    g_pp: Paint_Prof
+    g_pp_child: f64 // ms gastos em paint_box FILHOS do paint_box corrente
+
+    paintprof_report :: proc() {
+        p := g_pp
+        if p.calls == 0 { fmt.eprintfln("[paintprof] nada"); return }
+        f := f64(max(p.frames, 1))
+        fmt.eprintfln("\n[paintprof] %d frames | %d paint_box (%.0f/frame) | próprio %.2f ms/frame | %.2f µs/caixa",
+            p.frames, p.calls, f64(p.calls) / f, p.self_ms / f, 1000 * p.self_ms / f64(p.calls))
+        segs := PP_SEGS
+        soma: f64 = 0
+        for k in 0 ..< len(segs) - 1 do soma += p.seg[k]
+        for k in 0 ..< len(segs) {
+            ms := k == len(segs) - 1 ? p.self_ms - soma - p.inline_ms : p.seg[k]
+            fmt.eprintfln("   %-16s %9.2f ms/frame  %5.1f%%", segs[k], ms / f, 100 * ms / max(p.self_ms, 0.001))
+        }
+        fmt.eprintfln("   %-16s %9.2f ms/frame  %5.1f%%  (%d chamadas)", "paint_inline", p.inline_ms / f, 100 * p.inline_ms / max(p.self_ms, 0.001), p.inline_n)
+        // err: 0 None, 1 Out_Of_Memory, 2 Invalid_Pointer, 3 Invalid_Argument, 4 Mode_Not_Implemented
+        fmt.eprintfln("   emit PERDIDO: %d (%.0f/frame) | 1º com cap=%d err=%d | size_of=%d align_of=%d",
+            p.append_fail, f64(p.append_fail) / f, p.append_fail_info[0], p.append_fail_info[1],
+            size_of(Paint_Cmd), align_of(Paint_Cmd))
+    }
+}
+
 // ── Table layout ─────────────────────────────────────────────────────────────
 // ── Multi-coluna ─────────────────────────────────────────────────────────────
 // Nº de colunas e largura de cada uma, a partir da largura disponível, do
@@ -6773,13 +6818,45 @@ Painter :: struct {
     cmds: [dynamic]Paint_Cmd,
 }
 
+// Fora da arena temporária: Paint_Cmd exige alinhamento de 32 bytes mesmo
+// quando o buffer ultrapassa o bloco de 4 MB. Reutiliza a capacidade por frame.
+@(private = "file", thread_local)
+g_paint_cmds: [dynamic]Paint_Cmd
+
+painter_begin :: proc() -> Painter {
+    cmds := g_paint_cmds
+    g_paint_cmds = {} // o Painter fica com a propriedade até painter_end
+    if cmds == nil do cmds = make([dynamic]Paint_Cmd, 0, 256, runtime.heap_allocator())
+    clear(&cmds)
+    return Painter{cmds = cmds}
+}
+
+painter_end :: proc(pt: ^Painter) {
+    clear(&pt.cmds) // referências ao DOM e à arena não sobrevivem ao frame
+    delete(g_paint_cmds)
+    g_paint_cmds = pt.cmds
+    pt.cmds = {}
+}
+
+painter_cache_free :: proc() {
+    delete(g_paint_cmds)
+    g_paint_cmds = {}
+}
+
 emit :: #force_inline proc(pt: ^Painter, cmd: Paint_Cmd) {
     // S1: conta quantas vezes o buffer REALOCA. A hipótese sob teste é que o
     // `make([dynamic]^Box, temp)` do stack_sort de cada caixa de bloco fica
     // INTERCALADO com o crescimento de `cmds` na mesma arena, o que derrota o
     // resize in-place (que exige ser a última alocação do bloco) e faz cada
     // duplicação copiar o buffer inteiro — candidata à superlinearidade medida.
-    when UIPROF {
+    when PAINTPROF {
+        antes_n := len(pt.cmds)
+        _, err := append(&pt.cmds, cmd)
+        if err != nil || len(pt.cmds) == antes_n {
+            if g_pp.append_fail == 0 do g_pp.append_fail_info = {cap(pt.cmds), int(err)}
+            g_pp.append_fail += 1
+        }
+    } else when UIPROF {
         antes := cap(pt.cmds)
         append(&pt.cmds, cmd)
         if cap(pt.cmds) != antes do g_uiprof.n_reallocs += 1
@@ -8136,8 +8213,10 @@ paint_layout :: proc(s: ^State, root: ^Box) {
         clear(&g_pred_bbox); g_pred_i = 0
         compute_subtree_bbox(root)
     }
-    pt := Painter{ cmds = make([dynamic]Paint_Cmd, 0, 256, context.temp_allocator) }
+    pt := painter_begin()
+    defer painter_end(&pt)
     when CULLPROBE { g_cullprof.frames += 1 }
+    when PAINTPROF { g_pp.frames += 1 }
     when UIPROF { t_rec := time.tick_now() }
     paint_box(&pt, s, root, 0, 0)                 // grava
     when UIPROF {
@@ -9200,9 +9279,23 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         paint_inline_absolute(pt, s, b, effect, ox, oy, opa, in_xform, scope, stacked, abs_origin)
         return
     }
+    when PAINTPROF {
+        pp_saved := g_pp_child; g_pp_child = 0
+        pp_t0 := time.tick_now(); pp_ts := pp_t0
+        g_pp.calls += 1
+        defer {
+            incl := time.duration_milliseconds(time.tick_since(pp_t0))
+            g_pp.self_ms += incl - g_pp_child
+            g_pp_child = pp_saved + incl
+        }
+        pp_mark :: proc(k: int, ts: ^time.Tick) {
+            g_pp.seg[k] += time.duration_milliseconds(time.tick_since(ts^)); ts^ = time.tick_now()
+        }
+    }
     if scope == nil && !stacked {
         x_geometry_tree(b, ox, oy, im.GetScrollX(), im.GetScrollY())
     }
+    when PAINTPROF { pp_mark(0, &pp_ts) }
     keep_depth:=g_x_keep_depth
     saved_keep:=g_x_keep_depth
     g_x_keep_depth=x_preserves(b) || b.perspective>0
@@ -9287,6 +9380,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     over := x_mouse_over(b, screen, ox2, oy2) && !b.pe_none
     b.x_hovered = over
     if over && b.cursor != .Auto do im.SetMouseCursor(cursor_to_imgui(b.cursor))
+    when PAINTPROF { pp_mark(1, &pp_ts) }
 
     // scroll de elemento: a roda sobre um container rolável ajusta seu scroll e é
     // CONSUMIDA (zera io.MouseWheel), evitando que a página role junto. Paint é
@@ -9302,27 +9396,25 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         }
         if g_autoscroll_target != nil && rawptr(b.node) == g_autoscroll_target {
             g_autoscroll_hit = true
+            wheel_axis_stop(&b.wheel[0]); wheel_axis_stop(&b.wheel[1])
             b.scroll_x = clamp(b.scroll_x + g_autoscroll_d.x, 0, b.scroll_max_x)
             b.scroll_y = clamp(b.scroll_y + g_autoscroll_d.y, 0, b.scroll_max)
         }
     }
-    if b.overflow_scroll && over {
+    if b.overflow_scroll {
         io := im.GetIO()
         // Consome a roda se o container REALMENTE rolou; no limite (não moveu),
         // overscroll-behavior:auto (default) DEIXA encadear p/ a página, enquanto
         // contain/none consome mesmo assim (não encadeia). Cada eixo por si:
         // a roda horizontal (MouseWheelH; Shift+roda já chega convertida — ver
         // wheel_shift_to_h) não é consumida por quem só rola no Y.
-        if io.MouseWheel != 0 && b.scroll_max > 0 {
-            old := b.scroll_y
-            b.scroll_y = clamp(b.scroll_y - io.MouseWheel * 40, 0, b.scroll_max)
-            if b.scroll_y != old || b.overscroll_contain do io.MouseWheel = 0
-        }
-        if io.MouseWheelH != 0 && b.scroll_max_x > 0 {
-            old := b.scroll_x
-            b.scroll_x = clamp(b.scroll_x - io.MouseWheelH * 40, 0, b.scroll_max_x)
-            if b.scroll_x != old || b.overscroll_contain do io.MouseWheelH = 0
-        }
+        dy := over && b.scroll_max > 0 ? -io.MouseWheel * 40 : 0
+        dx := over && b.scroll_max_x > 0 ? -io.MouseWheelH * 40 : 0
+        vy, cy := wheel_container_step(&b.wheel[1], b.scroll_y, b.scroll_max, dy, io.DeltaTime, b.overscroll_contain)
+        vx, cx := wheel_container_step(&b.wheel[0], b.scroll_x, b.scroll_max_x, dx, io.DeltaTime, b.overscroll_contain)
+        b.scroll_y = vy; b.scroll_x = vx
+        if cy do io.MouseWheel = 0
+        if cx do io.MouseWheelH = 0
     }
 
     // ── Transições genéricas ──────────────────────────────────────────────────
@@ -9406,6 +9498,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         if ev.has_scale { eff_sx = ev.sx; eff_sy = ev.sy }
     }
 
+    when PAINTPROF { pp_mark(2, &pp_ts) }
     target_x:=b.xform
     if hovering && b.hover.has_transform do target_x=b.hover.xform
     full:=x_resolve(target_x,b.w,b.h)
@@ -9488,6 +9581,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     if do_layer {
         eff = opa // conteúdo desenhado opaco na layer; o composite aplica own_a/blend
     }
+    when PAINTPROF { pp_mark(3, &pp_ts) }
 
     // backdrop-filter: emitido ANTES de tudo que o elemento pinta (fundo/borda/
     // conteúdo/layer) — no replay, o `dl` já contém tudo ATRÁS do elemento (ordem
@@ -9660,6 +9754,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         }
     }
 
+    when PAINTPROF { pp_mark(4, &pp_ts) }
     // campo de texto editável: coloca o InputText do ImGui sobre a caixa e sai
     // (fundo/borda já pintados; sem conteúdo inline ou filhos).
     if b.ctrl == .Text || b.ctrl == .Password || b.ctrl == .Textarea || b.ctrl == .Select {
@@ -9746,7 +9841,12 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         // mesma degradação do `:hover{color}`, que também não desce por caixas.
         hdeco := b.hover.deco
         if b.href != "" && !b.hover.deco_set do hdeco.underline = true // default de link do UA
+        when PAINTPROF { pp_ti := time.tick_now(); pp_kids0 := g_pp_child }
         paint_inline(pt, s, b, child_ox, child_oy, eff, oc, ot, in_xform || b.has_transform || b.has_xform_matrix, hdeco, b.hover.has_deco && hovering, active_scope) // per-item visibility lets descendants become visible
+        when PAINTPROF {
+            g_pp.inline_ms += time.duration_milliseconds(time.tick_since(pp_ti)) - (g_pp_child - pp_kids0)
+            g_pp.inline_n += 1
+        }
         if b.overflow_hidden do end_overflow_clip(pt, round_clip)
     } else {
         switch b.kind {
