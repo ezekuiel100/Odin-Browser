@@ -292,6 +292,7 @@ images_poll :: proc(renderer: ^sdl2.Renderer) {
     for _, img in g_images {
         // entrega de downloads concluídos
         if img.state == .Loading && !img.pending && bool(intrinsics.atomic_load(&img.done)) {
+            g_geometry_resources += 1 // intrinsic dimensions/state become visible
             if img.ok && img.is_svg && img.svg_src != "" {
                 // parse do SVG na thread principal (o parser aloca DOM). Achamos o
                 // <svg> e o dimensionamento intrínseco (viewBox → width/height → 24).
@@ -358,6 +359,7 @@ images_poll :: proc(renderer: ^sdl2.Renderer) {
         if strings.has_prefix(img.url, EMOJI_SCHEME) {
             img.pending = false
             emoji_img_upload(img, renderer)
+            g_geometry_resources += 1
             continue
         }
         if now_ns < img.next_try_ns || g_img_active >= IMG_MAX_ACTIVE do continue

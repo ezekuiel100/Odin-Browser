@@ -54,11 +54,6 @@ style_cross_dependencies :: proc(rules: []css.Rule) -> bool {
     return false
 }
 
-reuse_style_subtree :: proc(n: ^dom.Node, old: map[^dom.Node]Computed, fresh: ^map[^dom.Node]Computed) {
-    fresh[n] = old[n]
-    for c in n.children do reuse_style_subtree(c, old, fresh)
-}
-
 // Deliberately small paint whitelist: every other field, including new fields
 // added to Computed, conservatively requires layout. Compare fields rather
 // than raw bytes (padding and owned pointer addresses are not CSS values).

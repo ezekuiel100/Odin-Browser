@@ -252,6 +252,12 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
         js_style_source_set(tab.styles, tab.layout, vw, vh)
         return
     }
+    // Snapshot only overwritten entries; clean entries stay in the same map.
+    // This map owns the replaced resources until boxes have been refreshed.
+    if incremental {
+        previous = make(map[^dompkg.Node]Computed)
+        for n in dirty do previous[n] = tab.styles[n]
+    }
     old_layout := tab.layout
     // S3: os 534 ms de restyle medidos no github são compute_styles + build_layout
     // JUNTOS. A divisão decide se a família de achados de estilo (Computed de
@@ -259,7 +265,7 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     // esforço ou zero. Os dois ticks abaixo são a resposta.
     when UIPROF { t_cs := time.tick_now() }
     if incremental {
-        tab.styles, tab.page_bg = compute_styles(tab.dom, &tab.rules, vw, vh, tab.kf[:], previous, dirty)
+        tab.styles, tab.page_bg = compute_styles(tab.dom, &tab.rules, vw, vh, tab.kf[:], tab.styles, dirty)
         tab.restyle_nodes = len(dirty)
     } else {
         tab.styles, tab.page_bg = compute_styles(tab.dom, &tab.rules, vw, vh, tab.kf[:])
@@ -277,9 +283,6 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
         tab.layout = build_layout(tab.dom, tab.styles, tab.url)
         animation_restore_tree(tab.layout, old_layout)
         scroll_restore_tree(tab.layout, old_layout)
-    }
-    if incremental {
-        for n in tab.styles do if !dirty[n] do delete_key(&previous, n)
     }
     if previous != nil do free_styles(previous)
     if !repaint do free_layout(old_layout)
@@ -1153,15 +1156,15 @@ draw_content :: proc(s: ^State) {
         im.TextUnformatted(fmt.ctprintf("Carregando %s ...", tab.url))
         im.PopStyleColor(1)
     case:
-        // Zoom mudou (Ctrl +/-) ou a aba foi computada com outro zoom: re-estiliza
-        // e reconstrói o layout desta aba com o g_zoom atual, e reflete na cópia.
-        if s.tabs[s.active].zoom_applied != g_zoom {
+        // Viewport, zoom and theme changes invalidate style and geometry.
+        if s.tabs[s.active].zoom_applied != g_zoom || tab.style_vw != avail.x ||
+            tab.style_vh != avail.y || tab.style_dark != g_prefers_dark {
             restyle_tab(&s.tabs[s.active], avail.x, avail.y)
             tab = s.tabs[s.active]
         }
         // Layout engine: calcula posições/tamanhos e pinta.
         if tab.layout != nil {
-            layout_box(tab.layout, 0, 0, avail.x)
+            ensure_tab_geometry(tab.layout, avail.x, avail.y)
             // Fonte do getComputedStyle desta aba. Setado por FRAME (e não só no
             // restyle_tab) porque a troca de aba não re-estiliza: o mapa vem pronto
             // do worker por poll_jobs, e sem isto o hook responderia com o estilo da
@@ -1179,15 +1182,8 @@ draw_content :: proc(s: ^State) {
                 g_container_dirty = false
                 restyle_tab(&s.tabs[s.active], avail.x, avail.y)
                 tab = s.tabs[s.active]
-                if tab.layout != nil do layout_box(tab.layout, 0, 0, avail.x)
+                if tab.layout != nil do ensure_tab_geometry(tab.layout, avail.x, avail.y)
             }
-            // cb = ICB, que tem as DIMENSÕES DO VIEWPORT (CSS 2.1 §10.1) — não a
-            // altura do documento: com `html{position:absolute}` o root sai do fluxo,
-            // sua altura vira 0 e um ICB=altura-do-doc resolveria o próprio html como
-            // 0 (circular) → a página inteira colapsa (bandcamp/coingecko).
-            // page = viewport (p/ position:fixed — bottom:0 na base da janela).
-            view_rect := Rect{0, 0, avail.x, avail.y}
-            layout_absolutes(tab.layout, view_rect, view_rect)
             s.click_target = nil       // paint_box grava aqui se houver clique
             s.aux_node = nil; s.aux_href = "" // idem p/ o botão do meio
 

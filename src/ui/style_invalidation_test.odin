@@ -153,3 +153,122 @@ incremental_style_benchmark :: proc(t: ^testing.T) {
         len(tab.styles), elapsed[0], nodes[0], elapsed[1], nodes[1], elapsed[0]/elapsed[1])
     testing.expect(t, nodes[1] < nodes[0])
 }
+
+// Compare independent incremental/full trees after each mutation. The DOM is
+// shared so node keys match; styles and owned resources are independent.
+@(test)
+incremental_style_matches_full_geometry :: proc(t: ^testing.T) {
+    doc := html.parse("<html><body><main><div data-mode='off'><span>word word word</span></div><section>stable text</section></main><aside>absolute</aside></body></html>")
+    defer dom.free_tree(doc)
+    sheet := "main{display:flex;width:280px} div{width:90px;--tone:red} span{color:var(--tone)} section{width:100px;transform:translateX(2px)} section::before{content:'owned'} aside{position:absolute;left:12px;top:30px} .paint{background-color:red;opacity:.5} .wide{width:150px;--tone:blue} [data-mode=on]{padding:8px}"
+    a := Tab{dom=doc, css_text=sheet}
+    b := Tab{dom=doc, css_text=sheet}
+    defer {
+        free_layout(a.layout); free_styles(a.styles); tab_drop_rules(&a)
+        free_layout(b.layout); free_styles(b.styles); tab_drop_rules(&b)
+        js_style_source_clear()
+    }
+    target := dom.find_first(doc, "div")
+    classes := [?]string{"", "paint", "wide", "paint", "", "wide", ""}
+    for cls, i in classes {
+        dom.set_attr(target, "class", cls)
+        dom.set_attr(target, "data-mode", i % 2 == 0 ? "off" : "on")
+        w := i == 5 ? f32(500) : f32(400)
+        restyle_tab(&a, w, 300)
+        b.style_vw = -1 // force independent full reference
+        restyle_tab(&b, w, 300)
+        ensure_tab_geometry(a.layout, w, 300)
+        ensure_tab_geometry(b.layout, w, 300)
+        testing.expect_value(t, a.page_bg, b.page_bg)
+        ai := make(map[^dom.Node]^Box, context.temp_allocator)
+        bi := make(map[^dom.Node]^Box, context.temp_allocator)
+        test_style_box_index(a.layout, &ai)
+        test_style_box_index(b.layout, &bi)
+        testing.expect_value(t, len(ai), len(bi))
+        for n, ac in a.styles {
+            bc := b.styles[n]
+            testing.expect_value(t, ac.color, bc.color)
+            testing.expect_value(t, ac.bg, bc.bg)
+            testing.expect_value(t, ac.opacity, bc.opacity)
+            testing.expect_value(t, ac.width, bc.width)
+            testing.expect_value(t, ac.padding, bc.padding)
+            if ac.before != nil && bc.before != nil do testing.expect_value(t, ac.before.content, bc.before.content)
+        }
+        for n, ab in ai {
+            bb, ok := bi[n]
+            testing.expect(t, ok)
+            if !ok do continue
+            testing.expect_value(t, ab.x, bb.x)
+            testing.expect_value(t, ab.y, bb.y)
+            testing.expect_value(t, ab.w, bb.w)
+            testing.expect_value(t, ab.h, bb.h)
+            testing.expect_value(t, ab.bg, bb.bg)
+        }
+    }
+}
+
+@(test)
+incremental_geometry_cache_invalidation :: proc(t: ^testing.T) {
+    doc := html.parse("<html><body><div></div><section></section></body></html>")
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text="div{width:80px;height:20px} .paint{background-color:red} .wide{width:120px}"}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, ensure_tab_geometry(tab.layout, 400, 300))
+    testing.expect(t, !ensure_tab_geometry(tab.layout, 400, 300))
+    target := dom.find_first(doc, "div")
+    clean := dom.find_first(doc, "section")
+    // Identity of an actual map entry proves clean Computed values stay put.
+    entry := &tab.styles[clean]
+    dom.set_attr(target, "class", "paint")
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, &tab.styles[clean], entry)
+    testing.expect(t, !ensure_tab_geometry(tab.layout, 400, 300))
+    testing.expect(t, ensure_tab_geometry(tab.layout, 500, 300))
+    testing.expect(t, ensure_tab_geometry(tab.layout, 500, 350))
+    g_geometry_resources += 1 // image intrinsic size/state delivery
+    testing.expect(t, ensure_tab_geometry(tab.layout, 500, 350))
+    testing.expect(t, !ensure_tab_geometry(tab.layout, 500, 350))
+    dom.set_attr(target, "class", "wide")
+    restyle_tab(&tab, 500, 350)
+    testing.expect(t, ensure_tab_geometry(tab.layout, 500, 350))
+    testing.expect(t, !ensure_tab_geometry(tab.layout, 500, 350))
+    // Rebinding the JS source leaves the shared geometry stamp intact.
+    js_style_source_set(tab.styles, tab.layout, 500, 350)
+    testing.expect(t, !ensure_tab_geometry(tab.layout, 500, 350))
+}
+
+@(test)
+incremental_geometry_image_delivery :: proc(t: ^testing.T) {
+    saved_images, saved_active := g_images, g_img_active
+    g_images = make(map[string]^Img)
+    g_img_active = 1
+    defer { images_free_all(); g_images = saved_images; g_img_active = saved_active }
+    url := "http://geometry.test/image.svg"
+    img := image_get(url)
+    img.pending = false
+    img.done = true
+    img.ok = true
+    img.is_svg = true
+    img.svg_src = strings.clone("<svg width='80' height='40'></svg>")
+    doc := html.parse("<html><body><img src='http://geometry.test/image.svg'></body></html>")
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text="img{display:block}"}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    ensure_tab_geometry(tab.layout, 400, 300)
+    testing.expect(t, !ensure_tab_geometry(tab.layout, 400, 300))
+    before := g_geometry_resources
+    images_poll(nil) // completed SVG needs no renderer or network
+    testing.expect(t, g_geometry_resources > before)
+    testing.expect_value(t, img.state, Img_State.Ready)
+    testing.expect(t, ensure_tab_geometry(tab.layout, 400, 300))
+    index := make(map[^dom.Node]^Box, context.temp_allocator)
+    test_style_box_index(tab.layout, &index)
+    box := index[dom.find_first(doc, "img")]
+    testing.expect(t, box != nil)
+    if box != nil {
+        testing.expect_value(t, box.h, f32(40))
+    }
+    testing.expect(t, !ensure_tab_geometry(tab.layout, 400, 300))
+}

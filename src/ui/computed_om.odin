@@ -115,9 +115,7 @@ js_style_source_free :: proc() {
 box_ref_of :: proc(node: ^dompkg.Node) -> (Box_Ref, bool) {
     if g_js_layout == nil do return {}, false
     if !g_js_laid_out {
-        layout_box(g_js_layout, 0, 0, g_js_vw)
-        page := Rect{0, 0, g_js_vw, g_js_vh} // ICB = viewport (CSS 2.1 §10.1)
-        layout_absolutes(g_js_layout, page, page)
+        ensure_tab_geometry(g_js_layout, g_js_vw, g_js_vh)
         g_js_laid_out = true
     }
     if !g_js_boxes_ok {

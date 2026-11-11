@@ -1590,8 +1590,11 @@ shadow_scope_css :: proc(sb: ^strings.Builder, css: string, sid: uintptr) {
 }
 
 // Computa os estilos de toda a árvore. Devolve o mapa por nó e o fundo da página.
+// With previous/dirty, updates entries IN PLACE. The caller must retain and
+// free overwritten values after updating dependent boxes. Clean entries stay put.
 compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewport_w: f32 = 1280, viewport_h: f32 = 720, kf: []csspkg.Keyframe_Set = nil, previous: map[^dompkg.Node]Computed = nil, dirty: map[^dompkg.Node]bool = nil) -> (styles: map[^dompkg.Node]Computed, page_bg: u32) {
-    styles = make(map[^dompkg.Node]Computed)
+    styles = previous
+    if styles == nil do styles = make(map[^dompkg.Node]Computed)
     stamp_shadow_scopes(root) // marcador que dá escopo às regras de cada shadow root
     g_viewport_h = viewport_h // p/ @media (aspect-ratio) em collect_decls
     g_viewport_w = viewport_w // p/ o `media` dos <source> de <picture> (build_layout)
@@ -1803,7 +1806,6 @@ ua_button_look :: proc(comp: ^Computed, disabled: bool) {
 @(private="file")
 compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string, rules: ^[dynamic]csspkg.Rule, idx: ^Rule_Index, styles: ^map[^dompkg.Node]Computed, viewport_w: f32, viewport_h: f32 = 720, kf: []csspkg.Keyframe_Set = nil, noinh: []Noinherit_Prop = nil, previous: map[^dompkg.Node]Computed = nil, dirty: map[^dompkg.Node]bool = nil) {
     if previous != nil && !dirty[n] {
-        reuse_style_subtree(n, previous, styles)
         return
     }
     comp := inherit

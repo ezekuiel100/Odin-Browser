@@ -237,6 +237,11 @@ Form_Control :: enum u8 { None, Checkbox, Radio, Text, Password, Textarea, Selec
 EDIT_CAP :: 256
 
 Box :: struct {
+    // Root-only cache, shared by the frame loop and synchronous CSSOM reads.
+    geometry_valid: bool,
+    geometry_w, geometry_h: f32,
+    geometry_resources: u64,
+
     x_world: matrix[4,4]f64,
     x_hovered: bool,
     x_view_origin, x_paint_origin: im.Vec2,
