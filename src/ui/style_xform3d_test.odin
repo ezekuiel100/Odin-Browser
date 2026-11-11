@@ -1,20 +1,8 @@
 package ui
 
-// Transforms 3D ACHATADOS — `translate3d`, `translateZ`, `scale3d`, `scaleZ`,
-// `rotateX`, `rotateY`, `rotate3d`, `matrix3d` e `perspective()`.
-//
-// Por que existe: o `parse_transform` só conhecia as funções 2D, e cada função
-// 3D era descartada SOZINHA dentro da lista. `translate3d(-50%,-50%,0)` — a
-// grafia de centralização mais comum da web — perdia o deslocamento, e
-// `translateZ(0)` nem chegava a marcar o elemento como transformado.
-//
-// Modelo: sem `perspective` a projeção é ortográfica, então o que chega à tela
-// é o bloco 2×2 do PRODUTO das matrizes 3D. O parser acumula 3×3 e projeta no
-// fim. O único bit que a projeção perde é o LADO (frente × verso), guardado em
-// `xf_back` e lido por `backface-visibility`.
-//
-// Cada grafia 3D vem PAREADA com o controle 2D que tem de dar o mesmo número, e
-// as degradações (perspectiva, Z depois de giro) estão nomeadas no fim.
+// Legacy scalar projections remain covered alongside full homogeneous
+// transforms. The final tests exercise perspective and Z translation through
+// the same 4x4 resolution that paint and animations consume.
 
 import "core:testing"
 import "core:math"
@@ -300,22 +288,21 @@ xform3d_hover_substitui_o_transform_da_base :: proc(t: ^testing.T) {
 
 // ── 7. DEGRADAÇÕES — o que NÃO fazemos, dito pelo teste ─────────────────────
 
-// Sem perspectiva: `perspective(d)` não encurta nada. O resultado é o da lista
-// sem ela (projeção ortográfica). Se um dia houver perspectiva de verdade este
-// teste tem de ser REESCRITO, não apagado.
+// Full matrices now preserve projective W and translation in Z.
 @(test)
-xform3d_degradacao_perspective_e_ortografica :: proc(t: ^testing.T) {
-    mesma_pintura(t, "perspective(500px) rotateY(60deg)", "rotateY(60deg)")
-    testing.expect(t, xf("perspective(500px)").has_transform, "mas o elemento conta como transformado")
-    testing.expect(t, !css_supports_decl("perspective", "500px"), "@supports (perspective) continua FALSO: quem testa cai no fallback")
-    testing.expect(t, !css_supports_decl("transform-style", "preserve-3d"), "idem transform-style: não há contexto 3D de verdade")
+xform3d_perspective_projects_homogeneous_coordinates :: proc(t:^testing.T) {
+    c:=xf("perspective(500px) translateZ(100px)")
+    m:=x_resolve(c.xform,200,100)
+    p:=m*([4]f32{100,0,0,1})
+    testing.expect(t,perto(p[0]/p[3],125))
+    testing.expect(t,css_supports_decl("perspective","500px"))
+    // Plane intersections and a shared nested 3D display list remain incomplete.
+    testing.expect(t,!css_supports_decl("transform-style","preserve-3d"))
 }
 
-// Z depois de giro: `rotateY(90deg) translateZ(100px)` desloca 100px em X na
-// tela (é o carrossel/cubo). Aqui o Z some — a translação deste motor não passa
-// pela parte linear, nem em 2D.
 @(test)
-xform3d_degradacao_z_depois_de_giro_some :: proc(t: ^testing.T) {
-    c := xf("rotateY(90deg) translateZ(100px)")
-    testing.expectf(t, c.transform_tx == 0, "DEGRADAÇÃO anotada: o correto seria tx=100; veio %v", c.transform_tx)
+xform3d_z_after_rotation_moves_on_screen :: proc(t:^testing.T) {
+    c:=xf("rotateY(90deg) translateZ(100px)")
+    m:=x_resolve(c.xform,200,100)
+    testing.expect(t,perto(m[0,3],100) && perto(m[2,3],0))
 }

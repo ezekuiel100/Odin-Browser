@@ -134,6 +134,7 @@ fnv :: proc(h: u64, v: u32) -> u64 { return (h ~ u64(v)) * 1099511628211 }
 Trans_CChan :: struct { start, tgt: u32, prog, wait: f32 } // canal de cor (lerp em u32)
 Trans_FChan :: struct { start, tgt, prog, wait: f32 }      // canal escalar
 Trans_State :: struct {
+    xform:XChan,
     init:    bool,      // 1º frame: assume o alvo sem animar (evita flash inicial)
     hoverp:  Trans_FChan, // progresso do blend de cor de TEXTO rumo ao :hover
     bg:      Trans_CChan,
@@ -156,7 +157,10 @@ g_resize_drag: struct { node: ^dompkg.Node, active: bool, mx, my, w0, h0: f32 }
 
 // Esquece todas as transições em andamento (chamado ao liberar um DOM — as chaves
 // são ponteiros de nó que vão deixar de existir).
-transitions_clear :: proc() { clear(&g_trans); svg_css_clear(); clear(&g_resize); g_resize_drag = {} } // hook de "DOM liberado": limpa também o fill/stroke de CSS por nó e o tamanho arrastado
+transitions_clear :: proc() {
+    for _,st in g_trans { delete(st.xform.start.ops); delete(st.xform.target.ops) }
+    clear(&g_trans); svg_css_clear(); clear(&g_resize); g_resize_drag = {}
+} // hook de "DOM liberado": limpa também o fill/stroke de CSS por nó e o tamanho arrastado
 
 // Aplica um tamanho arrastado como se fosse `width`/`height` do AUTOR — mesmos
 // campos, mesmo espaço de box-sizing. Consequência desejada: min/max-width,
@@ -383,6 +387,11 @@ Box :: struct {
     // transform: translate (offset visual sem afetar o layout)
     transform_tx, transform_ty:         f32,
     transform_tx_pct, transform_ty_pct: bool,
+    motion_rotation:f32,
+    xform:^XList,
+    perspective, perspective_ox, perspective_oy:f32,
+    perspective_opx,perspective_opy,transform_opx,transform_opy,transform_opz:f32,
+    xf_percent: [4]f32,
     transform_rot:                      f32, // radianos
     transform_sx, transform_sy:         f32, // escala (1 = sem)
     transform_ox, transform_oy:         f32, // transform-origin (fração 0..1)
@@ -2469,6 +2478,11 @@ apply_box :: proc(b: ^Box, comp: Computed) {
         for a, i in comp.anim_more do b.animations[i + 1].anim = a
         for &p in b.animations do p.anim.name = strings.clone(p.anim.name)
     }
+    b.transform_opx=comp.transform_opx; b.transform_opy=comp.transform_opy; b.transform_opz=comp.transform_opz
+    b.perspective_opx=comp.perspective_opx; b.perspective_opy=comp.perspective_opy
+    b.xform=comp.xform
+    b.perspective=comp.perspective; b.perspective_ox=comp.perspective_ox; b.perspective_oy=comp.perspective_oy
+    b.xf_percent = comp.xf_percent
     b.transform_tx = comp.transform_tx; b.transform_ty = comp.transform_ty
     b.transform_tx_pct = comp.transform_tx_pct; b.transform_ty_pct = comp.transform_ty_pct
     b.transform_rot = comp.transform_rot
@@ -2980,8 +2994,8 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
 
     // transform: translate — acumulado em rel_dx/rel_dy (só visual, não afeta o fluxo)
     if b.has_transform {
-        b.rel_dx += b.transform_tx_pct ? b.transform_tx * b.w : b.transform_tx
-        b.rel_dy += b.transform_ty_pct ? b.transform_ty * b.h : b.transform_ty
+        b.rel_dx += (b.transform_tx_pct ? b.transform_tx * b.w : b.transform_tx) + b.xf_percent[0]*b.w + b.xf_percent[1]*b.h
+        b.rel_dy += (b.transform_ty_pct ? b.transform_ty * b.h : b.transform_ty) + b.xf_percent[2]*b.w + b.xf_percent[3]*b.h
     }
     // offset-path (CSS Motion Path): posiciona a caixa ao longo do path. O ponto
     // computado recebe a ÂNCORA da caixa (offset-anchor auto = transform-origin);
@@ -2994,6 +3008,7 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
             b.rel_dx += px - anchor_x
             b.rel_dy += py - anchor_y
             rot := (b.offset_rotate_auto ? ang : 0) + b.offset_rotate_angle
+            b.motion_rotation=rot
             if rot != 0 { b.transform_rot += rot; b.has_transform = true }
         }
     }
@@ -6583,7 +6598,7 @@ Inline_Grad :: struct { grp: u32, g: csspkg.Gradient }
 Paint_Cmd :: union {
     PC_Shadow, PC_Gradient, PC_RectFilled, PC_RectMulti, PC_Rect, PC_BgImage, PC_Border, PC_BorderImage,
     PC_ControlMark, PC_Image, PC_TextInput, PC_MaskCorners, PC_InnerNotch, PC_InlineText,
-    PC_Line, PC_PushClip, PC_PopClip, PC_XformBegin, PC_XformEnd,
+    PC_Line, PC_PushClip, PC_PopClip, PC_XformBegin, PC_XformEnd, PC_ProjectEnd,
     PC_LayerBegin, PC_LayerEnd, PC_BackdropFilter, PC_Polyline, PC_Select, PC_RoundClipBegin,
     PC_ShadeGradBegin, PC_ShadeGradEnd,
 }
@@ -6641,6 +6656,7 @@ PC_PopClip     :: struct {}
 // pinta o glifo com a cor do gradiente naquele ponto, sem clip nem render target.
 PC_ShadeGradBegin :: struct {}
 PC_ShadeGradEnd   :: struct { p0, p1: im.Vec2, g: csspkg.Gradient, eff: f32 }
+PC_ProjectEnd :: struct { m:XMatrix, keep_depth:bool }
 PC_XformBegin  :: struct {}
 PC_XformEnd    :: struct { cx, cy, a, b, c, d: f32 }
 // group-opacity: os comandos entre Begin e End são renderizados numa textura
@@ -6757,6 +6773,8 @@ replay_seg :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, cull := fals
     // pode voltar para a tela DEPOIS da decisão — culling ali seria errado.
     // Contador próprio, e não len(vtx_stack): a pilha é compartilhada com
     // PC_ShadeGradBegin, que não move vértice nenhum.
+    depth:=make(map[int][4]f32,context.temp_allocator)
+    defer delete(depth)
     xform_depth := 0
     i := start
     for i < len(cmds) {
@@ -6879,6 +6897,9 @@ replay_seg :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, cull := fals
         case PC_XformBegin:
             append(&vtx_stack, int(dl.VtxBuffer.Size))
             xform_depth += 1
+        case PC_ProjectEnd:
+            v0:=vtx_stack[len(vtx_stack)-1]; pop(&vtx_stack); xform_depth-=1
+            x_project_vertices(dl,v0,v.m,v.keep_depth,&depth)
         case PC_XformEnd:
             v0 := vtx_stack[len(vtx_stack) - 1]
             pop(&vtx_stack)
@@ -8182,6 +8203,7 @@ ease_inout :: proc(t: f32) -> f32 {
 }
 
 Anim_Eval :: struct {
+    has_xform:bool, xform:XMatrix,
     has_op:    bool, op:  f32,
     has_bg:    bool, bg:  u32,
     has_col:   bool, col: u32,
@@ -8192,7 +8214,7 @@ Anim_Eval :: struct {
 
 // Avalia a animação em t_elapsed (segundos): resolve a posição no ciclo (delay,
 // iteration-count, alternate), acha os stops vizinhos e interpola opacity/cor/fundo.
-eval_anim :: proc(a: ^Anim, t_elapsed: f32) -> Anim_Eval {
+eval_anim :: proc(a: ^Anim, t_elapsed: f32, width:f32=0, height:f32=0) -> Anim_Eval {
     if a.n == 0 do return {}
     tt := t_elapsed - a.delay
     before := tt < 0
@@ -8215,7 +8237,7 @@ eval_anim :: proc(a: ^Anim, t_elapsed: f32) -> Anim_Eval {
     out: Anim_Eval
     // Each property ignores keyframes that do not declare that property.
     // Missing 0/100% values come from the underlying computed style.
-    for channel in 0 ..< 6 {
+    for channel in 0 ..< 7 {
         s0, s1 := a.underlying, a.underlying
         s0.pct = 0; s1.pct = 1
         found := false
@@ -8229,6 +8251,7 @@ eval_anim :: proc(a: ^Anim, t_elapsed: f32) -> Anim_Eval {
             case 3: present = st.has_rot
             case 4: present = st.has_scale
             case 5: present = st.has_translate
+            case 6: present = st.has_xform
             }
             if !present do continue
             found = true
@@ -8248,6 +8271,9 @@ eval_anim :: proc(a: ^Anim, t_elapsed: f32) -> Anim_Eval {
         case 4:
             out.has_scale = true
             out.sx = s0.sx+(s1.sx-s0.sx)*lt; out.sy = s0.sy+(s1.sy-s0.sy)*lt
+        case 6:
+            out.has_xform=true
+            out.xform=x_interpolate(s0.xform,s1.xform,lt,width,height)
         case 5:
             out.has_translate = true
             out.tx = s0.tx+(s1.tx-s0.tx)*lt; out.ty = s0.ty+(s1.ty-s0.ty)*lt
@@ -9054,6 +9080,10 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         paint_inline_absolute(pt, s, b, effect, ox, oy, opa, in_xform, scope, stacked, abs_origin)
         return
     }
+    keep_depth:=g_x_keep_depth
+    saved_keep:=g_x_keep_depth
+    g_x_keep_depth=x_preserves(b) || b.perspective>0
+    defer g_x_keep_depth=saved_keep
     local_scope: Stacking_Scope
     active_scope := scope
     owns_scope := scope == nil || stacking_context_at(b, ox, oy)
@@ -9250,12 +9280,42 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         if ev.has_scale { eff_sx = ev.sx; eff_sy = ev.sy }
     }
 
+    target_x:=b.xform
+    if hovering && b.hover.has_transform do target_x=b.hover.xform
+    full:=x_resolve(target_x,b.w,b.h)
+    if trans_any(b.trans) && b.node!=nil {
+        st:=&g_trans[b.node]
+        full=x_step(&st.xform,target_x,b.trans[.Transform],im.GetIO().DeltaTime,b.w,b.h)
+    }
+    for &player in b.animations {
+        if !player.anim.active do continue
+        ev:=eval_anim(&player.anim,player.elapsed,b.w,b.h)
+        if ev.has_xform do full=ev.xform
+    }
+    if b.motion_rotation!=0 do full=x_rotation({0,0,1},b.motion_rotation)*full
+    use_full:=b.xform!=nil || (hovering && b.hover.has_transform) || len(b.animations)>0 || b.trans[.Transform].on || b.has_offset_path
+    base_tx,base_ty:=x_box_translation(b)
+    baked_tx,baked_ty:=base_tx+adx,base_ty+ady
+    if use_full {
+        dx,dy:=full[0,3]-baked_tx,full[1,3]-baked_ty
+        ox2+=dx; oy2+=dy; screen.x+=dx; screen.y+=dy
+        baked_tx=full[0,3]; baked_ty=full[1,3]
+    }
+    pivot_x:=screen.x-baked_tx+b.w*b.transform_ox+b.transform_opx
+    pivot_y:=screen.y-baked_ty+b.h*b.transform_oy+b.transform_opy
+    project:=x_translation(pivot_x,pivot_y,b.transform_opz)*full*x_translation(-pivot_x-baked_tx,-pivot_y-baked_ty,-b.transform_opz)
+
     // backface-visibility. O lado é decidido AQUI, depois de transition/animação,
     // porque um giro animado troca de lado no meio do caminho — e antes de
     // qualquer `emit`, para a caixa escondida não deixar comando pela metade.
     // A saída antecipada também pula o registro de clique/link do fim da função:
     // face escondida não recebe evento, como manda a spec.
     back := box_face_back(b, hovering, eff_sx * eff_sy, tgt_sx * tgt_sy)
+    if use_full {
+        det:=full[0,0]*(full[1,1]*full[2,2]-full[1,2]*full[2,1])-full[0,1]*(full[1,0]*full[2,2]-full[1,2]*full[2,0])+full[0,2]*(full[1,0]*full[2,1]-full[1,1]*full[2,0])
+        cof:=full[0,0]*full[1,1]-full[0,1]*full[1,0]
+        back=det!=0 && (cof<0)!=(det<0)
+    }
     if b.in_p3d do back = back != g_p3d_back
     if back && b.backface_hidden do return
     // preserve-3d: os filhos compõem o lado deles com o nosso. Sem ele o
@@ -9276,7 +9336,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         xa = cs * eff_sx; xb = -sn * eff_sy; xc = sn * eff_sx; xd = cs * eff_sy
     }
     // Gatilha se a matriz não é identidade (estático OU animado).
-    do_xform := xa != 1 || xb != 0 || xc != 0 || xd != 1
+    do_xform := use_full || keep_depth || xa != 1 || xb != 0 || xc != 0 || xd != 1
 
     // group-opacity: se a opacidade PRÓPRIA (own_a = eff/opa) < 1 e o box tem
     // filhos (onde o double-darken de sobreposição apareceria), embrulha a
@@ -9491,7 +9551,9 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         // fecha os ranges de layer/transform abertos acima (senão o stack do
         // replay ficaria desbalanceado neste return antecipado)
         if do_layer do emit(pt, PC_LayerEnd{})
-        if do_xform do emit(pt, PC_XformEnd{screen.x + b.w * b.transform_ox, screen.y + b.h * b.transform_oy, xa, xb, xc, xd})
+        if do_xform {
+            if use_full || keep_depth { emit(pt,PC_ProjectEnd{project,keep_depth}) } else { emit(pt,PC_XformEnd{screen.x+b.w*b.transform_ox,screen.y+b.h*b.transform_oy,xa,xb,xc,xd}) }
+        }
         return
     }
 
@@ -9537,10 +9599,12 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // esquerda por scroll_x (clipado acima)
     child_oy := b.overflow_scroll ? oy2 - b.scroll_y : oy2
     child_ox := b.overflow_scroll ? ox2 - b.scroll_x : ox2
+    if b.perspective>0 do emit(pt,PC_XformBegin{})
     if owns_scope {
         if b.overflow_hidden do end_overflow_clip(pt, round_clip)
         collect_stacking(active_scope, b, ox2, oy2, -1, abs_origin)
-        sort_stacking(active_scope.entries[:])
+        if x_preserves(b) do stacking_depths(active_scope.entries[:],b,full,ox2,oy2)
+        sort_stacking(active_scope.entries[:],x_preserves(b))
         paint_stacking(pt, s, active_scope, true, screen.x - b.x - ox2, screen.y - b.y - oy2, eff, in_xform || b.has_transform || b.has_xform_matrix)
         if b.overflow_hidden do emit_overflow_clip(pt, b, {cx0, cy0}, {cx1, cy1}, round_clip)
     }
@@ -9596,6 +9660,11 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
         paint_stacking(pt, s, active_scope, false, screen.x - b.x - ox2, screen.y - b.y - oy2, eff, in_xform || b.has_transform || b.has_xform_matrix)
     }
 
+    if b.perspective>0 {
+        px,py:=screen.x+b.w*b.perspective_ox+b.perspective_opx,screen.y+b.h*b.perspective_oy+b.perspective_opy
+        pm:XMatrix=1; pm[3,2]=-1/b.perspective
+        emit(pt,PC_ProjectEnd{x_translation(px,py,0)*pm*x_translation(-px,-py,0),x_preserves(b)})
+    }
     // overflow:hidden + raio: o clip do ImGui é retangular, então os filhos que
     // chegam aos cantos (ex.: um topo em gradiente) saem quadrados. Recorta os
     // cantos arredondados preenchendo o entalhe com a cor de trás e redesenha a borda.
@@ -9708,7 +9777,7 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // transform rotate/scale: gira/escala todos os vértices desta subárvore em
     // torno do transform-origin (fração 0..1 do box; default 50% 50%).
     if do_xform {
-        emit(pt, PC_XformEnd{screen.x + b.w * b.transform_ox, screen.y + b.h * b.transform_oy, xa, xb, xc, xd})
+        if use_full || keep_depth { emit(pt,PC_ProjectEnd{project,keep_depth}) } else { emit(pt,PC_XformEnd{screen.x+b.w*b.transform_ox,screen.y+b.h*b.transform_oy,xa,xb,xc,xd}) }
     }
 }
 

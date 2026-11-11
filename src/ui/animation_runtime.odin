@@ -111,8 +111,11 @@ animation_restore_tree :: proc(root, old: ^Box) {
 animation_translation_delta :: proc(b: ^Box) -> (dx, dy: f32) {
     for &player in b.animations {
         if !player.anim.active do continue
-        ev := eval_anim(&player.anim, player.elapsed)
-        if ev.has_translate {
+        ev := eval_anim(&player.anim, player.elapsed,b.w,b.h)
+        if ev.has_xform {
+            bx,by:=x_box_translation(b)
+            dx=ev.xform[0,3]-bx; dy=ev.xform[1,3]-by
+        } else if ev.has_translate {
             dx = ev.tx + ev.tx_percent*b.w - (b.transform_tx_pct ? b.transform_tx*b.w : b.transform_tx)
             dy = ev.ty + ev.ty_percent*b.h - (b.transform_ty_pct ? b.transform_ty*b.h : b.transform_ty)
         }

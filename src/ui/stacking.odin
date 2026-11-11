@@ -15,6 +15,7 @@ Stacking_Entry :: struct {
     z: int,
     clip: int,
     origin: im.Vec2,
+    depth:f32,
 }
 Stacking_Scope :: struct {
     deferred: map[^Box]bool,
@@ -27,7 +28,7 @@ creates_stacking_context :: proc(b: ^Box) -> bool {
            b.pos == .Fixed || b.pos == .Sticky ||
            b.opacity < 1 || b.n_filters > 0 || b.n_backdrop > 0 ||
            b.blend_mode != .Normal || b.isolate || b.stacking_hint ||
-           b.has_transform || b.has_xform_matrix ||
+           b.has_transform || b.has_xform_matrix || b.perspective>0 || b.preserve_3d ||
            b.clip_path.kind != .None || b.mask_grad.active ||
            stacking_animation_context(b)
 }
@@ -80,7 +81,7 @@ collect_stacking_child :: proc(scope: ^Stacking_Scope, b: ^Box, ox, oy: f32, cli
     real_context := stacking_context_at(b, ox, oy)
     if real_context || b.pos != .Static {
         z := (b.pos != .Static || b.stacking_item) && b.z_index_set ? b.z_index : 0
-        append(&scope.entries, Stacking_Entry{b, ox, oy, z, clip, origin})
+        append(&scope.entries, Stacking_Entry{box=b,ox=ox,oy=oy,z=z,clip=clip,origin=origin})
         scope.deferred[b] = true
     }
     // auto-positioned boxes are painted atomically, but their positioned
@@ -91,7 +92,7 @@ collect_stacking_child :: proc(scope: ^Stacking_Scope, b: ^Box, ox, oy: f32, cli
     }
 }
 
-sort_stacking :: proc(entries: []Stacking_Entry) {
+sort_stacking :: proc(entries: []Stacking_Entry, spatial:bool=false) {
     if len(entries) < 2 do return
     // Stable merge sort: a context can contain thousands of descendants.
     scratch := make([]Stacking_Entry, len(entries), context.temp_allocator)
@@ -102,7 +103,7 @@ sort_stacking :: proc(entries: []Stacking_Entry) {
             right := min(left + 2 * width, len(entries))
             i, j := left, mid
             for k in left ..< right {
-                if i < mid && (j >= right || entries[i].z <= entries[j].z) {
+                if i < mid && (j >= right || (spatial ? entries[i].depth <= entries[j].depth : entries[i].z <= entries[j].z)) {
                     scratch[k] = entries[i]; i += 1
                 } else {
                     scratch[k] = entries[j]; j += 1
@@ -135,7 +136,7 @@ stacking_animation_context :: proc(b: ^Box) -> bool {
         if !p.anim.active do continue
         for i in 0 ..< p.anim.n {
             stop := p.anim.stops[i]
-            if stop.has_opacity || stop.has_rot || stop.has_scale do return true
+            if stop.has_opacity || stop.has_rot || stop.has_scale || stop.has_xform do return true
         }
     }
     return false
@@ -168,7 +169,33 @@ stacking_context_at :: proc(b: ^Box, ox, oy: f32) -> bool {
     }
     if st, ok := g_trans[b.node]; ok && st.init {
         if b.trans[.Opacity].on && st.opacity.prog < 1 && (st.opacity.start < 1 || st.opacity.tgt < 1) do return true
-        if b.trans[.Transform].on && (st.rot.prog < 1 || st.sx.prog < 1 || st.sy.prog < 1) do return true
+        if b.trans[.Transform].on && (st.rot.prog < 1 || st.sx.prog < 1 || st.sy.prog < 1 || (st.xform.init && st.xform.prog<1)) do return true
     }
     return false
+}
+
+// Sort planes in the shared preserve-3d context from far to near. Equal
+// depths retain document order. Crossing planes still require polygon splitting.
+stacking_depths :: proc(entries:[]Stacking_Entry,parent:^Box,m:XMatrix,ox,oy:f32) {
+    for &e in entries {
+        b:=e.box
+        local:=x_resolve(b.xform,b.w,b.h)
+        if st,ok:=g_trans[b.node]; ok && st.xform.init {
+            local=x_interpolate(&st.xform.start,&st.xform.target,timing_eval(b.trans[.Transform].timing,st.xform.prog),b.w,b.h)
+        }
+        for &p in b.animations {
+            if !p.anim.active do continue
+            ev:=eval_anim(&p.anim,p.elapsed,b.w,b.h)
+            if ev.has_xform do local=ev.xform
+        }
+        tx,ty:=x_box_translation(b)
+        bx:=b.x+e.ox+b.rel_dx-tx-(parent.x+ox)
+        by:=b.y+e.oy+b.rel_dy-ty-(parent.y+oy)
+        q:=local*([4]f32{b.w*(0.5-b.transform_ox),b.h*(0.5-b.transform_oy),0,1})
+        q[0]+=(bx+b.w*b.transform_ox-parent.w*parent.transform_ox)*q[3]
+        q[1]+=(by+b.h*b.transform_oy-parent.h*parent.transform_oy)*q[3]
+        q=m*q
+        e.depth=q[3]>1e-5 ? q[2]/q[3] : -1e30
+        e.z=0
+    }
 }

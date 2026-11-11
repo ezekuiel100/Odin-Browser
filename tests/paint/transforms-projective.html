@@ -1,0 +1,19 @@
+<!doctype html><style>
+body{margin:0;background:white}
+.box{position:absolute;width:80px;height:80px;background:#ff0000;transform-origin:0 0}
+#function{left:40px;top:40px;transform:perspective(500px) translateZ(100px)}
+#camera{position:absolute;left:240px;top:40px;width:200px;height:200px;perspective:500px;perspective-origin:0 0}
+#camera .box{left:20px;top:20px;transform:translateZ(100px)}
+#depth{position:absolute;left:500px;top:40px;width:200px;height:200px;transform-style:preserve-3d}
+#depth .box{left:20px;top:20px}
+#near{transform:translateZ(50px)} #far{background:#0000ff;transform:translateZ(-50px)}
+#matrix{left:50px;top:300px;background:#00ff00;animation:matrix 2s linear -1s both paused}
+@keyframes matrix{from{transform:matrix(1,0,0,1,0,0)}to{transform:matrix(0,1,-1,0,100,0)}}
+#spin{left:400px;top:300px;width:80px;height:40px;background:#00ff00;animation:spin 2s linear -1s both paused}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+#order{left:600px;top:300px;width:40px;height:40px;background:#00ff00;transform:rotate(90deg) translateX(80px)}
+</style>
+<div id="function" class="box"></div>
+<div id="camera"><div class="box"></div></div>
+<div id="depth"><div id="near" class="box"></div><div id="far" class="box"></div></div>
+<div id="matrix" class="box"></div><div id="spin" class="box"></div><div id="order" class="box"></div>
