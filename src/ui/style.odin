@@ -990,8 +990,7 @@ Hover_Style :: struct {
 }
 
 // @keyframes resolvido p/ um elemento: stops com as props de pintura animáveis
-// (opacity/cor/fundo). Array fixo p/ caber no Computed copiado por valor.
-ANIM_MAX_STOPS :: 8
+// Channels share resolved stops; playback owns its stop storage.
 Anim_Stop :: struct {
     xform: ^XList, has_xform: bool,
     pct:         f32,
@@ -1014,7 +1013,7 @@ Anim :: struct {
     reverse, fill_before, fill_after, paused: bool,
     timing: Timing,
     n:         int,  // nº de stops preenchidos
-    stops:     [ANIM_MAX_STOPS]Anim_Stop,
+    stops:     []Anim_Stop, // temporary style storage; playback owns a copy
     underlying: Anim_Stop,
 }
 
@@ -3380,7 +3379,10 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
     }
 
     out := make(map[string]string, context.temp_allocator)
-    for prop, w in wins do out[prop] = w.val
+    for prop, w in wins {
+        out[prop] = w.val
+        if w.spec.important do out[strings.concatenate({"\x01important:", prop}, context.temp_allocator)] = "1"
+    }
     return out
 }
 
@@ -8289,6 +8291,14 @@ resolve_animation :: proc(comp: ^Computed, decls: map[string]string, kf: []csspk
         tmp := comp^
         tmp.anim = {}; tmp.anim_more = nil
         resolve_animation_one(&tmp, one, kf, vars, vw, vh)
+        for &st in tmp.anim.stops {
+            if decls["\x01important:opacity"] == "1" do st.has_opacity = false
+            if decls["\x01important:color"] == "1" do st.has_color = false
+            if decls["\x01important:background-color"] == "1" || decls["\x01important:background"] == "1" do st.has_bg = false
+            if decls["\x01important:transform"] == "1" {
+                st.has_xform = false; st.has_translate = false; st.has_rot = false; st.has_scale = false
+            }
+        }
         if i == 0 { comp.anim = tmp.anim } else { comp.anim_more[i - 1] = tmp.anim }
     }
 }
@@ -8380,8 +8390,8 @@ resolve_animation_one :: proc(comp: ^Computed, decls: map[string]string, kf: []c
         tx_percent = comp.transform_tx_pct ? comp.transform_tx : 0,
         ty_percent = comp.transform_ty_pct ? comp.transform_ty : 0,
     }
+    comp.anim.stops = make([]Anim_Stop, len(set.stops), context.temp_allocator)
     for st in set.stops {
-        if comp.anim.n >= ANIM_MAX_STOPS do break
         as := Anim_Stop{ pct = st.pct }
         if tv, ok := st.decls["animation-timing-function"]; ok {
             if tm, valid := parse_timing(strings.trim_space(resolve_var(tv, vars))); valid {

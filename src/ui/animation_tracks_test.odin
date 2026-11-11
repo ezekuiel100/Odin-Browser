@@ -68,3 +68,13 @@ animation_translation_shared_stacking_origin :: proc(t: ^testing.T) {
     dx,_ := animation_translation_delta(&b)
     testing.expect(t,abs(dx-80)<0.001,"percentage resolves against current border-box")
 }
+
+@(test)
+animation_unbounded_stops_and_important :: proc(t: ^testing.T) {
+    c := test_compute_anim(".x{animation:a 10s linear both}@keyframes a{0%{opacity:0}10%{opacity:0.1}20%{opacity:0.2}30%{opacity:0.3}40%{opacity:0.4}50%{opacity:0.5}60%{opacity:0.6}70%{opacity:0.7}80%{opacity:0.8}90%{opacity:0.9}100%{opacity:1}}", "div", "x")
+    testing.expect_value(t, c.anim.n, 11)
+    testing.expect(t, abs(test_eval_anim(&c.anim,9.5).op-0.95)<0.001)
+    d := test_compute_anim(".x{opacity:0.3!important;transform:skewX(10deg)!important;animation:a 2s linear both}@keyframes a{from{opacity:0;transform:none}to{opacity:1;transform:skewX(40deg)}}", "div", "x")
+    e := test_eval_anim(&d.anim,1)
+    testing.expect(t, !e.has_op && !e.has_xform && !e.has_rot && !e.has_scale && !e.has_translate)
+}

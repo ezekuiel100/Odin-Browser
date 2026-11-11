@@ -2476,7 +2476,12 @@ apply_box :: proc(b: ^Box, comp: Computed) {
         b.animations = make([]Animation_Player, 1 + len(comp.anim_more))
         b.animations[0].anim = comp.anim
         for a, i in comp.anim_more do b.animations[i + 1].anim = a
-        for &p in b.animations do p.anim.name = strings.clone(p.anim.name)
+        for &p in b.animations {
+            p.anim.name = strings.clone(p.anim.name)
+            stops := make([]Anim_Stop, len(p.anim.stops))
+            copy(stops, p.anim.stops)
+            p.anim.stops = stops
+        }
     }
     b.transform_opx=comp.transform_opx; b.transform_opy=comp.transform_opy; b.transform_opz=comp.transform_opz
     b.perspective_opx=comp.perspective_opx; b.perspective_opy=comp.perspective_opy
@@ -11108,7 +11113,7 @@ free_layout :: proc(b: ^Box) {
     if b == nil do return
     for c in b.children do free_layout(c)
     delete(b.children)
-    for &p in b.animations { delete(p.anim.name); delete(p.pending) }
+    for &p in b.animations { delete(p.anim.name); delete(p.anim.stops); delete(p.pending) }
     delete(b.animations)
     for &it in b.inlines {
         if it.text != ""    do delete(it.text)

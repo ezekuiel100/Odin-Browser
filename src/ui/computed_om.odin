@@ -393,6 +393,29 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
     if node == nil || !g_js_have do return ""
     c, ok := g_js_styles[node]
     if !ok do return ""
+    if prop == "opacity" || prop == "color" || prop == "background-color" || prop == "transform" {
+        b := box_of(node)
+        if b != nil {
+            xf := x_resolve(c.xform, b.w, b.h)
+            for &player in b.animations {
+                ev := eval_anim(&player.anim, player.elapsed, b.w, b.h)
+                if ev.has_op do c.opacity = ev.op
+                if ev.has_col do c.color = ev.col
+                if ev.has_bg do c.bg = ev.bg
+                if ev.has_xform do xf = ev.xform
+            }
+            if prop == "transform" {
+                if x_is_2d(xf) do return fmt.tprintf("matrix(%s, %s, %s, %s, %s, %s)", num_str(xf[0,0]), num_str(xf[1,0]), num_str(xf[0,1]), num_str(xf[1,1]), num_str(xf[0,3]), num_str(xf[1,3]))
+                out := "matrix3d("
+                for col in 0..<4 { for row in 0..<4 {
+                    if col != 0 || row != 0 do out = strings.concatenate({out, ", "}, context.temp_allocator)
+                    out = strings.concatenate({out, num_str(xf[row,col])}, context.temp_allocator)
+                } }
+                return strings.concatenate({out, ")"}, context.temp_allocator)
+            }
+        }
+    }
+
     // ⚠️ `box_of` é chamado SÓ nas props que precisam de geometria (width/height/
     // margin/padding). Pegá-lo aqui em cima custaria um passe de layout inteiro
     // para responder `cs.color` — e um site que lê cor num laço pagaria por isso.
