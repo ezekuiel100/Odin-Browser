@@ -710,18 +710,30 @@ js_computed_style_inner :: proc(node: ^dompkg.Node, prop: string) -> string {
         if c.flex_basis_pct do return fmt.tprintf("%s%%", num_str(c.flex_basis * 100))
         return px(c.flex_basis)
     case "order": return fmt.tprintf("%d", c.order)
-    case "justify-content": return flex_just_str(c.justify)
-    case "align-content":   return flex_just_str(c.align_content)
-    case "align-items":     return flex_align_str(c.align_items)
-    case "align-self":      return c.has_align_self ? flex_align_str(c.align_self) : "auto"
-    case "justify-items":   return flex_align_str(c.justify_items)
-    case "justify-self":    return c.has_justify_self ? flex_align_str(c.justify_self) : "auto"
+    case "justify-content": return ovf_str(c.justify_ovf, flex_just_str(c.justify))
+    case "align-content":   return ovf_str(c.align_content_ovf, flex_just_str(c.align_content))
+    case "align-items":     return ovf_str(c.align_items_ovf, flex_align_str(c.align_items))
+    case "align-self":      return c.has_align_self ? ovf_str(c.align_self_ovf, flex_align_str(c.align_self)) : "auto"
+    case "justify-items":   return ovf_str(c.justify_items_ovf, flex_align_str(c.justify_items))
+    case "justify-self":    return c.has_justify_self ? ovf_str(c.justify_self_ovf, flex_align_str(c.justify_self)) : "auto"
     case "gap", "row-gap":
         return px(prop == "row-gap" ? c.row_gap : c.gap)
     case "column-gap":
         return px(c.col_gap < 0 ? c.gap : c.col_gap)
     }
     return "" // degradação #2: não mapeada
+}
+
+// `safe`/`unsafe` de volta na frente do valor (só valem com center/start/end).
+@(private = "file")
+ovf_str :: proc(o: Overflow_Pos, s: string) -> string {
+    if s != "center" && s != "flex-start" && s != "flex-end" do return s
+    switch o {
+    case .Safe:   return fmt.tprintf("safe %s", s)
+    case .Unsafe: return fmt.tprintf("unsafe %s", s)
+    case .Default:
+    }
+    return s
 }
 
 @(private = "file")

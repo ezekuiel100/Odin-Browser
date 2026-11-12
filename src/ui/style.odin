@@ -864,6 +864,12 @@ Box_Sizing :: enum u8 { Content, Border }
 Flex_Dir   :: enum u8 { Row, Column }
 Flex_Just  :: enum u8 { Start, Center, End, Between, Around, Evenly }
 Flex_Align :: enum u8 { Stretch, Start, Center, End, Baseline, LastBaseline }
+// overflow-position (CSS Align §4.4): a palavra `safe`/`unsafe` que precede o
+// valor de alinhamento. `safe` = se o alinhado TRANSBORDA o container, cai p/
+// start; `unsafe` = honra o alinhamento mesmo transbordando. `.Default` (sem
+// palavra) mantém o que cada eixo do motor já fazia: alinhamento do ITEM
+// transborda centrado (= unsafe), distribuição de CONTEÚDO ancora no início.
+Overflow_Pos :: enum u8 { Default, Safe, Unsafe }
 Position   :: enum u8 { Static, Relative, Absolute, Fixed, Sticky }
 // InlineStart/InlineEnd = valores LÓGICOS (css-logical); compute_node os resolve
 // p/ Left/Right conforme a direção do elemento antes do layout (que só vê físico).
@@ -1242,6 +1248,10 @@ Computed :: struct {
     has_align_self: bool,
     justify_self:     Flex_Align, // grid: override do justify_items por item
     has_justify_self: bool,
+    // `safe`/`unsafe` de cada uma das seis propriedades de alinhamento acima.
+    justify_ovf, align_content_ovf:     Overflow_Pos, // justify-content / align-content
+    align_items_ovf, justify_items_ovf: Overflow_Pos,
+    align_self_ovf, justify_self_ovf:   Overflow_Pos, // só valem com has_*_self
     gap:          f32,
     // gap em % (ou calc com %): fração + offset; a base é o tamanho de CONTEÚDO do
     // próprio container no eixo (inline p/ gap/column-gap, bloco p/ row-gap) e só
@@ -1312,6 +1322,12 @@ Computed :: struct {
     // que o parser de string não tem — resolvido em compute_node e zerado lá, igual
     // aos nomes acima. 0 = não declarada.
     grid_col_end_line: int, grid_row_end_line: int,
+    // Linha `auto` (ou omitida) de grid-column/grid-row. Para o item EM FLUXO o
+    // par (start, span) basta; para o filho ABSOLUTO do grid (CSS Grid §9.1) não:
+    // lá `auto` é a borda do container naquele lado, e `grid-column: 2` (fim
+    // auto) e `2 / 3` viram os dois (2, span 1). Só são lidos com start > 0.
+    grid_col_start_auto, grid_col_end_auto: bool,
+    grid_row_start_auto, grid_row_end_auto: bool,
 
     // background
     grad: csspkg.Gradient, // linear-gradient (substitui a cor de fundo sólida)
@@ -1904,6 +1920,9 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.has_align_self = false
     comp.justify_self = .Stretch
     comp.has_justify_self = false
+    comp.justify_ovf = .Default; comp.align_content_ovf = .Default
+    comp.align_items_ovf = .Default; comp.justify_items_ovf = .Default
+    comp.align_self_ovf = .Default; comp.justify_self_ovf = .Default
     comp.gap = 0
     comp.col_count = 0
     comp.col_width = 0
@@ -1934,6 +1953,8 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.row_gap = 0
     comp.grid_col_start = 0; comp.grid_col_span = 1
     comp.grid_row_start = 0; comp.grid_row_span = 1
+    comp.grid_col_start_auto = false; comp.grid_col_end_auto = false
+    comp.grid_row_start_auto = false; comp.grid_row_end_auto = false
     comp.grid_area_n = 0
     comp.grid_area_name = ""
     comp.grid_col_line_n = 0; comp.grid_row_line_n = 0
@@ -4923,7 +4944,9 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         comp.flex_wrap_reverse = lv == "wrap-reverse"
     }
     if v, ok := decls["justify-content"]; ok {
-        switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+        val, ovf := split_overflow_pos(v)
+        comp.justify_ovf = ovf
+        switch val {
         case "center":        comp.justify = .Center
         case "flex-end", "end", "right": comp.justify = .End
         case "space-between": comp.justify = .Between
@@ -4933,7 +4956,9 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         }
     }
     if v, ok := decls["align-items"]; ok {
-        switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+        val, ovf := split_overflow_pos(v)
+        comp.align_items_ovf = ovf
+        switch val {
         case "flex-start", "start": comp.align_items = .Start
         case "baseline", "first baseline": comp.align_items = .Baseline
         case "last baseline": comp.align_items = .LastBaseline
@@ -4943,7 +4968,9 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         }
     }
     if v, ok := decls["align-self"]; ok {
-        switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+        val, ovf := split_overflow_pos(v)
+        comp.align_self_ovf = ovf
+        switch val {
         case "auto":                comp.has_align_self = false
         case "flex-start", "start": comp.align_self = .Start;   comp.has_align_self = true
         case "center":              comp.align_self = .Center;  comp.has_align_self = true
@@ -4955,7 +4982,8 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     }
     // align-content: distribui as LINHAS do flex-wrap no eixo cruzado (reusa Flex_Just)
     if v, ok := decls["align-content"]; ok {
-        lv := strings.to_lower(strings.trim_space(v), context.temp_allocator)
+        lv, ovf := split_overflow_pos(v)
+        comp.align_content_ovf = ovf
         switch lv {
         case "center":        comp.align_content = .Center
         case "flex-end", "end": comp.align_content = .End
@@ -4971,42 +4999,59 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     // justify-items / justify-self: alinhamento horizontal do item na célula do grid
     if v, ok := decls["justify-items"]; ok {
         comp.justify_items = parse_box_align(v)
+        _, comp.justify_items_ovf = split_overflow_pos(v)
     }
     if v, ok := decls["justify-self"]; ok {
-        s := strings.to_lower(strings.trim_space(v), context.temp_allocator)
+        s, ovf := split_overflow_pos(v)
+        comp.justify_self_ovf = ovf
         if s == "auto" { comp.has_justify_self = false } else { comp.justify_self = parse_box_align(v); comp.has_justify_self = true }
     }
     // place-items/place-content/place-self: shorthands "<align> <justify>?" → aplicam
     // direto nos campos. 1 valor = ambos os eixos. Só age no eixo cujo LONGHAND não
     // foi dado explicitamente (o longhand, parseado acima, vence).
+    // ⚠️ place_tokens, não strings.fields: `safe center` é UM valor de duas palavras.
     if v, ok := decls["place-items"]; ok {
-        toks := strings.fields(strings.trim_space(v), context.temp_allocator)
+        toks := place_tokens(v)
         if len(toks) >= 1 {
             jt := len(toks) >= 2 ? toks[1] : toks[0]
-            if _, has := decls["align-items"];   !has do comp.align_items   = map_align_items(toks[0])
-            if _, has := decls["justify-items"]; !has do comp.justify_items = parse_box_align(jt)
+            if _, has := decls["align-items"]; !has {
+                comp.align_items = map_align_items(toks[0])
+                _, comp.align_items_ovf = split_overflow_pos(toks[0])
+            }
+            if _, has := decls["justify-items"]; !has {
+                comp.justify_items = parse_box_align(jt)
+                _, comp.justify_items_ovf = split_overflow_pos(jt)
+            }
         }
     }
     if v, ok := decls["place-content"]; ok {
-        toks := strings.fields(strings.trim_space(v), context.temp_allocator)
+        toks := place_tokens(v)
         if len(toks) >= 1 {
             jt := len(toks) >= 2 ? toks[1] : toks[0]
-            if _, has := decls["align-content"];   !has do comp.align_content = map_align_content(toks[0])
-            if _, has := decls["justify-content"]; !has do comp.justify        = map_justify_content(jt)
+            if _, has := decls["align-content"]; !has {
+                comp.align_content = map_align_content(toks[0])
+                _, comp.align_content_ovf = split_overflow_pos(toks[0])
+            }
+            if _, has := decls["justify-content"]; !has {
+                comp.justify = map_justify_content(jt)
+                _, comp.justify_ovf = split_overflow_pos(jt)
+            }
         }
     }
     if v, ok := decls["place-self"]; ok {
-        toks := strings.fields(strings.trim_space(v), context.temp_allocator)
+        toks := place_tokens(v)
         if len(toks) >= 1 {
             jt := len(toks) >= 2 ? toks[1] : toks[0]
             if _, has := decls["align-self"]; !has {
-                if strings.to_lower(strings.trim_space(toks[0]), context.temp_allocator) != "auto" {
+                if a, ovf := split_overflow_pos(toks[0]); a != "auto" {
                     comp.align_self = map_align_items(toks[0]); comp.has_align_self = true
+                    comp.align_self_ovf = ovf
                 }
             }
             if _, has := decls["justify-self"]; !has {
-                if strings.to_lower(strings.trim_space(jt), context.temp_allocator) != "auto" {
+                if j, ovf := split_overflow_pos(jt); j != "auto" {
                     comp.justify_self = parse_box_align(jt); comp.has_justify_self = true
+                    comp.justify_self_ovf = ovf
                 }
             }
         }
@@ -5155,10 +5200,14 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         parse_grid_area_prop(comp, resolve_var(v, vars))
     }
     if v, ok := decls["grid-column"]; ok {
-        comp.grid_col_start, comp.grid_col_span, comp.grid_col_start_name, comp.grid_col_end_name, comp.grid_col_end_line = parse_grid_line(resolve_var(v, vars))
+        rv := resolve_var(v, vars)
+        comp.grid_col_start, comp.grid_col_span, comp.grid_col_start_name, comp.grid_col_end_name, comp.grid_col_end_line = parse_grid_line(rv)
+        comp.grid_col_start_auto, comp.grid_col_end_auto = grid_line_autos(rv)
     }
     if v, ok := decls["grid-row"]; ok {
-        comp.grid_row_start, comp.grid_row_span, comp.grid_row_start_name, comp.grid_row_end_name, comp.grid_row_end_line = parse_grid_line(resolve_var(v, vars))
+        rv := resolve_var(v, vars)
+        comp.grid_row_start, comp.grid_row_span, comp.grid_row_start_name, comp.grid_row_end_name, comp.grid_row_end_line = parse_grid_line(rv)
+        comp.grid_row_start_auto, comp.grid_row_end_auto = grid_line_autos(rv)
     }
 
     if v, ok := decls["flex-grow"]; ok {
@@ -5283,10 +5332,40 @@ is_len_token :: proc(tok: string) -> bool {
     return false
 }
 
+// Separa o overflow-position (`safe`/`unsafe`) do valor de alinhamento. Devolve o
+// resto já em minúsculas e com os espaços normalizados (`first  baseline`).
+@(private="file")
+split_overflow_pos :: proc(v: string) -> (rest: string, ovf: Overflow_Pos) {
+    f := strings.fields(strings.to_lower(strings.trim_space(v), context.temp_allocator), context.temp_allocator)
+    if len(f) >= 2 {
+        if f[0] == "safe"   { ovf = .Safe;   f = f[1:] }
+        else if f[0] == "unsafe" { ovf = .Unsafe; f = f[1:] }
+    }
+    return strings.join(f, " ", context.temp_allocator), ovf
+}
+
+// Tokeniza um shorthand place-*: `safe`/`unsafe` e `first`/`last` pertencem ao
+// token SEGUINTE (`place-items: safe center` é UM valor, não dois).
+@(private="file")
+place_tokens :: proc(v: string) -> []string {
+    raw := strings.fields(strings.to_lower(strings.trim_space(v), context.temp_allocator), context.temp_allocator)
+    out := make([dynamic]string, context.temp_allocator)
+    for i := 0; i < len(raw); i += 1 {
+        tok := raw[i]
+        for (raw[i] == "safe" || raw[i] == "unsafe" || raw[i] == "first" || raw[i] == "last") && i + 1 < len(raw) {
+            i += 1
+            tok = strings.concatenate({tok, " ", raw[i]}, context.temp_allocator)
+        }
+        append(&out, tok)
+    }
+    return out[:]
+}
+
 // Mapeia um valor de justify-items/justify-self/align (box alignment) p/ Flex_Align.
 @(private="file")
 parse_box_align :: proc(v: string) -> Flex_Align {
-    switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+    val, _ := split_overflow_pos(v)
+    switch val {
     case "baseline", "first baseline": return .Baseline
     case "last baseline": return .LastBaseline
     case "center":                     return .Center
@@ -5300,7 +5379,8 @@ parse_box_align :: proc(v: string) -> Flex_Align {
 // justify-content. Usados pelos shorthands place-*.
 @(private="file")
 map_align_items :: proc(v: string) -> Flex_Align {
-    switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+    val, _ := split_overflow_pos(v)
+    switch val {
     case "flex-start", "start": return .Start
     case "baseline", "first baseline": return .Baseline
     case "last baseline": return .LastBaseline
@@ -5311,7 +5391,8 @@ map_align_items :: proc(v: string) -> Flex_Align {
 }
 @(private="file")
 map_justify_content :: proc(v: string) -> Flex_Just {
-    switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+    val, _ := split_overflow_pos(v)
+    switch val {
     case "center":                   return .Center
     case "flex-end", "end", "right": return .End
     case "space-between":            return .Between
@@ -5322,7 +5403,8 @@ map_justify_content :: proc(v: string) -> Flex_Just {
 }
 @(private="file")
 map_align_content :: proc(v: string) -> Flex_Just {
-    switch strings.to_lower(strings.trim_space(v), context.temp_allocator) {
+    val, _ := split_overflow_pos(v)
+    switch val {
     case "center":          return .Center
     case "flex-end", "end": return .End
     case "space-between":   return .Between
@@ -6668,6 +6750,23 @@ parse_grid_line :: proc(value: string) -> (start, span: int, start_name, end_nam
     return
 }
 
+// Quais pontas de um grid-column/grid-row são `auto` (ou omitidas). Só importa ao
+// filho ABSOLUTO do grid — ver o comentário dos campos grid_*_auto.
+@(private="file")
+grid_line_autos :: proc(value: string) -> (start_auto, end_auto: bool) {
+    is_auto :: proc(p: string) -> bool { return p == "" || p == "auto" }
+    s := strings.to_lower(strings.trim_space(value), context.temp_allocator)
+    if slash := strings.index_byte(s, '/'); slash >= 0 {
+        return is_auto(strings.trim_space(s[:slash])), is_auto(strings.trim_space(s[slash + 1:]))
+    }
+    if is_auto(s) do return true, true
+    // um valor só: o fim é `auto` — exceto quando o início é um NOME, caso em que
+    // o fim repete o nome (css-grid §8.4).
+    if _, k := strconv.parse_int(s); k do return false, true
+    if strings.has_prefix(s, "span") do return false, true
+    return false, false
+}
+
 // Acha a linha (1-based) de um nome na tabela do container. ok=false se ausente.
 @(private="file")
 grid_lookup_line :: proc(lines: []Grid_Line, name: string) -> (int, bool) {
@@ -6884,10 +6983,17 @@ parse_grid_area_prop :: proc(comp: ^Computed, value: string) {
     if strings.index_byte(s, '/') >= 0 {
         // shorthand numérico: row-start / col-start / row-end / col-end
         vals: [4]int; ni := 0
+        // parte omitida ou `auto` (só interessa ao filho absoluto do grid)
+        autos := [4]bool{true, true, true, true}
+        defer {
+            comp.grid_row_start_auto = autos[0]; comp.grid_col_start_auto = autos[1]
+            comp.grid_row_end_auto   = autos[2]; comp.grid_col_end_auto   = autos[3]
+        }
         rest := s
         for ni < 4 {
             sl := strings.index_byte(rest, '/')
             part := sl >= 0 ? strings.trim_space(rest[:sl]) : strings.trim_space(rest)
+            autos[ni] = part == "" || strings.to_lower(part, context.temp_allocator) == "auto"
             if v, k := strconv.parse_int(part); k do vals[ni] = v
             ni += 1
             if sl < 0 do break

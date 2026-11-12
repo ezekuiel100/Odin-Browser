@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>position:absolute filho de grid: a AREA do grid vira o bloco contenedor</title>
+<!--
+  CSS Grid 9: um filho absoluto de um grid que e o bloco contenedor dele usa a
+  AREA dada por grid-column/grid-row/grid-area como bloco contenedor, e nao a
+  caixa do grid. Linha `auto` = a borda do grid naquele lado. Sem nenhum inset no
+  eixo, a posicao estatica e alinhada por justify-self/align-self dentro da area.
+
+  Todas as grades: 3 colunas de 100px, gap 10 => linhas em x = 0 | 100,110 | 210,220 | 320.
+  Linhas de 50px, gap 10 => y = 0 | 50,60 | 110.
+
+  Esperado (x/y relativos ao grid, que comeca em x=0):
+    .a  grid-column 2/4, grid-row 1/3, inset 0      x=110 w=210  y=+0  h=110
+    .b  grid-column 2 (fim AUTO), left/right 0      x=110 w=210  (vai ate a borda direita)
+    .c  grid-area 2/1/3/2, left 10 top 5            x=10  y=+65  (60 da linha + 5)
+    .d  grid-column 1/-1, inset 0                   x=0   w=320
+    .e  grid-area: lado (area nomeada), inset 0     x=220 w=100  y=+0 h=110
+    .f  grid-column auto/3 (inicio AUTO), inset 0   x=0   w=210
+    .g  CONTROLE sem grid-area, inset 0             x=0   w=320  h=110 (nunca esteve quebrado)
+    .h  grid NAO posicionado: grid-area IGNORADA    preenche o .wrap (400x110)
+    .i  place-items:center, sem inset (estatica)    centrado: x=140 y=+45 (40x20 em 320x110)
+    .j  justify-self:end + area 2/4 sem inset       x=320-40=280 (fim da area), y=+0
+    .k  grid SO com absoluto (nenhum item em fluxo) x=110 w=100
+-->
+<style>
+  html, body { margin: 0; padding: 0; }
+  .g { display: grid; grid-template-columns: 100px 100px 100px; grid-template-rows: 50px 50px;
+       gap: 10px; width: 320px; margin-bottom: 10px; }
+  .rel { position: relative; }
+  .item { height: 10px; }
+  .abs { position: absolute; }
+  .a { grid-column: 2 / 4; grid-row: 1 / 3; inset: 0; }
+  .b { grid-column: 2; left: 0; right: 0; top: 0; height: 10px; }
+  .c { grid-area: 2 / 1 / 3 / 2; left: 10px; top: 5px; width: 20px; height: 20px; }
+  .d { grid-column: 1 / -1; inset: 0; }
+  .areas { grid-template-areas: "main main lado" "main main lado"; }
+  .e { grid-area: lado; inset: 0; }
+  .f { grid-column: auto / 3; inset: 0; }
+  .gg { inset: 0; }
+  .wrap { position: relative; width: 400px; margin-bottom: 10px; }
+  .wrap .g { margin-bottom: 0; }
+  .h { grid-column: 2 / 4; inset: 0; }
+  .center { place-items: center; }
+  .i { width: 40px; height: 20px; }
+  .j { grid-column: 2 / 4; justify-self: end; width: 40px; height: 20px; }
+  .k { grid-column: 2 / 3; left: 0; right: 0; top: 0; height: 10px; }
+</style>
+
+<div class="g rel"><div class="item"></div><div class="abs a"></div></div>
+<div class="g rel"><div class="item"></div><div class="abs b"></div></div>
+<div class="g rel"><div class="item"></div><div class="abs c"></div></div>
+<div class="g rel"><div class="item"></div><div class="abs d"></div></div>
+<div class="g rel areas"><div class="item"></div><div class="abs e"></div></div>
+<div class="g rel"><div class="item"></div><div class="abs f"></div></div>
+<div class="g rel"><div class="item"></div><div class="abs gg"></div></div>
+<div class="wrap"><div class="g"><div class="item"></div><div class="abs h"></div></div></div>
+<div class="g rel center"><div class="item"></div><div class="abs i"></div></div>
+<div class="g rel"><div class="item"></div><div class="abs j"></div></div>
+<div class="g rel"><div class="abs k"></div></div>

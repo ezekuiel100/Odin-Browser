@@ -1,0 +1,89 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>safe / unsafe nas propriedades de alinhamento (CSS Align 3, overflow-position)</title>
+<!--
+  `safe X`   : alinha em X, mas se o item/conteudo TRANSBORDA o container cai para start.
+  `unsafe X` : alinha em X mesmo transbordando (pode sair pelo lado do inicio).
+  Antes a palavra-chave nao era reconhecida: `safe center` caia no default de
+  cada propriedade (start em justify-content, stretch em align-items).
+
+  Esperado (x relativo ao container, que comeca em x=0; y relativo ao topo dele):
+  -- sem transbordo: safe/unsafe nao mudam nada, o alinhamento vale --
+    .f1  justify-content: safe center     item 100 em 300   x=100
+    .f2  justify-content: unsafe center   item 100 em 300   x=100
+    .f3  align-items: safe center         item 20 em 60     y=+20
+    .f4  align-items: unsafe end          item 20 em 60     y=+40
+  -- com transbordo --
+    .o1  justify-content: safe center     item 200 em 100   x=0     (cai p/ start)
+    .o2  justify-content: unsafe center   item 200 em 100   x=-50
+    .o3  justify-content: unsafe flex-end item 200 em 100   x=-100
+    .o4  align-items: safe center         item 100 em 40    y=+0    (cai p/ start)
+    .o5  align-items: center  (CONTROLE)  item 100 em 40    y=-30   (sempre foi assim)
+    .o6  align-self: safe end             item 100 em 40    y=+0
+    .o7  coluna, align-items: safe center item 200 em 100   x=0
+    .o8  coluna, justify-content: unsafe center  item 100 em 40   y=-30
+  -- grid --
+    .g1  justify-items: safe center       item 200 em trilha 100   x=0
+    .g2  justify-items: center (CONTROLE) item 200 em trilha 100   x=-50
+    .g3  justify-self: safe end, sem transbordo  item 40 em 100    x=60
+    .g4  place-items: safe center         item 200x100 em 100x40   x=0 y=+0
+    .g5  justify-content: unsafe center   trilha 200 em grid 100   x=-50
+    .g6  place-content: unsafe center     trilha 200x100 em 100x40 x=-50 y=-30
+    .g7  place-self: safe center, sem transbordo  40x20 em 100x40  x=30 y=+10
+-->
+<style>
+  html, body { margin: 0; padding: 0; }
+  .fx { display: flex; margin: 0 0 10px 200px; }
+  .col { flex-direction: column; }
+  .w300 { width: 300px; } .w100 { width: 100px; } .h60 { height: 60px; } .h40 { height: 40px; }
+  .fx > div, .gr > div { flex: none; }
+  .i100 { width: 100px; height: 20px; }
+  .i200 { width: 200px; height: 20px; }
+  .tall { width: 50px; height: 100px; }
+  .f1 { justify-content: safe center; }
+  .f2 { justify-content: unsafe center; }
+  .f3 { align-items: safe center; }
+  .f4 { align-items: unsafe end; }
+  .o1 { justify-content: safe center; }
+  .o2 { justify-content: unsafe center; }
+  .o3 { justify-content: unsafe flex-end; }
+  .o4 { align-items: safe center; }
+  .o5 { align-items: center; }
+  .o6 > div { align-self: safe end; }
+  .o7 { align-items: safe center; }
+  .o8 { justify-content: unsafe center; }
+  .gr { display: grid; margin: 0 0 10px 200px; width: 100px; }
+  .t100 { grid-template-columns: 100px; }
+  .t200 { grid-template-columns: 200px; }
+  .g1 { justify-items: safe center; }
+  .g2 { justify-items: center; }
+  .g3 > div { justify-self: safe end; width: 40px; height: 20px; }
+  .g4 { place-items: safe center; grid-template-rows: 40px; }
+  .g4 > div { width: 200px; height: 100px; }
+  .g5 { justify-content: unsafe center; }
+  .g6 { place-content: unsafe center; grid-template-rows: 100px; height: 40px; }
+  .g7 { grid-template-rows: 40px; }
+  .g7 > div { place-self: safe center; width: 40px; height: 20px; }
+</style>
+
+<div class="fx w300 f1"><div class="i100"></div></div>
+<div class="fx w300 f2"><div class="i100"></div></div>
+<div class="fx w300 h60 f3"><div class="i100"></div></div>
+<div class="fx w300 h60 f4"><div class="i100"></div></div>
+
+<div class="fx w100 o1"><div class="i200"></div></div>
+<div class="fx w100 o2"><div class="i200"></div></div>
+<div class="fx w100 o3"><div class="i200"></div></div>
+<div class="fx w100 h40 o4"><div class="tall"></div></div>
+<div class="fx w100 h40 o5"><div class="tall"></div></div>
+<div class="fx w100 h40 o6"><div class="tall"></div></div>
+<div class="fx col w100 o7"><div class="i200"></div></div>
+<div class="fx col w100 h40 o8"><div class="tall"></div></div>
+
+<div class="gr t100 g1"><div class="i200"></div></div>
+<div class="gr t100 g2"><div class="i200"></div></div>
+<div class="gr t100 g3"><div></div></div>
+<div class="gr t100 g4"><div></div></div>
+<div class="gr t200 g5"><div class="i100"></div></div>
+<div class="gr t200 g6"><div class="i100"></div></div>
+<div class="gr t100 g7"><div></div></div>

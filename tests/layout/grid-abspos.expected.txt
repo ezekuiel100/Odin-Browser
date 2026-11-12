@@ -1,0 +1,36 @@
+﻿<anon# .> block x=0 y=0 w=800 h=1320
+  <html# .> block x=0 y=0 w=800 h=1320
+    <body# .> block x=0 y=0 w=800 h=1320
+      <div# .g rel> grid x=0 y=0 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=0 y=0 w=100 h=10
+        <div# .abs a> inline x=110 y=0 w=210 h=110 ABS
+      <div# .g rel> grid x=0 y=120 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=0 y=120 w=100 h=10
+        <div# .abs b> inline x=110 y=120 w=210 h=10 ABS
+      <div# .g rel> grid x=0 y=240 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=0 y=240 w=100 h=10
+        <div# .abs c> inline x=10 y=305 w=20 h=20 ABS
+      <div# .g rel> grid x=0 y=360 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=0 y=360 w=100 h=10
+        <div# .abs d> inline x=0 y=360 w=320 h=110 ABS
+      <div# .g rel areas> grid x=0 y=480 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=0 y=480 w=100 h=10
+        <div# .abs e> inline x=220 y=480 w=100 h=110 ABS
+      <div# .g rel> grid x=0 y=600 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=0 y=600 w=100 h=10
+        <div# .abs f> inline x=0 y=600 w=210 h=110 ABS
+      <div# .g rel> grid x=0 y=720 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=0 y=720 w=100 h=10
+        <div# .abs gg> inline x=0 y=720 w=320 h=110 ABS
+      <div# .wrap> block x=0 y=840 w=400 h=110 REL
+        <div# .g> grid x=0 y=840 w=320 h=110 cols=3 rows=2 gap=10
+          <div# .item> inline x=0 y=840 w=100 h=10
+        <div# .abs h> inline x=0 y=840 w=400 h=110 ABS
+      <div# .g rel center> grid x=0 y=960 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=50 y=980 w=0 h=10
+        <div# .abs i> inline x=140 y=1005 w=40 h=20 ABS
+      <div# .g rel> grid x=0 y=1080 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .item> inline x=0 y=1080 w=100 h=10
+        <div# .abs j> inline x=280 y=1080 w=40 h=20 ABS
+      <div# .g rel> grid x=0 y=1200 w=320 h=110 REL cols=3 rows=2 gap=10
+        <div# .abs k> inline x=110 y=1200 w=100 h=10 ABS

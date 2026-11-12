@@ -443,6 +443,10 @@ Box :: struct {
     justify_items: Flex_Align, // grid: alinhamento horizontal na célula
     align_self: Flex_Align, has_align_self: bool,
     justify_self: Flex_Align, has_justify_self: bool, // grid item
+    // `safe`/`unsafe` das seis propriedades de alinhamento (ver Overflow_Pos)
+    justify_ovf, align_content_ovf: Overflow_Pos,
+    align_items_ovf, justify_items_ovf: Overflow_Pos,
+    align_self_ovf, justify_self_ovf: Overflow_Pos,
     gap:      f32,
     // gap em %: fração+offset resolvidos no layout (base = conteúdo do container)
     gap_pct: bool, gap_frac: f32, gap_off: f32,
@@ -471,6 +475,18 @@ Box :: struct {
     // grid item (linha 1-based; 0 = auto-place)
     grid_col_start: int, grid_col_span: int,
     grid_row_start: int, grid_row_span: int,
+    grid_col_start_auto, grid_col_end_auto: bool, // linha `auto` (só p/ o filho absoluto)
+    grid_row_start_auto, grid_row_end_auto: bool,
+    // Filho ABSOLUTO de um grid (CSS Grid §9.1): bordas da ÁREA do grid que lhe
+    // servem de bloco contenedor, RELATIVAS ao content box do grid (assim não
+    // precisam acompanhar translate_subtree). `gabs_has[i]` falso = linha auto →
+    // vale a borda do próprio container. Ordem: 0=esq 1=topo 2=dir 3=base.
+    // Gravadas por layout_grid, lidas por layout_absolutes.
+    gabs: [4]f32, gabs_has: [4]bool,
+    // Caixa IÇADA para outro pai pelo layout_absolutes: deixou de ser filha (de
+    // árvore de caixas) do container onde nasceu, e o novo pai não pode tratá-la
+    // como filha DELE (ex.: aplicar grid-area de um grid que não é o pai no DOM).
+    reparented: bool,
 
     // geometria (border box), coords locais do viewport
     x, y, w, h:                      f32,
@@ -2578,6 +2594,9 @@ apply_box :: proc(b: ^Box, comp: Computed, base: string = "") {
     b.justify_items = comp.justify_items
     b.align_self = comp.align_self; b.has_align_self = comp.has_align_self
     b.justify_self = comp.justify_self; b.has_justify_self = comp.has_justify_self
+    b.justify_ovf = comp.justify_ovf; b.align_content_ovf = comp.align_content_ovf
+    b.align_items_ovf = comp.align_items_ovf; b.justify_items_ovf = comp.justify_items_ovf
+    b.align_self_ovf = comp.align_self_ovf; b.justify_self_ovf = comp.justify_self_ovf
     b.gap = comp.gap
     b.gap_pct = comp.gap_pct; b.gap_frac = comp.gap_frac; b.gap_off = comp.gap_off
     b.row_gap_pct = comp.row_gap_pct; b.row_gap_frac = comp.row_gap_frac; b.row_gap_off = comp.row_gap_off
@@ -2609,6 +2628,8 @@ apply_box :: proc(b: ^Box, comp: Computed, base: string = "") {
     b.row_gap = comp.row_gap
     b.grid_col_start = comp.grid_col_start; b.grid_col_span = comp.grid_col_span
     b.grid_row_start = comp.grid_row_start; b.grid_row_span = comp.grid_row_span
+    b.grid_col_start_auto = comp.grid_col_start_auto; b.grid_col_end_auto = comp.grid_col_end_auto
+    b.grid_row_start_auto = comp.grid_row_start_auto; b.grid_row_end_auto = comp.grid_row_end_auto
 }
 
 // Somas de borda por eixo (esq+dir / topo+base). Substituem o antigo 2*border_w.
@@ -3915,7 +3936,8 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     cross_h := avail_h >= 0 ? avail_h : total
     free := max(0, cross_h - total)
     extra := b.ac_stretch ? free / f32(len(lines)) : 0
-    off, between := flex_justify(b.align_content, b.ac_stretch ? 0 : free, b.row_gap, len(lines))
+    ac_unsafe := !b.ac_stretch && b.align_content_ovf == .Unsafe
+    off, between := flex_justify(b.align_content, b.ac_stretch ? 0 : (ac_unsafe ? cross_h - total : free), b.row_gap, len(lines), ac_unsafe)
     cy := off
     for ln, idx in lines {
         h := line_h[idx] + extra
@@ -4033,7 +4055,8 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
         auto_share = jfree / f32(n_autos)
         soff = 0; between = gap
     } else {
-        soff, between = flex_justify(b.justify, jfree, gap, cnt)
+        j_unsafe := b.justify_ovf == .Unsafe
+        soff, between = flex_justify(b.justify, j_unsafe ? cw - used : jfree, gap, cnt, j_unsafe)
     }
 
     // pass B: posiciona. A pass A já dispôs cada item em (b.content_x, cross_y) na
@@ -4048,6 +4071,7 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
         cmt, cmb := node_margins(c)
         oc := c.h + cmt + cmb
         ai := item_cross_align(b, c) // align-self sobrescreve align-items
+        ai = safe_align(ai, item_cross_safe(b, c), line, oc)
         if b.flex_wrap_reverse {
             if ai == .Start { ai = .End } else if ai == .End { ai = .Start }
         }
@@ -4196,7 +4220,8 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         for j in 0 ..< len(lines) do line_w[j] += cross_free / f32(len(lines))
         cross_free = 0
     }
-    xoff, cross_between := flex_justify(b.align_content, cross_free, b.gap, len(lines))
+    ac_unsafe := b.flex_wrap && !b.ac_stretch && b.align_content_ovf == .Unsafe
+    xoff, cross_between := flex_justify(b.align_content, ac_unsafe ? cw - cross_used : cross_free, b.gap, len(lines), ac_unsafe)
     result: f32 = 0
     for ln, j in lines {
         px := b.flex_wrap_reverse ? cw - xoff - line_w[j] : xoff
@@ -4249,7 +4274,7 @@ flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mi
         used += finals[i] + cmt + cmb
     }
     jfree := definite ? main_avail - used : 0
-    soff, between := flex_justify(b.justify, jfree, gap, n)
+    soff, between := flex_justify(b.justify, jfree, gap, n, b.justify_ovf == .Unsafe)
 
     // origem da margin-box. Como no flex-row: a pass A já dispôs cada item; aqui
     // TRANSLADAMOS até (x, cy) em vez de re-dispor (evita o custo exponencial do
@@ -4266,6 +4291,7 @@ flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mi
     for child, i in kids {
         cmt, cmb := node_margins(child)
         ai := item_cross_align(b, child) // align-self sobrescreve align-items
+        ai = safe_align(ai, item_cross_safe(b, child), cw, cross[i] + child.margin[3] + child.margin[1])
         if b.flex_wrap_reverse {
             if ai == .Start { ai = .End } else if ai == .End { ai = .Start }
         }
@@ -4310,7 +4336,12 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         append(&items, c)
     }
     n := len(items)
-    if n == 0 do return 0
+    // Sem item em fluxo o grid ainda tem as trilhas EXPLÍCITAS: elas dão altura
+    // ao container e são as linhas contra as quais um filho absoluto se posiciona.
+    // Só não há nada a fazer quando não existe nem trilha de linha nem absoluto.
+    n_abs := 0
+    for c in b.children do if (c.pos == .Absolute || c.pos == .Fixed) && !c.reparented do n_abs += 1
+    if n == 0 && n_abs == 0 && b.grid_row_track_n == 0 do return 0
 
     cw      := b.content_w
     col_gap := b.gap
@@ -4357,11 +4388,12 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
 
     nrows := b.grid_row_track_n
     for i in 0 ..< n do nrows = max(nrows, row_of[i] + rspan_of[i])
-    if nrows < 1 do nrows = 1
+    // (sem item em fluxo não nasce linha implícita: grid-auto-rows não se aplica)
+    if nrows < 1 && n > 0 do nrows = 1
 
     widths := grid_col_widths(tracks, cw, col_gap, items[:], col_of, cspan_of)
     // posições x das colunas — justify-content distribui a sobra horizontal
-    xs := grid_track_positions(widths, col_gap, cw, b.justify, true)
+    xs := grid_track_positions(widths, col_gap, cw, b.justify, true, b.justify_ovf == .Unsafe)
 
     row_h := grid_row_heights(b, items[:], widths, xs, col_of, cspan_of, row_of, rspan_of, nrows, col_gap, row_gap, ch, has_h)
     column_first := make([]f32, nc, context.temp_allocator)
@@ -4402,7 +4434,7 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         }
     }
     // posições y das linhas — align-content distribui a sobra vertical (só se height definida)
-    row_y := grid_track_positions(row_h, row_gap, ch, b.align_content, has_h)
+    row_y := grid_track_positions(row_h, row_gap, ch, b.align_content, has_h, b.align_content_ovf == .Unsafe)
 
     // posiciona cada item na sua célula. Padrão = stretch (preenche a célula);
     // justify-items/align-items (ou -self por item) alinham dentro da célula.
@@ -4467,6 +4499,8 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         sw := grid_extent(xs, widths, col_of[i], cspan_of[i])
         sh := grid_extent(row_y, row_h, row_of[i], rspan_of[i])
         ji, ai := grid_item_align(b, it)
+        ji = safe_align(ji, (it.has_justify_self ? it.justify_self_ovf : b.justify_items_ovf) == .Safe, sw, it.w)
+        ai = safe_align(ai, item_cross_safe(b, it), sh, it.h)
         stretch_w := ji == .Stretch && !it.def_w && !it.width_mc
         stretch_h := ai == .Stretch && !it.has_height && !it.has_height_pct && !it.height_mc
         xoff: f32 = stretch_w ? 0 : flex_align(ji, sw, it.w)
@@ -4481,7 +4515,53 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     total: f32 = 0
     for r in 0 ..< nrows do total += row_h[r]
     total += row_gap * f32(max(0, nrows - 1))
+
+    // Filhos ABSOLUTOS (CSS Grid §9): não ocupam célula nem criam trilha, mas
+    // grid-column/grid-row escolhem a ÁREA que lhes serve de bloco contenedor, e a
+    // posição estática é alinhada por justify-self/align-self dentro dela.
+    if n_abs > 0 {
+        cont_h := has_h ? ch : intrinsic_h
+        for c in b.children {
+            if c.pos != .Absolute && c.pos != .Fixed do continue
+            c.gabs_has = {}
+            if c.reparented do continue // içada de um descendente: não é filha deste grid
+            x0, x1, hx0, hx1 := grid_abs_axis(c.grid_col_start, c.grid_col_span, c.grid_col_start_auto, c.grid_col_end_auto, xs, widths)
+            y0, y1, hy0, hy1 := grid_abs_axis(c.grid_row_start, c.grid_row_span, c.grid_row_start_auto, c.grid_row_end_auto, row_y, row_h)
+            // a área só vale como bloco contenedor se o grid É o bloco contenedor
+            // desta caixa (mesma regra de layout_absolutes_rec)
+            is_cb := c.pos == .Absolute ? (b.pos != .Static || b.cb_abs) : b.cb_fixed
+            if !is_cb { hx0 = false; hx1 = false; hy0 = false; hy1 = false }
+            c.gabs = {x0, y0, x1, y1}
+            c.gabs_has = {hx0, hy0, hx1, hy1}
+            // posição estática: como item único de uma área — a área acima, ou o
+            // content box do grid no lado em que a linha é auto.
+            sx0: f32 = hx0 ? x0 : 0;  sx1: f32 = hx1 ? x1 : cw
+            sy0: f32 = hy0 ? y0 : 0;  sy1: f32 = hy1 ? y1 : cont_h
+            ji, ai := grid_item_align(b, c)
+            c.has_static = true; c.static_flex = true
+            c.static_x = b.content_x + sx0; c.static_y = b.content_y + sy0
+            c.static_cw = max(0, sx1 - sx0); c.static_ch = max(0, sy1 - sy0)
+            c.static_ax = align_off(ji); c.static_ay = align_off(ai)
+        }
+    }
     return has_h ? total : intrinsic_h
+}
+
+// Bordas de um eixo da área de um filho ABSOLUTO do grid, relativas ao content
+// box. `has_*` falso = linha auto (ou que não existe na grade) → quem chama usa a
+// borda do container. `pos`/`sizes` = posição e tamanho de cada trilha do eixo.
+// A linha k vista como FIM de área fica ANTES do gap (fim da trilha k-1); como
+// INÍCIO fica depois dele (início da trilha k).
+@(private="file")
+grid_abs_axis :: proc(start, span: int, start_auto, end_auto: bool, pos, sizes: []f32) -> (lo, hi: f32, has_lo, has_hi: bool) {
+    n := len(sizes)
+    if start <= 0 || n == 0 do return // auto, ou só `span N`: as duas bordas são do container
+    s := start - 1         // linha de início, 0-based (0..n)
+    e := s + max(1, span)  // linha de fim
+    if !start_auto && s <= n { lo = s == n ? pos[n - 1] + sizes[n - 1] : pos[s]; has_lo = true }
+    if !end_auto && e <= n   { hi = pos[e - 1] + sizes[e - 1]; has_hi = true }
+    if has_lo && has_hi && hi < lo do hi = lo
+    return
 }
 
 // Coloca os itens numa grade de nc colunas: honra grid-column/grid-row explícitos
@@ -4726,15 +4806,15 @@ grid_extent :: proc(pos, sizes: []f32, i, span: int) -> f32 {
 // Offsets de cada trilha aplicando justify-content (colunas) / align-content
 // (linhas) quando há sobra no eixo. Devolve pos[n+1] (pos[i] = início da trilha i).
 @(private="file")
-grid_track_positions :: proc(sizes: []f32, gap, container: f32, dist: Flex_Just, distribute: bool) -> []f32 {
+grid_track_positions :: proc(sizes: []f32, gap, container: f32, dist: Flex_Just, distribute: bool, unsafe := false) -> []f32 {
     n := len(sizes)
     pos := make([]f32, n + 1, context.temp_allocator)
     off, between: f32 = 0, gap
-    if distribute {
+    if distribute && n > 0 {
         used := gap * f32(max(0, n - 1))
         for s in sizes do used += s
         free := container - used
-        if free > 0 do off, between = flex_justify(dist, free, gap, n)
+        if free > 0 || unsafe do off, between = flex_justify(dist, free, gap, n, unsafe)
     }
     pos[0] = off
     for i in 0 ..< n do pos[i + 1] = pos[i] + sizes[i] + between
@@ -6153,8 +6233,19 @@ set_flex_static :: proc(b: ^Box, cont_h: f32) {
 }
 
 @(private="file")
-flex_justify :: proc(j: Flex_Just, free, gap: f32, n: int) -> (start, between: f32) {
-    if free <= 0 do return 0, gap
+flex_justify :: proc(j: Flex_Just, free, gap: f32, n: int, unsafe := false) -> (start, between: f32) {
+    if free <= 0 || n <= 0 {
+        // `unsafe center|end`: honra o alinhamento mesmo TRANSBORDANDO (o conteúdo
+        // sai pelo lado do início). Quem chama passa a sobra CRUA (negativa). Os
+        // space-* têm fallback seguro na própria spec e ficam no início.
+        if unsafe && free < 0 {
+            #partial switch j {
+            case .Center: return free / 2, gap
+            case .End:    return free, gap
+            }
+        }
+        return 0, gap
+    }
     switch j {
     case .Start:   return 0, gap
     case .Center:  return free / 2, gap
@@ -6184,6 +6275,18 @@ justify_for_reverse :: proc(j: Flex_Just, reverse: bool) -> Flex_Just {
 @(private="file")
 item_cross_align :: proc(b, c: ^Box) -> Flex_Align {
     return c.align_self if c.has_align_self else b.align_items
+}
+// ...e o `safe` que acompanha esse alinhamento (vem do MESMO lugar que o valor).
+@(private="file")
+item_cross_safe :: proc(b, c: ^Box) -> bool {
+    return (c.has_align_self ? c.align_self_ovf : b.align_items_ovf) == .Safe
+}
+// `safe center|end`: se o item TRANSBORDA o espaço de alinhamento, cai p/ start
+// (CSS Align §4.4) — em vez de sair pelo lado do início, onde não há rolagem.
+@(private="file")
+safe_align :: proc(a: Flex_Align, safe: bool, space, sz: f32) -> Flex_Align {
+    if safe && sz > space && (a == .Center || a == .End) do return .Start
+    return a
 }
 
 // Estica o item no eixo CRUZADO de uma COLUNA flex (= a largura)? `stretch` só
@@ -6433,6 +6536,7 @@ layout_absolutes :: proc(b: ^Box, cb, page: Rect) {
     // outros filhos do CB. Processa em ordem REVERSA p/ que vários içados sob o mesmo
     // âncora fiquem na ordem de árvore (cada um inserido em âncora+1).
     #reverse for r in rep {
+        r.child.reparented = true
         for c, idx in r.from.children {
             if c == r.child { ordered_remove(&r.from.children, idx); break }
         }
@@ -6496,14 +6600,14 @@ layout_absolutes_rec :: proc(b: ^Box, cb, page: Rect, cb_box, page_box: ^Box, gr
         case .Static, .Relative, .Sticky: // sticky fica no fluxo (desloca só na pintura)
             layout_absolutes_rec(child, child_cb, child_fix, ccb_box, cfx_box, cgroup, cgroup_fixed, canchor, canchor_fix, rep)
         case .Absolute:
-            place_absolute(child, child_cb)
+            place_absolute(child, grid_abs_cb(b, child, child_cb, est_abs))
             if ccb_box != b && ccb_box != nil && !cgroup && child.inline_parent_effect == nil {
                 mark_hoisted(child, canchor)
                 append(rep, Reparent{child, b, ccb_box, canchor})
             }
             layout_absolutes_rec(child, Rect{child.x, child.y, child.w, child.h}, child_fix, child, cfx_box, false, cgroup_fixed, child, canchor_fix, rep)
         case .Fixed:
-            place_absolute(child, child_fix)
+            place_absolute(child, grid_abs_cb(b, child, child_fix, b.cb_fixed))
             if cfx_box != b && cfx_box != nil && !cgroup_fixed && child.inline_parent_effect == nil {
                 mark_hoisted(child, canchor_fix)
                 append(rep, Reparent{child, b, cfx_box, canchor_fix})
@@ -6523,6 +6627,21 @@ layout_absolutes_rec :: proc(b: ^Box, cb, page: Rect, cb_box, page_box: ^Box, gr
                              true, true, it.box, it.box, rep)
     }
 
+}
+
+// Bloco contenedor de um filho absoluto de GRID: a área que grid-column/grid-row
+// escolheram (CSS Grid §9.1), gravada por layout_grid em `gabs`. Linha auto = a
+// borda do bloco contenedor normal. `is_cb` = o grid `b` é o bloco contenedor.
+@(private="file")
+grid_abs_cb :: proc(b, c: ^Box, cb: Rect, is_cb: bool) -> Rect {
+    if !is_cb || !b.is_grid || c.reparented do return cb
+    if c.gabs_has == ([4]bool{}) do return cb
+    x0, y0, x1, y1 := cb.x, cb.y, cb.x + cb.w, cb.y + cb.h
+    if c.gabs_has[0] do x0 = b.content_x + c.gabs[0]
+    if c.gabs_has[1] do y0 = b.content_y + c.gabs[1]
+    if c.gabs_has[2] do x1 = b.content_x + c.gabs[2]
+    if c.gabs_has[3] do y1 = b.content_y + c.gabs[3]
+    return Rect{x0, y0, max(0, x1 - x0), max(0, y1 - y0)}
 }
 
 @(private="file")
