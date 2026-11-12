@@ -468,6 +468,17 @@ Box :: struct {
     grid_auto_row_n: int, grid_auto_rows: [GRID_MAX_AUTO]Grid_Track, // trilhas IMPLÍCITAS (ciclam)
     grid_auto_col_n: int, grid_auto_cols: [GRID_MAX_AUTO]Grid_Track,
     grid_flow_col: bool, grid_flow_dense: bool,  // grid-auto-flow
+    // ── subgrid (CSS Grid 2) ──
+    grid_sub_cols, grid_sub_rows: bool, // trilhas do eixo vêm do grid pai
+    has_gap_col, has_gap_row: bool,     // gap declarado (normal = gutter do pai)
+    // Trilhas IMPOSTAS pelo pai: [lo, hi] de cada trilha coberta, relativas ao
+    // início da área. Slices TEMPORÁRIOS: o pai grava antes de cada layout_box do
+    // filho e o layout_grid do filho os CONSOME (zera) — nunca sobrevivem ao frame.
+    sg_cols, sg_rows: [][2]f32,
+    sg_pgap: [2]f32,            // gutter efetivo do pai (coluna, linha)
+    // Contribuições de altura dos itens às linhas do pai (saída do passe de
+    // medida de um subgrid de linhas; lida e zerada pelo pai).
+    sg_contrib: []Grid_Contrib,
     container_inline: bool, // container-type: inline-size — a largura é medida p/ @container
     content_hidden: bool,   // content-visibility: hidden — não constrói/pinta o conteúdo
     bg_fixed: bool,         // background-attachment: fixed — fundo ancorado no VIEWPORT
@@ -2615,6 +2626,8 @@ apply_box :: proc(b: ^Box, comp: Computed, base: string = "") {
     b.grid_auto_row_n = comp.grid_auto_row_n; b.grid_auto_rows = comp.grid_auto_rows
     b.grid_auto_col_n = comp.grid_auto_col_n; b.grid_auto_cols = comp.grid_auto_cols
     b.grid_flow_col = comp.grid_flow_col; b.grid_flow_dense = comp.grid_flow_dense
+    b.grid_sub_cols = comp.grid_sub_cols; b.grid_sub_rows = comp.grid_sub_rows
+    b.has_gap_col = comp.has_gap_col; b.has_gap_row = comp.has_gap_row
     b.container_inline = comp.container_inline
     b.content_hidden = comp.content_hidden
     b.bg_fixed = comp.bg_fixed
@@ -4346,6 +4359,14 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     cw      := b.content_w
     col_gap := b.gap
     row_gap := b.row_gap
+    // subgrid: consome as trilhas impostas pelo pai (ver Box.sg_cols). Sem elas
+    // (passe de medida das linhas, ou layout fora do pai) o eixo cai nas trilhas
+    // `auto` que o compute_node deixou.
+    imp_c := b.grid_sub_cols ? b.sg_cols : nil
+    imp_r := b.grid_sub_rows ? b.sg_rows : nil
+    b.sg_cols = nil; b.sg_rows = nil; b.sg_contrib = nil
+    if b.grid_sub_cols && !b.has_gap_col do col_gap = b.sg_pgap[0]
+    if b.grid_sub_rows && !b.has_gap_row do row_gap = b.sg_pgap[1]
 
     // altura de conteúdo do container: imposta pelo pai (item esticado) ou height
     // explícita. Governa % de linha, distribuição de fr e align-content.
@@ -4355,6 +4376,10 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     // tracks de coluna primeiro (expande auto-fill); o placement precisa só do
     // nº de colunas, e a largura das colunas Auto depende de quais itens caem nelas.
     tracks := grid_track_list(b, cw, col_gap)
+    if imp_c != nil {
+        tracks = make([]Grid_Track, len(imp_c), context.temp_allocator)
+        for &t in tracks do t = Grid_Track{kind = .Auto}
+    }
     nc := len(tracks)
     // No fluxo por COLUNA sem grid-template-columns, TODA coluna é implícita —
     // o default de grid_track_list (1 trilha 1fr) engoliria a largura e deixaria
@@ -4369,11 +4394,12 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         if n_primary < 1 do n_primary = 1
     }
     col_of, row_of, cspan_of, rspan_of := grid_place(items[:], n_primary, b.grid_flow_col, b.grid_flow_dense)
+    grid_sub_clamp(b, nc, col_of, row_of, cspan_of, rspan_of)
 
     // colunas IMPLÍCITAS (só no fluxo por coluna, onde são a razão de ser da
     // prop): estendem a lista de trilhas ciclando grid-auto-columns. No fluxo por
     // linha o placement segue CLAMPANDO na grade explícita, como antes.
-    if b.grid_flow_col {
+    if b.grid_flow_col && !b.grid_sub_cols {
         maxc := nc
         for i in 0 ..< n do maxc = max(maxc, col_of[i] + cspan_of[i])
         if maxc > nc {
@@ -4390,12 +4416,28 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     for i in 0 ..< n do nrows = max(nrows, row_of[i] + rspan_of[i])
     // (sem item em fluxo não nasce linha implícita: grid-auto-rows não se aplica)
     if nrows < 1 && n > 0 do nrows = 1
+    if imp_r != nil do nrows = len(imp_r)
 
-    widths := grid_col_widths(tracks, cw, col_gap, items[:], col_of, cspan_of)
-    // posições x das colunas — justify-content distribui a sobra horizontal
-    xs := grid_track_positions(widths, col_gap, cw, b.justify, true, b.justify_ovf == .Unsafe)
+    widths, xs: []f32
+    if imp_c != nil {
+        // colunas do pai: só desconta as bordas do próprio subgrid e o gutter
+        xs, widths = grid_sub_tracks(imp_c, b.margin[3]+b.border_w[3]+b.padding[3], b.margin[1]+b.border_w[1]+b.padding[1], b.gap, b.has_gap_col)
+    } else {
+        // itens de um filho subgrid de COLUNAS dimensionam as trilhas DESTE grid
+        // como se fossem itens dele (css-grid-2 §9); sem subgrid é a lista crua.
+        fi, fc, fs, fx := grid_flatten_cols(items[:], col_of, cspan_of, col_gap)
+        widths = grid_col_widths(tracks, cw, col_gap, fi, fc, fs, fx)
+        // posições x das colunas — justify-content distribui a sobra horizontal
+        xs = grid_track_positions(widths, col_gap, cw, b.justify, true, b.justify_ovf == .Unsafe)
+    }
 
-    row_h := grid_row_heights(b, items[:], widths, xs, col_of, cspan_of, row_of, rspan_of, nrows, col_gap, row_gap, ch, has_h)
+    row_h: []f32
+    virt := make([dynamic]Grid_Contrib, context.temp_allocator)
+    if imp_r != nil {
+        _, row_h = grid_sub_tracks(imp_r, b.margin[0]+b.border_w[0]+b.padding[0], b.margin[2]+b.border_w[2]+b.padding[2], b.row_gap, b.has_gap_row)
+    } else {
+        row_h = grid_row_heights(b, items[:], widths, xs, col_of, cspan_of, row_of, rspan_of, nrows, col_gap, row_gap, ch, has_h, &virt)
+    }
     column_first := make([]f32, nc, context.temp_allocator)
     column_last := make([]f32, nc, context.temp_allocator)
     baseline_first := make([]f32, nrows, context.temp_allocator)
@@ -4403,6 +4445,7 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     baseline_descent := make([]f32, nrows, context.temp_allocator)
     last_ascent := make([]f32, nrows, context.temp_allocator)
     for it, i in items {
+        if imp_r != nil do break // linhas impostas: nada cresce (e os itens ainda não foram dispostos)
         _, ai := grid_item_align(b, it)
         if ai != .Baseline && ai != .LastBaseline do continue
         r := row_of[i]
@@ -4417,14 +4460,14 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         }
     }
     for r in 0 ..< nrows {
-        fixed := r < b.grid_row_track_n && (b.grid_row_tracks[r].kind == .Fixed || (has_h && b.grid_row_tracks[r].kind == .Pct))
+        fixed := imp_r != nil || (r < b.grid_row_track_n && (b.grid_row_tracks[r].kind == .Fixed || (has_h && b.grid_row_tracks[r].kind == .Pct)))
         if !fixed do row_h[r] = max(row_h[r], max(baseline_first[r]+baseline_descent[r], last_ascent[r]+baseline_last[r]))
     }
     // Cyclic percentages contribute as auto, then resolve against the intrinsic
     // content height without feeding the result back into that height.
     intrinsic_h := row_gap * f32(max(0, nrows-1))
     for h in row_h do intrinsic_h += h
-    if !has_h {
+    if !has_h && imp_r == nil {
         if b.row_gap_pct do row_gap = max(0, b.row_gap_frac*intrinsic_h+b.row_gap_off)
         for r in 0 ..< nrows {
             t := Grid_Track{kind = .Auto}
@@ -4435,6 +4478,19 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     }
     // posições y das linhas — align-content distribui a sobra vertical (só se height definida)
     row_y := grid_track_positions(row_h, row_gap, ch, b.align_content, has_h, b.align_content_ovf == .Unsafe)
+    if imp_r != nil {
+        row_y, row_h = grid_sub_tracks(imp_r, b.margin[0]+b.border_w[0]+b.padding[0], b.margin[2]+b.border_w[2]+b.padding[2], b.row_gap, b.has_gap_row)
+    } else if b.grid_sub_rows {
+        // passe de MEDIDA de um subgrid de linhas: publica o que cada item pede
+        // às linhas, p/ o pai dimensionar as trilhas DELE (que são as nossas).
+        out := make([dynamic]Grid_Contrib, context.temp_allocator)
+        for it, i in items {
+            if grid_is_sub(it, .Column) do continue // já expandido em `virt`
+            append(&out, Grid_Contrib{row_of[i], rspan_of[i], it.h + it.margin[0] + it.margin[2]})
+        }
+        for v in virt do append(&out, v)
+        b.sg_contrib = out[:]
+    }
 
     // posiciona cada item na sua célula. Padrão = stretch (preenche a célula);
     // justify-items/align-items (ou -self por item) alinham dentro da célula.
@@ -4455,6 +4511,19 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // has_width sintético (20 cols default) mesmo com width:auto — e DEVEM esticar.
         stretch_w := ji == .Stretch && !it.def_w && !it.width_mc
         stretch_h := ai == .Stretch && !it.has_height && !it.has_height_pct && !it.height_mc
+        // subgrid: SEMPRE esticado no eixo subgridado — alinhamento e width/height
+        // do item são ignorados ali (css-grid-2 §9), e a área inteira (margens
+        // inclusive) é dele. As trilhas vão junto, antes do layout_box.
+        sub_w, sub_h := grid_is_sub(it, .Row), grid_is_sub(it, .Column)
+        if sub_w || sub_h {
+            grid_sub_impose(it, sub_w ? xs : nil, widths, col_of[i], cspan_of[i], sub_h ? row_y : nil, row_h, row_of[i], rspan_of[i], col_gap, row_gap)
+            sfw: f32 = sub_w ? max(0, sw - it.margin[3] - it.margin[1]) : ((it.def_w || it.width_mc) ? -1 : (stretch_w ? sw : min(measure_intrinsic_w(it), sw)))
+            sfh: f32 = sub_h ? max(0, sh - it.margin[0] - it.margin[2]) : (stretch_h ? sh : -1)
+            if !sub_w && sfw >= 0 do sfw = stretch_clamp(it, .Row, sfw, sw)
+            if !sub_h && sfh >= 0 do sfh = stretch_clamp(it, .Column, sfh, sh)
+            layout_box(it, cx, cy, sfw >= 0 ? sfw : sw, sfw, sfh, cb_h=sh)
+            continue
+        }
         // fw = largura FORÇADA: item com width definida → -1 (o box usa a própria
         // width e pode transbordar a célula); stretch → preenche a célula; senão
         // shrink-to-fit (max-content ∩ célula). avail_w é SEMPRE a célula (sw), p/
@@ -4503,6 +4572,8 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         ai = safe_align(ai, item_cross_safe(b, it), sh, it.h)
         stretch_w := ji == .Stretch && !it.def_w && !it.width_mc
         stretch_h := ai == .Stretch && !it.has_height && !it.has_height_pct && !it.height_mc
+        if grid_is_sub(it, .Row)    { stretch_w = true; ji = .Stretch }
+        if grid_is_sub(it, .Column) { stretch_h = true; ai = .Stretch }
         xoff: f32 = stretch_w ? 0 : flex_align(ji, sw, it.w)
         if ji == .Baseline do xoff = column_first[col_of[i]]-box_vertical_baseline(it)-it.margin[3]
         if ji == .LastBaseline do xoff = sw-column_last[col_of[i]+cspan_of[i]-1]-box_vertical_baseline(it,true)-it.margin[3]
@@ -4545,6 +4616,130 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         }
     }
     return has_h ? total : intrinsic_h
+}
+
+// ── subgrid (CSS Grid Level 2 §9) ────────────────────────────────────────────
+// Um item de grid que é ele mesmo grid e declara `grid-template-columns/rows:
+// subgrid` não tem trilhas próprias naquele eixo: usa as do pai que ele cobre.
+// Duas metades: (1) os itens DELE dimensionam as trilhas do PAI (colunas:
+// grid_flatten_cols; linhas: Grid_Contrib via passe de medida); (2) o pai IMPÕE
+// a geometria pronta (grid_sub_impose → grid_sub_tracks no filho).
+// `axis`: .Row = eixo inline (colunas), .Column = eixo de bloco (linhas).
+Grid_Contrib :: struct { start, span: int, size: f32 }
+
+@(private="file")
+grid_is_sub :: proc(it: ^Box, axis: Flex_Dir) -> bool {
+    if !it.is_grid || it.pos == .Absolute || it.pos == .Fixed do return false
+    return axis == .Row ? it.grid_sub_cols : it.grid_sub_rows
+}
+
+// Subgrid não cria trilha implícita no eixo subgridado: o que passar é clampado.
+@(private="file")
+grid_sub_clamp :: proc(b: ^Box, nc: int, col_of, row_of, cspan_of, rspan_of: []int) {
+    if b.grid_sub_cols && nc > 0 do for i in 0 ..< len(col_of) {
+        cspan_of[i] = clamp(cspan_of[i], 1, nc)
+        col_of[i] = clamp(col_of[i], 0, nc - cspan_of[i])
+    }
+    if nr := b.grid_row_track_n; b.grid_sub_rows && nr > 0 do for i in 0 ..< len(row_of) {
+        rspan_of[i] = clamp(rspan_of[i], 1, nr)
+        row_of[i] = clamp(row_of[i], 0, nr - rspan_of[i])
+    }
+}
+
+// Itens em fluxo de `b` e o placement deles — o MESMO que o layout_grid de `b`
+// vai calcular quando tiver `nc` colunas (é o que mantém pai e filho de acordo).
+@(private="file")
+grid_sub_place :: proc(b: ^Box, nc: int) -> (items: []^Box, col_of, cspan_of: []int) {
+    list := make([dynamic]^Box, context.temp_allocator)
+    for c in flex_ordered_children(b, false) {
+        if c.pos == .Absolute || c.pos == .Fixed do continue
+        append(&list, c)
+    }
+    n_primary := nc
+    if b.grid_flow_col { n_primary = max(1, b.grid_row_track_n) }
+    row_of, rspan_of: []int
+    col_of, row_of, cspan_of, rspan_of = grid_place(list[:], n_primary, b.grid_flow_col, b.grid_flow_dense)
+    grid_sub_clamp(b, nc, col_of, row_of, cspan_of, rspan_of)
+    return list[:], col_of, cspan_of
+}
+
+// Troca cada filho subgrid-de-colunas pelos itens DELE (recursivo), nas colunas
+// do grid de fora. `extra` = margem a mais por item: borda+padding+margem do
+// subgrid nas pontas e meia diferença de gutter no miolo (pode ser negativa).
+// Sem nenhum subgrid devolve as listas de entrada e extra=nil (caminho antigo).
+@(private="file")
+grid_flatten_cols :: proc(items: []^Box, col_of, cspan_of: []int, gap: f32) -> (fi: []^Box, fc, fs: []int, fx: []f32) {
+    any := false
+    for it in items do if grid_is_sub(it, .Row) { any = true; break }
+    if !any do return items, col_of, cspan_of, nil
+    oi := make([dynamic]^Box, context.temp_allocator)
+    oc := make([dynamic]int, context.temp_allocator)
+    os := make([dynamic]int, context.temp_allocator)
+    ox := make([dynamic]f32, context.temp_allocator)
+    for it, i in items do grid_flatten_rec(&oi, &oc, &os, &ox, it, col_of[i], cspan_of[i], 0, 0, gap, gap, 0)
+    return oi[:], oc[:], os[:], ox[:]
+}
+
+@(private="file")
+grid_flatten_rec :: proc(oi: ^[dynamic]^Box, oc, os: ^[dynamic]int, ox: ^[dynamic]f32, it: ^Box, c0, span: int, acc_l, acc_r, root_gap, parent_gap: f32, depth: int) {
+    if !grid_is_sub(it, .Row) || depth > 8 {
+        append(oi, it); append(oc, c0); append(os, span); append(ox, acc_l + acc_r)
+        return
+    }
+    eff := it.has_gap_col ? it.gap : parent_gap
+    half := (eff - root_gap) / 2
+    el := acc_l + it.margin[3] + it.border_w[3] + it.padding[3]
+    er := acc_r + it.margin[1] + it.border_w[1] + it.padding[1]
+    kids, kc, ks := grid_sub_place(it, span)
+    for k, i in kids {
+        l := kc[i] == 0 ? el : half
+        r := kc[i] + ks[i] >= span ? er : half
+        grid_flatten_rec(oi, oc, os, ox, k, c0 + kc[i], ks[i], l, r, root_gap, eff, depth + 1)
+    }
+}
+
+// Pai → filho: [lo, hi] de cada trilha coberta, relativas ao início da área.
+// pos nil num eixo = não impõe aquele eixo.
+@(private="file")
+grid_sub_impose :: proc(it: ^Box, xs, widths: []f32, c0, cs: int, ys, heights: []f32, r0, rs: int, col_gap, row_gap: f32) {
+    cut :: proc(pos, sizes: []f32, i0, span: int) -> [][2]f32 {
+        e := min(i0 + span, len(sizes))
+        if pos == nil || e <= i0 do return nil
+        out := make([][2]f32, e - i0, context.temp_allocator)
+        for k in i0 ..< e do out[k - i0] = {pos[k] - pos[i0], pos[k] - pos[i0] + sizes[k]}
+        return out
+    }
+    it.sg_pgap = {col_gap, row_gap}
+    it.sg_cols = cut(xs, widths, c0, cs)
+    it.sg_rows = cut(ys, heights, r0, rs)
+}
+
+// Filho: trilhas do pai → posições/tamanhos no content box do subgrid. As pontas
+// perdem margem+borda+padding do subgrid; no miolo, um gutter próprio diferente
+// do do pai fica CENTRADO no gutter do pai (a trilha ganha/perde meia diferença).
+@(private="file")
+grid_sub_tracks :: proc(imp: [][2]f32, edge_lo, edge_hi, own_gap: f32, has_gap: bool) -> (pos, sizes: []f32) {
+    n := len(imp)
+    pos = make([]f32, n + 1, context.temp_allocator)
+    sizes = make([]f32, n, context.temp_allocator)
+    if n == 0 do return
+    area := imp[n - 1][1]
+    for k in 0 ..< n {
+        lo := edge_lo
+        if k > 0 {
+            g := has_gap ? own_gap : imp[k][0] - imp[k - 1][1]
+            lo = (imp[k - 1][1] + imp[k][0]) / 2 + g / 2
+        }
+        hi := area - edge_hi
+        if k < n - 1 {
+            g := has_gap ? own_gap : imp[k + 1][0] - imp[k][1]
+            hi = (imp[k][1] + imp[k + 1][0]) / 2 - g / 2
+        }
+        pos[k] = lo - edge_lo
+        sizes[k] = max(0, hi - lo)
+    }
+    pos[n] = pos[n - 1] + sizes[n - 1]
+    return
 }
 
 // Bordas de um eixo da área de um filho ABSOLUTO do grid, relativas ao content
@@ -4638,7 +4833,7 @@ grid_place :: proc(items: []^Box, n_primary: int, flow_col := false, dense := fa
 // o conteúdo dos itens (nas linhas auto/implícitas), depois distribui fr se o
 // container tem altura explícita.
 @(private="file")
-grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspan_of, row_of, rspan_of: []int, nrows: int, col_gap, row_gap: f32, ch: f32, has_h: bool) -> []f32 {
+grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspan_of, row_of, rspan_of: []int, nrows: int, col_gap, row_gap: f32, ch: f32, has_h: bool, virt: ^[dynamic]Grid_Contrib = nil) -> []f32 {
     row_h := make([]f32, nrows, context.temp_allocator)
     is_fr := make([]bool, nrows, context.temp_allocator)
 
@@ -4669,14 +4864,43 @@ grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspa
     }
 
     // conteúdo: mede cada item e engorda as linhas auto/implícitas até caber
+    sub_spans := make([dynamic]Grid_Contrib, context.temp_allocator) // itens de subgrid com span > 1
     for it, i in items {
         sw := grid_extent(xs, widths, col_of[i], cspan_of[i])
         // A linha precisa da altura na largura USADA do item. Forçar a trilha
         // em width:min-content media uma linha só; na pintura o item estreitava,
         // quebrava em várias linhas e sobrepunha a próxima linha do grid.
         fw: f32 = (it.def_w || it.width_mc) ? -1 : sw
-        layout_box(it, b.content_x, b.content_y, sw, fw, -1)
         r0 := row_of[i]; rs := rspan_of[i]
+        if sub_w, sub_h := grid_is_sub(it, .Row), grid_is_sub(it, .Column); sub_w || sub_h {
+            // colunas impostas já aqui (a altura dos itens depende delas); linhas
+            // ainda não existem — o filho mede e devolve o que cada item pede.
+            grid_sub_impose(it, sub_w ? xs : nil, widths, col_of[i], cspan_of[i], nil, nil, 0, 0, col_gap, row_gap)
+            if sub_w do fw = max(0, sw - it.margin[3] - it.margin[1])
+            layout_box(it, b.content_x, b.content_y, fw >= 0 ? fw : sw, fw, -1)
+            if sub_h {
+                eff := it.has_gap_row ? it.row_gap : row_gap
+                half := (eff - row_gap) / 2
+                for c in it.sg_contrib {
+                    top := c.start == 0 ? it.margin[0] + it.border_w[0] + it.padding[0] : half
+                    bot := c.start + c.span >= rs ? it.margin[2] + it.border_w[2] + it.padding[2] : half
+                    v := Grid_Contrib{r0 + c.start, min(c.span, nrows - r0 - c.start), c.size + top + bot}
+                    if v.start >= nrows || v.span < 1 do continue
+                    if virt != nil do append(virt, v)
+                    if v.span == 1 {
+                        t := trk[v.start]
+                        fixed := t.kind == .Fixed || (t.kind == .Pct && has_h)
+                        if !fixed do row_h[v.start] = max(row_h[v.start], v.size)
+                    } else {
+                        append(&sub_spans, v)
+                    }
+                }
+                it.sg_contrib = nil
+                continue
+            }
+        } else {
+            layout_box(it, b.content_x, b.content_y, sw, fw, -1)
+        }
         if rs > 1 do continue
         if rs == 1 && is_fr[r0] && has_h {
             t := trk[r0]
@@ -4735,6 +4959,21 @@ grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspa
             for j in 0 ..< count do planned[start+j] = max(planned[start+j],values[j]-row_h[start+j])
         }
         for r in 0 ..< nrows do row_h[r] += planned[r]
+    }
+
+    // itens de SUBGRID que atravessam linhas: o que faltar é repartido por igual
+    // entre as linhas não fixas cobertas (depois dos spans dos itens diretos).
+    for v in sub_spans {
+        cur := grid_span_gap(row_h, v.start, v.span, row_gap)
+        if v.size <= cur do continue
+        count := 0
+        for rr in v.start ..< v.start + v.span {
+            if !(trk[rr].kind == .Fixed || (trk[rr].kind == .Pct && has_h) || (is_fr[rr] && has_h)) do count += 1
+        }
+        if count == 0 do continue
+        for rr in v.start ..< v.start + v.span {
+            if !(trk[rr].kind == .Fixed || (trk[rr].kind == .Pct && has_h) || (is_fr[rr] && has_h)) do row_h[rr] += (v.size - cur) / f32(count)
+        }
     }
 
     if !has_h && fr_total > 0 {
@@ -4872,7 +5111,7 @@ grid_grow_span :: proc(values, limits, weights: []f32, need: f32) {
 
 // Resolve a largura de cada coluna. Sempre ao menos 1 coluna.
 @(private="file")
-grid_col_widths :: proc(tracks: []Grid_Track, cw, col_gap: f32, items: []^Box, col_of, cspan_of: []int) -> []f32 {
+grid_col_widths :: proc(tracks: []Grid_Track, cw, col_gap: f32, items: []^Box, col_of, cspan_of: []int, extra: []f32 = nil) -> []f32 {
     nc := len(tracks)
     widths := make([]f32, nc, context.temp_allocator)
 
@@ -4886,7 +5125,7 @@ grid_col_widths :: proc(tracks: []Grid_Track, cw, col_gap: f32, items: []^Box, c
         if c < 0 || c >= nc do continue
         if cspan_of[k] == 1 {
             t := tracks[c]
-            margins := it.margin[3] + it.margin[1]
+            margins := it.margin[3] + it.margin[1] + (extra != nil ? extra[k] : 0)
             minimum := grid_item_min_w(it, t, cw) + margins
             if t.kind == .Fr || t.kind == .Auto || t.de_minmax do floors[c] = max(floors[c], minimum)
             if t.kind == .Auto {
@@ -4928,7 +5167,7 @@ grid_col_widths :: proc(tracks: []Grid_Track, cw, col_gap: f32, items: []^Box, c
                         if maximum == 1 && t.max_kind == .FitContent do limits[j] = max(values[j], t.fit_pct ? t.value*cw : t.value)
                     }
                 }
-                need := measure_intrinsic_w(it, maximum == 0) + it.margin[3]+it.margin[1] - col_gap*f32(span-1)
+                need := measure_intrinsic_w(it, maximum == 0) + it.margin[3]+it.margin[1] + (extra != nil ? extra[k] : 0) - col_gap*f32(span-1)
                 // Automatic minimum vanishes for multi-track flexible spans.
                 if has_fr && maximum == 0 && !it.has_minw do continue
                 if has_fr && maximum == 1 do continue // definite fr space is resolved below

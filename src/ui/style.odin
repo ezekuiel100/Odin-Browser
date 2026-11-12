@@ -1286,6 +1286,11 @@ Computed :: struct {
     grid_tracks:    [GRID_MAX_TRACKS]Grid_Track,
     grid_row_track_n: int,                     // nº de tracks de LINHA explícitos (grid-template-rows)
     grid_row_tracks:  [GRID_MAX_TRACKS]Grid_Track,
+    // subgrid (CSS Grid 2): as trilhas do eixo vêm do grid PAI. Só vale quando o
+    // pai é grid (senão o valor usado é `none`, resolvido em compute_node).
+    grid_sub_cols, grid_sub_rows: bool,
+    // gap DECLARADO (≠ normal): num subgrid, `normal` herda o gutter do pai.
+    has_gap_col, has_gap_row: bool,
     // grade IMPLÍCITA: tamanho das trilhas criadas além do template (ciclam) e
     // a direção/densidade do auto-placement. Array pequeno de propósito — o
     // padrão real é 1-2 valores, e Computed/Box copiam isto POR VALOR.
@@ -1942,6 +1947,8 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.grid_auto_fill = false
     comp.grid_track_n = 0
     comp.grid_row_track_n = 0
+    comp.grid_sub_cols = false; comp.grid_sub_rows = false
+    comp.has_gap_col = false; comp.has_gap_row = false
     comp.grid_auto_row_n = 0
     comp.grid_auto_col_n = 0
     comp.content_hidden = false
@@ -2281,6 +2288,28 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         comp.grid_row_start, comp.grid_row_span =
             grid_resolve_negative(comp.grid_row_start, comp.grid_row_span, comp.grid_row_end_line, inherit.grid_row_track_n)
         comp.grid_col_end_line = 0; comp.grid_row_end_line = 0
+        // subgrid: o nº de trilhas do eixo é o SPAN deste item no grid pai (já
+        // resolvido acima) — é contra ele que os filhos contam `-1` e são
+        // posicionados. As trilhas em si ficam `auto`: os tamanhos reais chegam
+        // do pai no layout. Sem pai grid o valor usado é `none` (spec §9).
+        if comp.grid_sub_cols || comp.grid_sub_rows {
+            if !comp.display_grid || !inherit.display_grid {
+                comp.grid_sub_cols = false; comp.grid_sub_rows = false
+            } else {
+                if comp.grid_sub_cols {
+                    nt := clamp(comp.grid_col_span, 1, GRID_MAX_TRACKS)
+                    comp.grid_track_n = nt; comp.grid_auto_fill = false
+                    for i in 0 ..< nt do comp.grid_tracks[i] = Grid_Track{kind = .Auto}
+                    subgrid_inherit_lines(&comp.grid_col_lines, &comp.grid_col_line_n, inherit.grid_col_lines, inherit.grid_col_line_n, comp.grid_col_start, nt)
+                }
+                if comp.grid_sub_rows {
+                    nt := clamp(comp.grid_row_span, 1, GRID_MAX_TRACKS)
+                    comp.grid_row_track_n = nt
+                    for i in 0 ..< nt do comp.grid_row_tracks[i] = Grid_Track{kind = .Auto}
+                    subgrid_inherit_lines(&comp.grid_row_lines, &comp.grid_row_line_n, inherit.grid_row_lines, inherit.grid_row_line_n, comp.grid_row_start, nt)
+                }
+            }
+        }
         // grid-template-areas implica tracks automáticos se não declarados
         if comp.grid_area_n > 0 {
             if comp.grid_track_n == 0 {
@@ -5146,11 +5175,11 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         parse_grid_template_shorthand(comp, resolve_var(v, vars), fs, vw, vh)
     }
     if v, ok := decls["grid-template-columns"]; ok {
-        parse_grid_template(&comp.grid_tracks, &comp.grid_track_n, &comp.grid_auto_fill, resolve_var(v, vars), fs, vw, vh, &comp.grid_col_lines, &comp.grid_col_line_n)
+        parse_grid_template(&comp.grid_tracks, &comp.grid_track_n, &comp.grid_auto_fill, resolve_var(v, vars), fs, vw, vh, &comp.grid_col_lines, &comp.grid_col_line_n, &comp.grid_sub_cols)
     }
     if v, ok := decls["grid-template-rows"]; ok {
         af: bool // auto-fill de linhas não é usado no layout (linhas crescem por conteúdo)
-        parse_grid_template(&comp.grid_row_tracks, &comp.grid_row_track_n, &af, resolve_var(v, vars), fs, vw, vh, &comp.grid_row_lines, &comp.grid_row_line_n)
+        parse_grid_template(&comp.grid_row_tracks, &comp.grid_row_track_n, &af, resolve_var(v, vars), fs, vw, vh, &comp.grid_row_lines, &comp.grid_row_line_n, &comp.grid_sub_rows)
     }
     if v, ok := decls["grid-template-areas"]; ok {
         parse_grid_template_areas(comp, resolve_var(v, vars))
@@ -5256,6 +5285,7 @@ set_gap_col :: proc(comp: ^Computed, tok: string, fs, vw, vh: f32) {
         if pc != 0 { comp.gap_pct = true; comp.gap_frac = pc; comp.gap_off = off; comp.gap = 0 }
         else       { comp.gap_pct = false; comp.gap = off }
         comp.col_gap = comp.gap
+        comp.has_gap_col = true
     }
 }
 @(private="file")
@@ -5263,6 +5293,7 @@ set_gap_row :: proc(comp: ^Computed, tok: string, fs, vw, vh: f32) {
     if off, pc, k := parse_len_linear(tok, fs, vw, vh); k {
         if pc != 0 { comp.row_gap_pct = true; comp.row_gap_frac = pc; comp.row_gap_off = off; comp.row_gap = 0 }
         else       { comp.row_gap_pct = false; comp.row_gap = off }
+        comp.has_gap_row = true
     }
 }
 
@@ -6605,14 +6636,37 @@ grid_record_lines :: proc(lines: ^[GRID_MAX_LINES]Grid_Line, line_n: ^int, tok: 
 // repeat(N, …), repeat(auto-fill|auto-fit, <track>) e minmax(min, max).
 // Preenche os arrays passados (reusado por colunas e linhas).
 @(private="file")
-parse_grid_template :: proc(tracks: ^[GRID_MAX_TRACKS]Grid_Track, track_n: ^int, auto_fill: ^bool, value: string, fs: f32, vw: f32 = 1280, vh: f32 = 720, lines: ^[GRID_MAX_LINES]Grid_Line = nil, line_n: ^int = nil) {
+parse_grid_template :: proc(tracks: ^[GRID_MAX_TRACKS]Grid_Track, track_n: ^int, auto_fill: ^bool, value: string, fs: f32, vw: f32 = 1280, vh: f32 = 720, lines: ^[GRID_MAX_LINES]Grid_Line = nil, line_n: ^int = nil, sub: ^bool = nil) {
     s := strings.to_lower(strings.trim_space(value), context.temp_allocator)
     track_n^ = 0
     auto_fill^ = false
     if line_n != nil do line_n^ = 0
+    if sub != nil do sub^ = false
     if s == "" || s == "none" do return
 
     toks := split_top_level(s)
+    // `subgrid [nomes]*`: sem trilhas próprias — vêm do pai no layout. A lista
+    // opcional nomeia as linhas 1, 2, 3… do subgrid (`repeat(N, [a] [b])` idem).
+    if len(toks) > 0 && toks[0] == "subgrid" {
+        if sub == nil do return // contexto sem subgrid (shorthand): vira `none`
+        sub^ = true
+        ln := 1
+        for tok in toks[1:] {
+            if strings.has_prefix(tok, "[") { grid_record_lines(lines, line_n, tok, ln); ln += 1; continue }
+            if strings.has_prefix(tok, "repeat(") && strings.has_suffix(tok, ")") {
+                inner := tok[len("repeat("):len(tok) - 1]
+                comma := strings.index_byte(inner, ',')
+                if comma < 0 do continue
+                cnt, k := strconv.parse_int(strings.trim_space(inner[:comma]))
+                if !k || cnt <= 0 do continue // auto-fill de nomes: depende do span, não feito
+                rtoks := split_top_level(strings.trim_space(inner[comma + 1:]))
+                for _ in 0 ..< cnt do for rt in rtoks {
+                    if strings.has_prefix(rt, "[") { grid_record_lines(lines, line_n, rt, ln); ln += 1 }
+                }
+            }
+        }
+        return
+    }
     n := 0
     for tok in toks {
         if n >= GRID_MAX_TRACKS do break
@@ -6765,6 +6819,20 @@ grid_line_autos :: proc(value: string) -> (start_auto, end_auto: bool) {
     if _, k := strconv.parse_int(s); k do return false, true
     if strings.has_prefix(s, "span") do return false, true
     return false, false
+}
+
+// Subgrid herda os NOMES das linhas do pai que caem dentro da sua área (css-grid-2
+// §9): a linha L do pai vira a linha L-start+1 do subgrid. Só com início
+// EXPLÍCITO (start>0) — auto-posicionado, a área só existe no layout.
+@(private="file")
+subgrid_inherit_lines :: proc(lines: ^[GRID_MAX_LINES]Grid_Line, line_n: ^int, parent: [GRID_MAX_LINES]Grid_Line, parent_n: int, start, span: int) {
+    if start <= 0 do return
+    for i in 0 ..< parent_n {
+        l := parent[i].line - start + 1
+        if l < 1 || l > span + 1 || line_n^ >= GRID_MAX_LINES do continue
+        lines[line_n^] = Grid_Line{name = parent[i].name, line = l}
+        line_n^ += 1
+    }
 }
 
 // Acha a linha (1-based) de um nome na tabela do container. ok=false se ausente.

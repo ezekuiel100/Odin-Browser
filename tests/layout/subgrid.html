@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html><head><style>
+body { margin: 0; font-size: 0; }
+.blk { display: block; }
+/* 1. LINHAS: três cards, cada um span 3 com rows:subgrid — as linhas alinham
+      entre os cards pela MAIOR de cada faixa (40 / 90 / 30). */
+#g1 { display: grid; grid-template-columns: 200px 200px 200px; gap: 10px; width: 620px; }
+#g1 > div { display: grid; grid-template-rows: subgrid; grid-row: span 3; }
+/* 2. controle SEM subgrid: cada card empilha as próprias alturas */
+#g2 { display: grid; grid-template-columns: 200px 200px 200px; gap: 10px; width: 620px; margin-top: 20px; }
+#g2 > div { display: grid; grid-row: span 3; }
+/* 3. COLUNAS: o filho cobre 1 / -1 e os itens caem nas trilhas do pai */
+#g3 { display: grid; grid-template-columns: 100px 1fr 150px; gap: 20px; width: 600px; margin-top: 20px; }
+#g3 > div { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; }
+/* 4. COLUNAS auto do pai dimensionadas pelos itens do subgrid (120 e 80) */
+#g4 { display: grid; grid-template-columns: auto auto 1fr; width: 600px; margin-top: 20px; }
+#g4 > div { display: grid; grid-template-columns: subgrid; grid-column: span 3; }
+/* 5. padding+borda do subgrid encolhem as trilhas das PONTAS; gap próprio 0 */
+#g5 { display: grid; grid-template-columns: 100px 100px 100px; gap: 20px; width: 340px; margin-top: 20px; }
+#g5 > div { display: grid; grid-template-columns: subgrid; grid-column: span 3; padding: 0 10px; border: 0 solid #000; border-width: 0 5px; gap: 0; }
+/* 6. sem pai grid: subgrid = none (uma coluna) */
+#g6 { width: 300px; margin-top: 20px; }
+#g6 > div { display: grid; grid-template-columns: subgrid; }
+/* 7. LINHAS com row-gap próprio 0 e padding: o gutter do pai (20) é comido
+      meio a meio pelas linhas do card → 40 / 20 / 30 coladas dentro do padding */
+#g7 { display: grid; grid-template-columns: 200px; gap: 20px; width: 200px; margin-top: 20px; }
+#g7 > div { display: grid; grid-template-rows: subgrid; grid-row: span 3; row-gap: 0; padding: 10px 0; }
+.h20 { height: 20px; } .h30 { height: 30px; } .h40 { height: 40px; } .h90 { height: 90px; }
+.w120 { width: 120px; height: 20px; } .w80 { width: 80px; height: 20px; }
+</style></head><body>
+<div id="g1">
+  <div id="c1"><div id="a1" class="h40 blk"></div><div id="a2" class="h20 blk"></div><div id="a3" class="h30 blk"></div></div>
+  <div id="c2"><div id="b1" class="h20 blk"></div><div id="b2" class="h90 blk"></div><div id="b3" class="h20 blk"></div></div>
+  <div id="c3"><div id="d1" class="h20 blk"></div><div id="d2" class="h20 blk"></div><div id="d3" class="h20 blk"></div></div>
+</div>
+<div id="g2">
+  <div id="n1"><div id="na1" class="h40 blk"></div><div id="na2" class="h20 blk"></div><div id="na3" class="h30 blk"></div></div>
+  <div id="n2"><div id="nb1" class="h20 blk"></div><div id="nb2" class="h90 blk"></div><div id="nb3" class="h20 blk"></div></div>
+</div>
+<div id="g3"><div id="s3"><div id="e1" class="h20"></div><div id="e2" class="h20"></div><div id="e3" class="h20"></div></div></div>
+<div id="g4"><div id="s4"><div id="f1" class="w120"></div><div id="f2" class="w80"></div><div id="f3" class="h20"></div></div></div>
+<div id="g5"><div id="s5"><div id="k1" class="h20"></div><div id="k2" class="h20"></div><div id="k3" class="h20"></div></div></div>
+<div id="g6"><div id="s6"><div id="m1" class="h20"></div><div id="m2" class="h20"></div></div></div>
+<div id="g7"><div id="s7"><div id="q1" class="h40 blk"></div><div id="q2" class="h20 blk"></div><div id="q3" class="h30 blk"></div></div></div>
+</body></html>
