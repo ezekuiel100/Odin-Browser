@@ -353,6 +353,7 @@ State :: struct {
     scroll_pending: bool,
     scroll_target:  f32,  // Y-página alvo (box.y é absoluto)
     scroll_smooth:  bool, // anima em vez de pular (scroll-behavior:smooth da raiz)
+    scroll_tab:     u64,  // id da aba dona da âncora pendente
     autoscroll:     Autoscroll, // rolagem automática do botão do meio (autoscroll.odin)
     wheel:          [2]Wheel_Axis, // roda suave da página, {X, Y} (wheel_smooth.odin)
     wheel_root:     ^dompkg.Node,
@@ -1165,13 +1166,23 @@ draw_content :: proc(s: ^State) {
     if rendering do bg = s.tabs[s.active].page_bg
 
     push_col(.ChildBg, bg)
+    // UMA janela de viewport POR ABA: o ImGui guarda o scroll na janela, indexada
+    // pelo ID. Com um "##viewport" único, todas as abas dividiam a mesma posição —
+    // rolar uma aba rolava as outras. O `id` da aba é estável (índices mudam ao
+    // fechar abas). Sem abas, o ID 0 serve de janela vazia.
+    tab_uid: u64 = len(s.tabs) > 0 ? s.tabs[s.active].id : 0
+    im.PushIDInt(i32(tab_uid))
     // NoScrollWithMouse: a roda é roteada manualmente (elementos roláveis a
     // consomem primeiro; o resto vai p/ a página) — senão a página rolaria junto.
     im.BeginChild("##viewport", avail, {}, {.NoScrollWithMouse})
-    defer { im.EndChild(); im.PopStyleColor(1) }
+    defer { im.EndChild(); im.PopID(); im.PopStyleColor(1) }
 
     if len(s.tabs) == 0 do return
     tab := s.tabs[s.active]
+
+    // âncora pendente de OUTRA aba (trocou de aba no meio da animação): descarta,
+    // senão continuaria rolando a aba que acabou de abrir.
+    if s.scroll_pending && s.scroll_tab != tab.id do s.scroll_pending = false
 
     switch {
     case tab.url == "":

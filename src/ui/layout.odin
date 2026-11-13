@@ -11655,6 +11655,7 @@ navigate_href :: proc(s: ^State, href: string) {
                 s.scroll_pending = true
                 s.scroll_target  = ty
                 s.scroll_smooth  = root_scroll_smooth(tab.layout)
+                s.scroll_tab     = tab.id
             }
         }
         return
