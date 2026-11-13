@@ -236,16 +236,25 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     fontface_scan(tab.css_text, tab.url)
     previous := tab.styles
     dirty := make(map[^dompkg.Node]bool, context.temp_allocator)
-    incremental := previous != nil && !rules_changed && tab.zoom_applied == g_zoom &&
-        tab.style_vw == vw && tab.style_vh == vh && tab.style_dark == g_prefers_dark
+    reason := Restyle_Reason.Incremental
+    if previous == nil || rules_changed {
+        reason = .Full_Initial
+    } else if tab.zoom_applied != g_zoom || tab.style_vw != vw || tab.style_vh != vh || tab.style_dark != g_prefers_dark {
+        reason = .Full_Env
+    }
     // Container measurements can change without a DOM mutation.
-    if incremental {
-        for r in tab.rules do if r.cq_active { incremental = false; break }
+    if reason == .Incremental {
+        for r in tab.rules do if r.cq_active { reason = .Full_CQ; break }
     }
-    if incremental {
-        incremental = plan_style_invalidation(tab.dom, previous, &dirty)
-        if incremental && len(dirty) > 0 && style_cross_dependencies(tab.rules[:]) do incremental = false
+    live := make(map[^dompkg.Node]bool, len(previous), context.temp_allocator)
+    plan := Style_Plan{old = previous, dirty = &dirty, live = &live}
+    if reason == .Incremental {
+        plan.deps = style_deps(tab.rules[:])
+        reason = plan_style_invalidation(tab.dom, &plan)
     }
+    if reason == .Incremental && len(dirty) == 0 do reason = .Noop
+    incremental := reason == .Incremental || reason == .Noop
+    when UIPROF { g_uiprof.restyle_why[reason] += 1 }
     tab.restyle_nodes = 0
     if incremental && len(dirty) == 0 {
         tab.restyle_layout = false
@@ -257,6 +266,14 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     if incremental {
         previous = make(map[^dompkg.Node]Computed)
         for n in dirty do previous[n] = tab.styles[n]
+        // Removed nodes: their entries move to the snapshot (freed with it).
+        // The pointers are only used as KEYS — the nodes themselves are gone.
+        dead := make([dynamic]^dompkg.Node, context.temp_allocator)
+        if !SABOTAGE_PRUNE do for n in tab.styles do if n not_in live do append(&dead, n)
+        for n in dead {
+            previous[n] = tab.styles[n]
+            delete_key(&tab.styles, n)
+        }
     }
     old_layout := tab.layout
     // S3: os 534 ms de restyle medidos no github são compute_styles + build_layout
@@ -267,11 +284,13 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     if incremental {
         tab.styles, tab.page_bg = compute_styles(tab.dom, &tab.rules, vw, vh, tab.kf[:], tab.styles, dirty)
         tab.restyle_nodes = len(dirty)
+        when UIPROF { g_uiprof.restyle_dirty += len(dirty); g_uiprof.restyle_total += len(tab.styles) }
     } else {
         tab.styles, tab.page_bg = compute_styles(tab.dom, &tab.rules, vw, vh, tab.kf[:])
         tab.restyle_nodes = len(tab.styles)
     }
-    repaint := incremental && old_layout != nil && styles_paint_only(previous, tab.styles, dirty) && paint_boxes_available(old_layout, previous, tab.styles, dirty)
+    // Structure/text changes rebuild boxes even when every style matches.
+    repaint := incremental && !plan.need_layout && old_layout != nil && styles_paint_only(previous, tab.styles, dirty) && paint_boxes_available(old_layout, previous, tab.styles, dirty)
     tab.restyle_layout = !repaint
     when UIPROF {
         g_uiprof.ms_compute += time.duration_milliseconds(time.tick_since(t_cs))

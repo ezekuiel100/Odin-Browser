@@ -11,6 +11,7 @@ import "core:os"
 import "core:math"
 import "core:mem"
 import "core:unicode"
+import "base:runtime"
 import dompkg "../dom"
 import csspkg "../css"
 import jspkg  "../js"
@@ -1631,6 +1632,7 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
     g_root_font_size = 16 * g_zoom
     root_inherit := Computed{color = DEFAULT_TEXT, font_size = 16 * g_zoom, line_height = 1.3, deco_color = DECO_UNSET, text_align = .Start}
     root_vars := make(map[string]string, context.temp_allocator) // variáveis CSS (--x)
+    vars_memo_reset() // o memo aponta p/ mapas desta chamada (arena temp)
     // `@property … { inherits: false }`: as regras sintéticas vêm marcadas com
     // `reg_noinherit`. Coletamos aqui UMA vez (a lista é minúscula — o Tailwind
     // registra ~15) para que compute_node possa devolver o valor INICIAL ao
@@ -1643,9 +1645,32 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
             append(&noinh, Noinherit_Prop{name, init})
         }
     }
-    idx := build_rule_index(rules) // índice p/ evitar testar todas as regras por nó
-    compute_node(root, root_inherit, root_vars, rules, &idx, &styles, viewport_w, viewport_h, kf, noinh[:], previous, dirty)
+    when STYLEPROF { sp_total := style_prof_now() }
+    sp_t := style_prof_now()
+    idx := build_rule_index(rules, viewport_w) // índice p/ evitar testar todas as regras por nó
+    style_prof_add(.Index, sp_t)
+    {
+        // filtro de ancestrais: vale só durante ESTA descida (ver g_anc_set)
+        prev_idx, prev_set, prev_cur, prev_valid, prev_rules := g_anc_idx, g_anc_set, g_anc_cur, g_anc_valid, g_anc_rules
+        g_anc_idx = g_style_legacy ? nil : &idx // STYLECHECK: referência sem filtro
+        g_anc_rules = rules
+        g_anc_set = make(map[u64]int, 256, context.temp_allocator)
+        // compute_styles numa SUBÁRVORE: os ancestrais reais da raiz contam p/
+        // o matcher (ele sobe `.parent` até o documento), então entram no
+        // conjunto antes da descida — senão `.fora .dentro` seria rejeitado.
+        if g_anc_idx != nil do for a := root.parent; a != nil; a = a.parent do anc_push(a, +1)
+        g_anc_cur = root.parent
+        g_anc_valid = true
+        compute_node(root, root_inherit, root_vars, rules, &idx, &styles, viewport_w, viewport_h, kf, noinh[:], previous, dirty)
+        g_anc_idx, g_anc_set, g_anc_cur, g_anc_valid, g_anc_rules = prev_idx, prev_set, prev_cur, prev_valid, prev_rules
+    }
+    sp_t = style_prof_now()
     resolve_counters(root, &styles) // preenche content de ::before/::after com counter()
+    style_prof_add(.Counters, sp_t)
+    when STYLEPROF {
+        g_style_prof.total_ns += i64(time_since_ns(sp_total))
+        style_prof_report()
+    }
 
     // FUNDO DO CANVAS (css-backgrounds §2.11.2): quem manda é o ELEMENTO RAIZ —
     // seu fundo vira o do canvas e cobre o VIEWPORT INTEIRO, não só a caixa dele.
@@ -1680,6 +1705,7 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
         }
     }
     svg_css_bind(styles) // painter e os testes lêem daqui, não de um mapa global
+    when STYLECHECK { style_check_run(root, rules, viewport_w, viewport_h, kf, styles) }
     return
 }
 
@@ -1834,6 +1860,11 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     if previous != nil && !dirty[n] {
         return
     }
+    // A recursão saiu da cadeia de `.parent` que o matcher sobe: o conjunto de
+    // ancestrais não descreve mais este nó — desliga o filtro na subárvore.
+    anc_saved_valid := g_anc_valid
+    if n.parent != g_anc_cur do g_anc_valid = false
+    defer g_anc_valid = anc_saved_valid
     comp := inherit
     if d, ok := n.attrs["dir"]; ok {
         if strings.equal_fold(d, "rtl") { comp.direction = .Rtl }
@@ -2037,18 +2068,31 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
 
     elem_vars := vars // variáveis CSS visíveis a este nó (herdadas)
 
+    when STYLEPROF { g_style_prof.nodes += 1 }
     if n.kind == .Element {
+        when STYLEPROF { g_style_prof.elements += 1 }
+        sp_t := style_prof_now()
         cands := make([dynamic]int, 0, 32, context.temp_allocator)
         node_passes: Pass_Set // que passes as regras candidatas deste nó pedem
         query_candidates(idx, n, &cands, &node_passes)
+        when STYLEPROF { g_style_prof.candidates += len(cands) }
+        style_prof_add(.Query, sp_t); sp_t = style_prof_now()
         merged := collect_decls(n, rules, cands[:], viewport_w, .None, .None, styles, idx.pass_mask, comp.direction, vars, comp.writing_mode)
+        style_prof_add(.Collect, sp_t); sp_t = style_prof_now()
 
         // custom properties (--nome) definidas aqui sobrescrevem p/ a subárvore
         own := false
-        for prop, val in merged {
-            if strings.has_prefix(prop, "--") {
-                if !own { elem_vars = clone_vars(vars); own = true }
-                elem_vars[prop] = val
+        if len(noinh) == 0 && !g_style_legacy {
+            elem_vars = vars_with_decls(vars, merged)
+        } else {
+            for prop, val in merged {
+                if strings.has_prefix(prop, "--") {
+                    if !own {
+                        elem_vars = clone_vars(vars); own = true
+                        when STYLEPROF { g_style_prof.clones += 1; g_style_prof.clone_entries += len(vars) }
+                    }
+                    elem_vars[prop] = val
+                }
             }
         }
 
@@ -2064,6 +2108,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
             if !own { elem_vars = clone_vars(vars); own = true }
             elem_vars[np.name] = np.initial
         }
+        style_prof_add(.Vars, sp_t)
 
         // attr() (CSS Values 5): resolvido AQUI porque precisa dos atributos do
         // nó (apply_decls não os tem). Coleta antes p/ não mutar o map em iteração.
@@ -2129,7 +2174,9 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
             }
         }
 
+        sp_t = style_prof_now()
         apply_decls(&comp, merged, elem_vars, viewport_w, viewport_h, n)
+        style_prof_add(.Apply, sp_t); sp_t = style_prof_now()
         if v, ok := merged["z-index"]; ok && strings.equal_fold(strings.trim_space(resolve_var(v, elem_vars)), "inherit") {
             comp.z_index = inherit.z_index
             comp.z_index_set = inherit.z_index_set
@@ -2328,6 +2375,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
             }
         }
 
+        style_prof_add(.Post, sp_t); sp_t = style_prof_now()
         // pseudo-elementos ::before / ::after (só geram caixa se tiverem `content`)
         // e ::first-letter. Os três — e o :hover abaixo — só rodam se ALGUMA regra
         // candidata deste nó pode alimentar o passe; senão o resultado seria nil/
@@ -2349,11 +2397,13 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
 
         // :hover — declarações do estado, aplicadas a uma cópia; guardamos só os
         // deltas de PINTURA (sem re-layout). Ativado por frame em paint_box.
+        style_prof_add(.Pseudo, sp_t); sp_t = style_prof_now()
         hov: map[string]string
         if .Hover in node_passes {
             hov = collect_decls(n, rules, cands[:], viewport_w, .None, .Hover, styles, idx.pass_mask, comp.direction, elem_vars, comp.writing_mode)
         }
         defer delete(hov)
+        defer style_prof_add(.Hover, sp_t)
         if len(hov) > 0 {
             hc := comp
             // O transform do :hover SUBSTITUI o da base, não compõe com ele. Como
@@ -2405,8 +2455,10 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         }
     }
 
+    sp_fp := style_prof_now()
     comp.style_layout_fp = dompkg.style_fingerprint(n, true)
     comp.style_fp = dompkg.style_fingerprint(n)
+    style_prof_add(.Finger, sp_fp)
     comp.style_kids_ver = n.kids_ver
     styles[n] = comp
 
@@ -2426,9 +2478,12 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     child_inherit.first_letter = nil
     child_inherit.placeholder  = nil
     child_inherit.svg_css = nil // mesmo motivo dos ^Computed: alias vira double-free
+    anc_saved_cur := g_anc_cur
+    if g_anc_idx != nil { anc_push(n, +1); g_anc_cur = n }
     for c in n.children {
         compute_node(c, child_inherit, elem_vars, rules, idx, styles, viewport_w, viewport_h, kf, noinh, previous, dirty)
     }
+    if g_anc_idx != nil { anc_push(n, -1); g_anc_cur = anc_saved_cur }
 }
 
 // Computa o estilo de um pseudo-elemento ::before/::after do nó n. Devolve nil se
@@ -2541,9 +2596,58 @@ compute_placeholder :: proc(n: ^dompkg.Node, parent: Computed, vars: map[string]
 }
 
 @(private="file")
-clone_vars :: proc(v: map[string]string) -> map[string]string {
-    out := make(map[string]string, context.temp_allocator)
+clone_vars :: proc(v: map[string]string, extra := 0) -> map[string]string {
+    out := make(map[string]string, len(v) + extra, context.temp_allocator)
     for k, val in v do out[k] = val
+    return out
+}
+
+// Memo dos mapas de variáveis de um compute_styles: (mapa do pai, pares --x
+// declarados que MUDAM algo) → mapa do filho. Irmãos com a mesma classe sob o
+// mesmo pai declaram os mesmos pares e passam a dividir UM mapa, em vez de
+// cada um copiar as ~2 mil variáveis herdadas (medido no github: 447 cópias de
+// 2.152 entradas = 23% do compute_styles).
+// ⚠️ Compartilhar é seguro porque o mapa devolvido NUNCA é escrito depois: o
+// compute_node só escreve no caminho com `@property inherits:false` (noinh), que
+// não passa por aqui, e o resto (collect_decls) clona antes de escrever.
+// Vive na arena temp, como os mapas; zerado no início de cada compute_styles.
+@(thread_local) g_vars_memo: map[string]map[string]string
+
+vars_memo_reset :: proc() {
+    g_vars_memo = make(map[string]map[string]string, context.temp_allocator)
+}
+
+@(private="file")
+vars_with_decls :: proc(vars: map[string]string, merged: map[string]string) -> map[string]string {
+    Pair :: struct { k, v: string }
+    pairs: [dynamic]Pair
+    for prop, val in merged {
+        if !strings.has_prefix(prop, "--") do continue
+        // Redeclarar com o MESMO valor não muda o mapa: nem clona.
+        if cur, ok := vars[prop]; ok && cur == val do continue
+        if pairs == nil do pairs = make([dynamic]Pair, 0, 8, context.temp_allocator)
+        append(&pairs, Pair{prop, val})
+    }
+    if len(pairs) == 0 do return vars
+    for i in 1 ..< len(pairs) { // ordem canônica: o mapa `merged` itera sem ordem
+        for j := i; j > 0 && pairs[j].k < pairs[j - 1].k; j -= 1 do pairs[j], pairs[j - 1] = pairs[j - 1], pairs[j]
+    }
+    // Chave: identidade do mapa do pai + os pares. Separadores \x00/\x01 não
+    // aparecem em nome nem em valor de custom property vindos do parser.
+    sb := strings.builder_make(context.temp_allocator)
+    raw := transmute(runtime.Raw_Map)vars
+    if !SABOTAGE_MEMO do strings.write_u64(&sb, u64(raw.data), 16)
+    for p in pairs {
+        strings.write_byte(&sb, 0); strings.write_string(&sb, p.k)
+        strings.write_byte(&sb, 1); strings.write_string(&sb, p.v)
+    }
+    key := strings.to_string(sb)
+    if g_vars_memo == nil do vars_memo_reset()
+    if m, ok := g_vars_memo[key]; ok do return m
+    out := clone_vars(vars, len(pairs))
+    when STYLEPROF { g_style_prof.clones += 1; g_style_prof.clone_entries += len(vars) }
+    for p in pairs do out[p.k] = p.v
+    g_vars_memo[key] = out
     return out
 }
 
@@ -2678,10 +2782,91 @@ Rule_Index :: struct {
     by_id:     map[string][dynamic]int,
     by_class:  map[string][dynamic]int,
     by_tag:    map[string][dynamic]int,
-    universal: [dynamic]int, // composto-chave sem tag/id/classe (*, :hover, [attr]…)
+    by_attr:   map[string][dynamic]int, // composto-chave só com [attr]: pelo NOME do 1º
+    universal: [dynamic]int, // composto-chave sem chave indexável (*, :not, :nth…)
     seen:      []int,        // scratch p/ dedup na query (seen[ri] == gen)
     gen:       int,
     pass_mask: []Pass_Set,   // por REGRA: união dos passes dos seus seletores
+    // Filtro de ANCESTRAIS: por seletor, as chaves que algum ancestral do nó
+    // TEM de ter (ver anc_required). `anc_start[ri]` = posição do 1º seletor
+    // da regra em `anc_req`; um seletor por entrada, na ordem de rule.selectors.
+    anc_start: []int,
+    anc_req:   [dynamic][]u64,
+}
+
+// ── Filtro de ancestrais (o "SelectorFilter" do WebKit/Blink) ────────────────
+// Durante a descida do compute_node, um multiconjunto com as chaves (tag, id,
+// classes, nomes de atributo) de TODOS os ancestrais do nó atual. Um seletor
+// `.menu li a` exige um ancestral com `.menu` e outro com `li`: se o conjunto
+// não tem as duas, o seletor não casa — e o descarte é O(chaves) em vez de subir
+// a árvore inteira testando composto por composto (medido no github: ~0,4 µs
+// por candidato, 2/3 do compute_styles).
+//
+// Por que é SEGURO (nunca descarta seletor que casaria):
+//   • `parts[i]` casa um ANCESTRAL do nó sempre que `combs[i]` é `>` ou ` `:
+//     a cadeia só passa por nós que são o próprio alvo, ancestrais dele ou
+//     IRMÃOS deles — e o pai de qualquer um desses é ancestral do alvo. Por
+//     isso `A ~ B C` não exige A (combs[0] é `~`) mas exige B.
+//   • as chaves são condições que o `compound_matches_node` exige do nó, com o
+//     mesmo fatiamento de classe (`node_classes_into`) e o mesmo nome exato de
+//     atributo; `:is()`/`:not()`/`:has()` não contribuem chave.
+//   • hash colidindo só faz o filtro DEIXAR PASSAR (falso positivo).
+//   • o conjunto é montado pela RECURSÃO; se um filho não aponta p/ o pai da
+//     recursão (`c.parent != pai`), a subárvore desliga o filtro.
+@(thread_local) g_anc_set:   map[u64]int
+@(thread_local) g_anc_idx:   ^Rule_Index // índice do compute_styles corrente (nil = sem filtro)
+@(thread_local) g_anc_cur:   ^dompkg.Node // pai da recursão
+@(thread_local) g_anc_valid: bool
+@(thread_local) g_anc_rules: ^[dynamic]csspkg.Rule // array que o índice descreve
+
+@(private="file")
+anc_hash :: #force_inline proc(kind: u8, s: string) -> u64 {
+    h: u64 = 0xcbf29ce484222325 ~ u64(kind)
+    h *= 0x100000001b3
+    for i in 0 ..< len(s) { h ~= u64(s[i]); h *= 0x100000001b3 }
+    return h
+}
+
+@(private="file")
+anc_compound_keys :: proc(c: csspkg.Compound, out: ^[dynamic]u64) {
+    if c.tag != "" && c.tag != "*" do append(out, anc_hash('t', c.tag))
+    if c.id != "" do append(out, anc_hash('#', c.id))
+    for cl in c.classes do append(out, anc_hash('.', cl))
+    for a in c.attrs do append(out, anc_hash('[', a.name))
+}
+
+@(private="file")
+anc_required :: proc(sel: csspkg.Selector) -> []u64 {
+    if len(sel.parts) < 2 do return nil
+    out := make([dynamic]u64, 0, 4, context.temp_allocator)
+    for i in 0 ..< len(sel.parts) - 1 {
+        if i < len(sel.combs) && (sel.combs[i] == .Child || sel.combs[i] == .Descendant || SABOTAGE_ANC) {
+            anc_compound_keys(sel.parts[i], &out)
+        }
+    }
+    return out[:]
+}
+
+// Ajusta o multiconjunto com as chaves do nó (delta = +1 ao descer, -1 ao subir).
+@(private="file")
+anc_push :: proc(n: ^dompkg.Node, delta: int) {
+    if n.kind != .Element do return
+    if n.tag != "" do g_anc_set[anc_hash('t', n.tag)] += delta
+    if id, ok := n.attrs["id"]; ok && id != "" do g_anc_set[anc_hash('#', id)] += delta
+    cls_buf: [MAX_INLINE_CLASSES]string
+    for c in node_classes_into(n, cls_buf[:]) do g_anc_set[anc_hash('.', c)] += delta
+    for name in n.attrs do g_anc_set[anc_hash('[', name)] += delta
+}
+
+// O seletor `si` da regra `ri` pode casar, pelo que os ancestrais oferecem?
+@(private="file")
+anc_may_match :: #force_inline proc(ri, si: int) -> bool {
+    idx := g_anc_idx
+    if idx == nil || !g_anc_valid || ri >= len(idx.anc_start) do return true
+    k := idx.anc_start[ri] + si
+    if k >= len(idx.anc_req) do return true
+    for h in idx.anc_req[k] do if g_anc_set[h] <= 0 do return false
+    return true
 }
 
 @(private="file")
@@ -2692,30 +2877,95 @@ idx_bucket_add :: proc(m: ^map[string][dynamic]int, key: string, ri: int) {
     append(b, ri)
 }
 
+// Uma condição NECESSÁRIA para o composto casar um nó, que dá p/ procurar num
+// balde: o nó tem esse id / essa classe / essa tag / esse atributo.
 @(private="file")
-build_rule_index :: proc(rules: ^[dynamic]csspkg.Rule) -> Rule_Index {
+Index_Key_Kind :: enum u8 { Id, Class, Tag, Attr }
+@(private="file")
+Index_Key :: struct { kind: Index_Key_Kind, name: string }
+
+// Chaves de balde de um composto. Devolve false quando não há condição
+// indexável (o composto vai p/ o balde universal).
+//
+// ⚠️ Cada chave tem de ser condição que o MATCHER exige do próprio nó — o
+// índice é só pré-filtro, e uma chave mais estreita que o casamento esconderia
+// a regra em silêncio:
+//   • [attr]: `compound_matches` exige `attrs[a.name]` PRESENTE p/ todo
+//     operador (inclusive Exists), com o mesmo nome exato — logo o nome do 1º
+//     atributo é necessário.
+//   • :is()/:where(): o 1º grupo exige que o nó case ALGUM argumento (o
+//     composto mais à direita de cada um é testado no próprio nó). O composto
+//     entra no balde de CADA argumento — e só se TODOS os argumentos têm chave;
+//     um argumento sem chave (`:is(:hover, .x)`) manda a regra p/ o universal.
+@(private="file")
+compound_index_keys :: proc(c: csspkg.Compound, out: ^[dynamic]Index_Key, depth := 0) -> bool {
+    if c.id != "" { append(out, Index_Key{.Id, c.id}); return true }
+    if len(c.classes) > 0 { append(out, Index_Key{.Class, c.classes[0]}); return true }
+    if c.tag != "" && c.tag != "*" { append(out, Index_Key{.Tag, c.tag}); return true }
+    if len(c.attrs) > 0 { append(out, Index_Key{.Attr, c.attrs[0].name}); return true }
+    if len(c.ors) > 0 && depth < 4 {
+        for os in c.ors {
+            if len(os.parts) == 0 do return false
+            if !compound_index_keys(os.parts[len(os.parts) - 1], out, depth + 1) do return false
+            if os.or_group_end do break // fim do 1º grupo: ele sozinho já é necessário
+        }
+        return true
+    }
+    return false
+}
+
+@(private="file")
+build_rule_index :: proc(rules: ^[dynamic]csspkg.Rule, viewport_w: f32 = 1280) -> Rule_Index {
     idx: Rule_Index
     idx.by_id     = make(map[string][dynamic]int, context.temp_allocator)
     idx.by_class  = make(map[string][dynamic]int, context.temp_allocator)
     idx.by_tag    = make(map[string][dynamic]int, context.temp_allocator)
+    idx.by_attr   = make(map[string][dynamic]int, context.temp_allocator)
     idx.universal = make([dynamic]int, context.temp_allocator)
     idx.seen      = make([]int, len(rules), context.temp_allocator) // zero-init
     idx.pass_mask = make([]Pass_Set, len(rules), context.temp_allocator)
+    idx.anc_start = make([]int, len(rules), context.temp_allocator)
+    idx.anc_req   = make([dynamic][]u64, 0, len(rules), context.temp_allocator)
     for &rule, ri in rules {
+        idx.anc_start[ri] = len(idx.anc_req)
+        for sel in rule.selectors do append(&idx.anc_req, anc_required(sel))
+    }
+    keys := make([dynamic]Index_Key, 0, 8, context.temp_allocator)
+    // MESMO predicado de @media do collect_decls (mesmo vw, mesmo vh_mq, mesmo
+    // esquema): regra que ele rejeitaria por media nem vira candidata.
+    vh_mq := g_viewport_h > 0 ? g_viewport_h : 720
+    legacy := g_style_legacy // STYLECHECK: índice de REFERÊNCIA (só id/classe/tag, sem media)
+    for &rule, ri in rules {
+        if !legacy && !csspkg.media_matches(rule, viewport_w, vh_mq, g_prefers_dark) do continue
         uni := false
         for sel in rule.selectors {
             if len(sel.parts) == 0 do continue
             idx.pass_mask[ri] += selector_passes(sel)
             key := sel.parts[len(sel.parts) - 1] // composto-chave (mais à direita)
-            if key.id != "" {
-                idx_bucket_add(&idx.by_id, key.id, ri)
-            } else if len(key.classes) > 0 {
-                idx_bucket_add(&idx.by_class, key.classes[0], ri)
-            } else if key.tag != "" && key.tag != "*" {
-                idx_bucket_add(&idx.by_tag, key.tag, ri)
+            clear(&keys)
+            keyed: bool
+            if legacy {
+                switch {
+                case key.id != "":                     append(&keys, Index_Key{.Id, key.id}); keyed = true
+                case len(key.classes) > 0:             append(&keys, Index_Key{.Class, key.classes[0]}); keyed = true
+                case key.tag != "" && key.tag != "*": append(&keys, Index_Key{.Tag, key.tag}); keyed = true
+                }
+            } else {
+                keyed = compound_index_keys(key, &keys)
+            }
+            if keyed {
+                for k in keys {
+                    switch k.kind {
+                    case .Id:    idx_bucket_add(&idx.by_id, k.name, ri)
+                    case .Class: idx_bucket_add(&idx.by_class, k.name, ri)
+                    case .Tag:   idx_bucket_add(&idx.by_tag, k.name, ri)
+                    case .Attr:  idx_bucket_add(&idx.by_attr, k.name, ri)
+                    }
+                }
             } else if !uni {
                 append(&idx.universal, ri) // só uma vez por regra
                 uni = true
+                when STYLEPROF { style_prof_classify_universal(rule, key) }
             }
         }
     }
@@ -2740,17 +2990,38 @@ idx_add_bucket :: proc(idx: ^Rule_Index, b: [dynamic]int, out: ^[dynamic]int, ma
 query_candidates :: proc(idx: ^Rule_Index, n: ^dompkg.Node, out: ^[dynamic]int, mask: ^Pass_Set = nil) {
     idx.gen += 1
     idx_add_bucket(idx, idx.universal, out, mask)
+    when STYLEPROF { c0 := len(out); g_style_prof.cand_from[0] += c0 }
     if n.tag != "" {
         if b, ok := idx.by_tag[n.tag]; ok do idx_add_bucket(idx, b, out, mask)
+        when STYLEPROF {
+            if len(out) - c0 > 0 { g_style_prof.cand_from[1] += len(out) - c0; style_prof_tag(n.tag, len(out) - c0) }
+            c0 = len(out)
+        }
     }
     if id, ok := n.attrs["id"]; ok && id != "" {
         if b, ok2 := idx.by_id[id]; ok2 do idx_add_bucket(idx, b, out, mask)
     }
-    if cls, ok := n.attrs["class"]; ok && cls != "" {
-        for c in strings.fields(cls, context.temp_allocator) {
+    // Mesmo fatiamento do matcher (espaço ASCII): com `strings.fields` (espaço
+    // Unicode) uma classe com NBSP virava duas chaves que nenhuma regra usa.
+    if g_style_legacy { // STYLECHECK: fatiamento de referência (o antigo)
+        if cls, ok := n.attrs["class"]; ok && cls != "" {
+            for c in strings.fields(cls, context.temp_allocator) {
+                if b, ok2 := idx.by_class[c]; ok2 do idx_add_bucket(idx, b, out, mask)
+            }
+        }
+    } else {
+        cls_buf: [MAX_INLINE_CLASSES]string
+        for c in node_classes_into(n, cls_buf[:]) {
             if b, ok2 := idx.by_class[c]; ok2 do idx_add_bucket(idx, b, out, mask)
         }
     }
+    when STYLEPROF { g_style_prof.cand_from[2] += len(out) - c0; c0 = len(out) }
+    if len(idx.by_attr) > 0 {
+        for name in n.attrs {
+            if b, ok := idx.by_attr[name]; ok do idx_add_bucket(idx, b, out, mask)
+        }
+    }
+    when STYLEPROF { g_style_prof.cand_from[3] += len(out) - c0 }
 }
 
 // Junta todas as declarações que se aplicam ao nó, resolvendo a cascata.
@@ -2844,6 +3115,8 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         wins[prop] = Win{spec, order, val}
     }
 
+    anc_filter := g_anc_idx != nil && g_anc_rules == rules
+    when STYLEPROF { sp_c := style_prof_now() }
     for ri in candidates {
         if filter {
             m := masks[ri]
@@ -2857,8 +3130,9 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         best: [3]int
         matched := false
         exact := false // algum seletor exato (sem aproximação) casou?
-        for sel in rule.selectors {
+        for sel, si in rule.selectors {
             if len(sel.parts) == 0 do continue
+            if anc_filter && !anc_may_match(ri, si) do continue
             // roteia por pseudo-alvo: estilo do elemento (None) vs ::before/::after.
             // None aceita também Other (:hover/:nth… aproximados como sempre ativos).
             last := sel.parts[len(sel.parts) - 1]
@@ -2878,7 +3152,10 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
                 for p in sel.parts do if p.state != .None { accept = false; break }
             }
             if !accept do continue
-            if selector_matches_node(sel, n) {
+            when STYLEPROF { sp_r := style_prof_now() }
+            sel_hit := selector_matches_node(sel, n)
+            when STYLEPROF { style_prof_rule(ri, sel, sp_r, sel_hit) }
+            if sel_hit {
                 if !matched || csspkg.specificity_compare(sel.specificity, best) > 0 do best = sel.specificity
                 matched = true
                 if !sel.loose do exact = true
@@ -2914,6 +3191,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         }
     }
 
+    when STYLEPROF { style_prof_sub(0, sp_c); sp_c = style_prof_now() }
     // style="" inline: vence layers dentro da mesma importância (só no próprio elemento)
     if style, ok := n.attrs["style"]; ok && want == .None && state == .None {
         inline := csspkg.parse_decls(style, context.temp_allocator)
@@ -2924,6 +3202,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         }
     }
 
+    when STYLEPROF { style_prof_sub(1, sp_c); sp_c = style_prof_now() }
     // Rollback ANTES dos aliases/lógicas/shorthands: o resto da pipeline continua
     // usando Win/consider, mas só recebe vencedores sem o token revert-layer.
     // Esta cascata representa uma única origem (autor); @property é fallback.
@@ -2931,6 +3210,13 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
     // Não expande all nem shorthands aqui: a arquitetura ainda os aplica depois
     // da cascata; rollback entre shorthand e longhand não é completo.
     for prop, list in originals {
+        // Caso esmagador: UMA declaração p/ a prop. O laço abaixo daria o mesmo
+        // resultado (ela vence; ou, sendo revert-layer, remove a própria camada
+        // e não sobra ninguém) — sem alocar `removed` por prop por elemento.
+        if len(list) == 1 && !g_style_legacy {
+            if !strings.equal_fold(strings.trim_space(list[0].val), "revert-layer") do wins[prop] = list[0]
+            continue
+        }
         removed := make([]bool, len(list), context.temp_allocator)
         for {
             best := -1
@@ -2977,6 +3263,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         }
     }
 
+    when STYLEPROF { style_prof_sub(2, sp_c); sp_c = style_prof_now() }
     // ── Aliases de FORNECEDOR e LEGADOS → props padrão ──
     // Reinjetados com a MESMA spec/ordem do original, então entre REGRAS a
     // cascata decide sozinha ("prefixado antes, padrão depois" → padrão vence).
@@ -3483,6 +3770,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         }
     }
 
+    when STYLEPROF { style_prof_sub(3, sp_c) }
     out := make(map[string]string, context.temp_allocator)
     for prop, w in wins {
         out[prop] = w.val

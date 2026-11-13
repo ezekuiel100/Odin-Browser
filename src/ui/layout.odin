@@ -5347,6 +5347,9 @@ when UIPROF {
         // ── S3: split do restyle (534 ms no github, indivisos até agora) ────
         ms_compute:  f64, // compute_styles
         ms_buildlay: f64, // build_layout
+        restyle_why: [Restyle_Reason]int, // which path each restyle_tab took
+        restyle_dirty: int,               // nodes recomputed by incremental restyles
+        restyle_total: int,               // nodes in the map at those restyles
         // ── culling de texto no replay: PROVA de que a sonda dispara ────────
         n_txt_total: int, // comandos PC_InlineText que chegaram ao replay
         n_txt_cull:  int, // ... descartados por estarem fora do clip
@@ -5480,6 +5483,13 @@ when UIPROF {
         if p.restyles > 0 {
             fmt.eprintfln("\n[uiprof/S3] %d restyles | compute_styles %.0f ms (%.1f ms cada) | build_layout %.0f ms (%.1f ms cada)",
                 p.restyles, p.ms_compute, p.ms_compute / f64(p.restyles), p.ms_buildlay, p.ms_buildlay / f64(p.restyles))
+        }
+        fmt.eprintf("[uiprof/S3] restyle_tab por motivo:")
+        for r in Restyle_Reason do if p.restyle_why[r] > 0 do fmt.eprintf(" %v=%d", r, p.restyle_why[r])
+        fmt.eprintfln("")
+        if p.restyle_total > 0 {
+            fmt.eprintfln("[uiprof/S3] incremental: %d de %d nós recomputados (%.1f%%)",
+                p.restyle_dirty, p.restyle_total, 100 * f64(p.restyle_dirty) / f64(p.restyle_total))
         }
     }
 }
