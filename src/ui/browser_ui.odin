@@ -1771,7 +1771,8 @@ draw_new_tab_page :: proc(s: ^State, avail: im.Vec2) {
     title :: "Odin Browser"
     im.PushFont(g_font_big)
     tsize := im.CalcTextSize(title)
-    im.SetCursorPos({(avail.x - tsize.x)/2, avail.y/2 - 90})
+    content_y := max(f32(24), avail.y/2 - 370)
+    im.SetCursorPos({(avail.x - tsize.x)/2, content_y})
     push_col(.Text, TEXT_C)
     im.TextUnformatted(title)
     im.PopStyleColor(1)
@@ -1781,7 +1782,7 @@ draw_new_tab_page :: proc(s: ^State, avail: im.Vec2) {
     box_w : f32 = 560
     box_h : f32 = 50
     bx := (avail.x - box_w)/2
-    by := avail.y/2 - 20
+    by := content_y + 70
     im.SetCursorPos({bx, by})
     dl := im.GetWindowDrawList()
     p  := im.GetCursorScreenPos()
