@@ -89,6 +89,10 @@ Fetch_Job :: struct {
     auto_https: bool,       // o esquema https foi auto-adicionado? (permite fallback)
     viewport_w: f32,        // largura do viewport p/ avaliar @media e vw
     viewport_h: f32,        // altura do viewport p/ vh
+    zoom_applied: f32,
+    style_dark: bool,
+    font_families: int,
+    dom_fp: u64,
     tab_id:  u64,           // aba que pediu (pode ter sido fechada)
     resp:    net.Response,  // preenchido pela thread
     dom:     ^dompkg.Node,  // DOM parseado pela thread
@@ -196,6 +200,15 @@ make_tab :: proc(title: string) -> Tab {
     return Tab{id = g_next_tab_id, title = title}
 }
 
+open_new_tab :: proc(s: ^State) {
+    append(&s.tabs, make_tab("Nova aba"))
+    s.active = len(s.tabs) - 1
+    for &b in s.url_buf do b = 0
+    g_focus_url = true
+    autoscroll_stop(&s.autoscroll)
+    loading_trace_event(fmt.tprintf("new-tab active=%d tabs=%d jobs=%d", s.active, len(s.tabs), len(g_jobs)))
+}
+
 // Níveis de zoom (Ctrl +/-), estilo navegador. 1.0 = 100%.
 g_zoom_levels := [?]f32{0.5, 0.67, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0}
 
@@ -254,6 +267,7 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     }
     if reason == .Incremental && len(dirty) == 0 do reason = .Noop
     incremental := reason == .Incremental || reason == .Noop
+    loading_trace_event(fmt.tprintf("restyle reason=%v viewport=%.0fx%.0f previous=%.0fx%.0f", reason, vw, vh, tab.style_vw, tab.style_vh))
     when UIPROF { g_uiprof.restyle_why[reason] += 1 }
     tab.restyle_nodes = 0
     if incremental && len(dirty) == 0 {
@@ -659,6 +673,10 @@ mem_tracking_report :: proc() {
 }
 
 run :: proc() {
+    loading_trace_event("app-start")
+    previous_native_requests := g_native_font_requests_enabled
+    g_native_font_requests_enabled = false
+    defer { g_native_font_requests_enabled = previous_native_requests }
     defer painter_cache_free()
     // Instalado ANTES de qualquer alocação Odin (p/ não gerar falso "free
     // inválido"). Os workers adotam via dbg_adopt_allocator.
@@ -727,8 +745,12 @@ run :: proc() {
     bg := vec(WIN_BG)
     e: sdl2.Event
     for {
+        loading_trace_stage("events")
         for sdl2.PollEvent(&e) {
             imgui_sdl2.ProcessEvent(&e)
+            if len(g_jobs) > 0 && (e.type == .MOUSEBUTTONDOWN || e.type == .MOUSEBUTTONUP) {
+                loading_trace_event(fmt.tprintf("mouse type=%v x=%d y=%d jobs=%d", e.type, e.button.x, e.button.y, len(g_jobs)))
+            }
             if e.type == .QUIT do return
             // Zoom da página: Ctrl + '='/'+' aumenta, Ctrl + '-' diminui, Ctrl+0
             // reseta. Tratado no nível do SDL p/ funcionar mesmo com foco num campo.
@@ -736,6 +758,9 @@ run :: proc() {
                 mod := e.key.keysym.mod
                 ctrl  := .LCTRL  in mod || .RCTRL  in mod
                 shift := .LSHIFT in mod || .RSHIFT in mod
+                if ctrl && !shift && e.key.keysym.sym == .T && e.key.repeat == 0 {
+                    open_new_tab(&s)
+                }
                 if ctrl {
                     #partial switch e.key.keysym.sym {
                     case .EQUALS, .KP_PLUS, .KP_EQUALS: zoom_step(+1)
@@ -765,15 +790,18 @@ run :: proc() {
             }
         }
 
+        loading_trace_stage("frame-temporary-memory")
         free_all(context.temp_allocator)
 
         // @font-face: promove as faces baixadas p/ o atlas ANTES de abrir o frame
         // (o ImGui TRAVA o atlas entre NewFrame e Render). Face nova muda as
         // MÉTRICAS de texto ⇒ invalida o layout de todas as abas.
+        loading_trace_stage("fonts")
         if fontface_poll() {
             for &t in s.tabs do t.zoom_applied = -1 // força restyle+relayout no frame
         }
 
+        loading_trace_stage("new-frame")
         imgui_sdlr.NewFrame()
         imgui_sdl2.NewFrame()
         im.NewFrame()
@@ -783,10 +811,12 @@ run :: proc() {
         autoscroll_input(&s)
         wheel_shift_to_h() // Shift+roda = horizontal, p/ todo leitor da roda da página
 
+        loading_trace_stage("images")
         images_poll(renderer) // sobe texturas prontas, inicia downloads pendentes
 
         draw_browser(&s)
 
+        loading_trace_stage("render-submit")
         im.Render()
         sdl2.SetRenderDrawColor(renderer, u8(bg.x*255), u8(bg.y*255), u8(bg.z*255), 255)
         sdl2.RenderClear(renderer)
@@ -800,6 +830,7 @@ run :: proc() {
             g_want_capture = false
             capture_frame(renderer)
         }
+        loading_trace_stage("present")
         sdl2.RenderPresent(renderer)
     }
 }
@@ -855,11 +886,16 @@ draw_browser :: proc(s: ^State) {
     })
     defer { im.End(); im.PopStyleColor(1); im.PopStyleVar(1) }
 
+    loading_trace_stage("job-delivery")
     poll_jobs(s) // entrega downloads concluídos
 
+    loading_trace_stage("tabstrip")
     draw_tabstrip(s)
+    loading_trace_stage("toolbar")
     draw_toolbar(s)
+    loading_trace_stage("page-content")
     draw_content(s)
+    loading_trace_stage("devtools-status")
     // soltura do meio FORA da página (aba carregando, faixa de abas, devtools):
     // o dispatch_page_aux não rodou, então o aperto pendente morre aqui.
     // Idem p/ a soltura engolida da rolagem automática: sem isto, uma que caísse
@@ -900,17 +936,20 @@ draw_tabstrip :: proc(s: ^State) {
         p1 := im.Vec2{x + tab_w, y + TAB_H}
         midy := (p0.y + p1.y) / 2
 
-        im.SetCursorScreenPos(p0)
+        // The rounded decoration starts five pixels below the screen edge,
+        // but the tab's hit target must reach that edge (also while loading).
+        im.SetCursorScreenPos({p0.x, y})
         im.SetNextItemAllowOverlap()
         // botão do MEIO fecha a aba (como nos navegadores). O InvisibleButton só
         // dispara na SOLTURA sobre o item que recebeu o aperto, então arrastar o
         // meio p/ fora da aba cancela — o mesmo contrato do clique esquerdo.
-        if im.InvisibleButton(fmt.ctprintf("##tab%d", i), {tab_w, TAB_H - 5}, {.MouseButtonLeft, .MouseButtonMiddle}) {
+        if im.InvisibleButton(fmt.ctprintf("##tab%d", i), {tab_w, TAB_H}, {.MouseButtonLeft, .MouseButtonMiddle}) {
             if im.IsMouseReleased(.Middle) {
                 close_idx = i
             } else {
                 s.active = i
                 sync_url_buf(s)
+                loading_trace_event(fmt.tprintf("tab-switch active=%d jobs=%d", s.active, len(g_jobs)))
             }
         }
         hovered := im.IsItemHovered()
@@ -958,12 +997,9 @@ draw_tabstrip :: proc(s: ^State) {
     // botão nova aba (+)
     bx := x + 4
     by := y + 9
-    im.SetCursorScreenPos({bx, by})
-    if im.InvisibleButton("##newtab", {26, 24}) {
-        append(&s.tabs, make_tab("Nova aba"))
-        s.active = len(s.tabs) - 1
-        for &b in s.url_buf do b = 0
-        g_focus_url = true // foca a barra de URL na aba nova
+    im.SetCursorScreenPos({bx, y})
+    if im.InvisibleButton("##newtab", {26, TAB_H}) {
+        open_new_tab(s)
     }
     if im.IsItemHovered() {
         im.DrawList_AddRectFilled(dl, {bx, by}, {bx + 26, by + 24}, col(TAB_HOVER), 6)
@@ -1152,6 +1188,11 @@ icon_btn_at :: proc(dl: ^im.DrawList, bx, y: f32, glyph: cstring) {
 
 // ── Conteúdo (viewport) ─────────────────────────────────────────────────────
 
+tab_needs_restyle :: proc(tab: ^Tab, vw, vh: f32) -> bool {
+    return tab.zoom_applied != g_zoom || tab.style_vw != vw ||
+        tab.style_vh != vh || tab.style_dark != g_prefers_dark
+}
+
 draw_content :: proc(s: ^State) {
     avail := im.GetContentRegionAvail()
     avail.y -= 24 // barra de status
@@ -1184,6 +1225,11 @@ draw_content :: proc(s: ^State) {
     // senão continuaria rolando a aba que acabou de abrir.
     if s.scroll_pending && s.scroll_tab != tab.id do s.scroll_pending = false
 
+    // One deadline for all page JS in this frame, including nested task pumps.
+    // Capture the VM rather than an address into tabs (opening a tab may grow it).
+    vm := tab.vm
+    defer jspkg.vm_end_host_turn(vm)
+
     switch {
     case tab.url == "":
         draw_new_tab_page(s, avail)
@@ -1194,13 +1240,14 @@ draw_content :: proc(s: ^State) {
         im.PopStyleColor(1)
     case:
         // Viewport, zoom and theme changes invalidate style and geometry.
-        if s.tabs[s.active].zoom_applied != g_zoom || tab.style_vw != avail.x ||
-            tab.style_vh != avail.y || tab.style_dark != g_prefers_dark {
+        if tab_needs_restyle(&s.tabs[s.active], avail.x, avail.y) {
+            loading_trace_stage("page-restyle")
             restyle_tab(&s.tabs[s.active], avail.x, avail.y)
             tab = s.tabs[s.active]
         }
         // Layout engine: calcula posições/tamanhos e pinta.
         if tab.layout != nil {
+            loading_trace_stage("page-geometry")
             ensure_tab_geometry(tab.layout, avail.x, avail.y)
             // Fonte do getComputedStyle desta aba. Setado por FRAME (e não só no
             // restyle_tab) porque a troca de aba não re-estiliza: o mapa vem pronto
@@ -1253,7 +1300,9 @@ draw_content :: proc(s: ^State) {
             // (rolável interno) ou volta p/ ser aplicado na página logo abaixo.
             auto_d := autoscroll_prepare(s)
 
+            loading_trace_stage("page-paint")
             paint_layout(s, tab.layout)
+            loading_trace_stage("page-input")
 
             // Informa ao ImGui a altura total do documento p/ habilitar o scroll da
             // página (o child ##viewport rola com a roda; paint_box já posiciona via
@@ -1329,6 +1378,8 @@ draw_content :: proc(s: ^State) {
             // POR ÚLTIMO: dispara handlers JS do clique. Pode liberar e reconstruir
             // tab.layout — por isso vem depois de todos os usos da cópia `tab` acima.
             // O layout novo entra em vigor no próximo frame (que re-copia o ponteiro).
+            jspkg.vm_begin_host_turn(vm, 50)
+            loading_trace_stage("page-js")
             dispatch_page_click(s, avail.x, avail.y)
             // botão do meio (mousedown/mouseup/auxclick + abrir link em aba de
             // fundo). Mesma regra: depois do paint, pode reconstruir o layout.
@@ -1942,6 +1993,7 @@ start_navigation :: proc(s: ^State, url: string, record := true, auto_https := f
     tab.url     = strings.clone(url) // posse própria (estável)
     tab.title   = strings.clone(url)
     tab.loading = true
+    loading_trace_event(fmt.tprintf("navigation tab=%d", tab.id))
     if !background {
         s.status = fmt.aprintf("Conectando a %s ...", url)
         sync_url_buf(s) // reflete a nova URL na barra
@@ -1954,8 +2006,11 @@ start_navigation :: proc(s: ^State, url: string, record := true, auto_https := f
     job.tab_id     = tab.id
     job.viewport_w = im.GetIO().DisplaySize.x // p/ @media e vw (largura no momento da carga)
     if job.viewport_w < 1 do job.viewport_w = 1280
-    job.viewport_h = im.GetIO().DisplaySize.y
-    if job.viewport_h < 1 do job.viewport_h = 720
+    // CSS must see the PAGE viewport, not the height of the entire window.
+    // Otherwise every completed load immediately invalidates its worker styles.
+    job.viewport_h = im.GetIO().DisplaySize.y - TAB_H - 48 - 24
+    if g_devtools_open do job.viewport_h -= g_devtools_h
+    if job.viewport_h < 1 do job.viewport_h = 1
     append(&g_jobs, job)
     thread.create_and_start_with_poly_data(job, fetch_worker, self_cleanup = true)
 }
@@ -1989,7 +2044,9 @@ reload_page :: proc(s: ^State) {
 // externo), computa os estilos e entrega tudo pronto. Não toca na UI.
 fetch_worker :: proc(job: ^Fetch_Job) {
     dbg_adopt_allocator() // usa o alocador tracked global em debug (evita falso bad-free)
+    loading_trace_event(fmt.tprintf("job=%d fetch-start", job.tab_id))
     job.resp = net.fetch(job.url)
+    loading_trace_event(fmt.tprintf("job=%d fetch-end ok=%v bytes=%d", job.tab_id, job.resp.ok, len(job.resp.body)))
 
     // HTTPS-first: se o esquema foi auto-adicionado e a conexão https falhou
     // (timeout/recusada — site só-HTTP), tenta novamente via http://.
@@ -2008,6 +2065,7 @@ fetch_worker :: proc(job: ^Fetch_Job) {
         // parse+normalize_document: o scaffold html/head/body agora sai do próprio
         // algoritmo. Fecha o buraco medido no M141 (legado 429/1509 vs 1680).
         job.dom = htmlp.parse_render(job.resp.body)
+        loading_trace_event(fmt.tprintf("job=%d scripts-start", job.tab_id))
         // O tamanho do viewport ANTES de rodar script alheio: `window.innerWidth`
         // é lido no carregamento (mobile×desktop) e este worker é OUTRA thread, com
         // os thread_local do computed_om zerados. Só as DIMENSÕES — o mapa de
@@ -2015,6 +2073,7 @@ fetch_worker :: proc(job: ^Fetch_Job) {
         // seria corrida com a main (ver o aviso em computed_om.odin).
         js_viewport_set(job.viewport_w, job.viewport_h)
         job.vm = load_page_scripts(job.dom, job.url) // roda <script> inline E externos (src=)
+        loading_trace_event(fmt.tprintf("job=%d css-start", job.tab_id))
         css_text := collect_page_css(job.dom, job.url) // inclui <link> externos (temp)
         job.css_text = strings.clone(css_text)         // DONO: sobrevive ao free_all(temp) abaixo
         // As rules ficam NO JOB e são transferidas à aba (poll_jobs) em vez de
@@ -2022,8 +2081,14 @@ fetch_worker :: proc(job: ^Fetch_Job) {
         // são owned, poupam o parse do 1º restyle e mantêm válidas as fatias `_raw`
         // que o Computed guarda p/ dentro de rule.decls.
         job.rules, job.kf = csspkg.parse(job.css_text)
+        loading_trace_event(fmt.tprintf("job=%d styles-start", job.tab_id))
+        job.zoom_applied = g_zoom
+        job.style_dark = g_prefers_dark
+        job.font_families = len(g_face_families)
         job.styles, job.page_bg = compute_styles(job.dom, &job.rules, job.viewport_w, job.viewport_h, job.kf[:])
         job.layout = build_layout(job.dom, job.styles, job.url)
+        job.dom_fp = dompkg.fingerprint(job.dom)
+        loading_trace_event(fmt.tprintf("job=%d ready", job.tab_id))
     }
     free_all(context.temp_allocator)
     intrinsics.atomic_store(&job.done, true)
@@ -2471,6 +2536,7 @@ poll_jobs :: proc(s: ^State) {
     for i := len(g_jobs) - 1; i >= 0; i -= 1 {
         job := g_jobs[i]
         if !bool(intrinsics.atomic_load(&job.done)) do continue
+        loading_trace_event(fmt.tprintf("job=%d delivery-start", job.tab_id))
 
         consumed := false
         for &tab in s.tabs {
@@ -2499,7 +2565,17 @@ poll_jobs :: proc(s: ^State) {
                 tab.rules = job.rules
                 tab.kf = job.kf
                 tab.rules_ready = true // já parseadas pela thread: o 1º restyle reusa
-                tab.zoom_applied = g_zoom // computado pela thread com o zoom atual
+                // Retain the worker's inputs, so the first UI frame can reuse
+                // its cascade/tree instead of rebuilding the whole page again.
+                tab.zoom_applied = job.zoom_applied
+                tab.style_vw = job.viewport_w
+                tab.style_vh = job.viewport_h
+                tab.style_dark = job.style_dark
+                tab.dom_fp = job.dom_fp
+                // Registration belongs to the atlas owner. Newly discovered
+                // family IDs require a restyle; already known families don't.
+                fontface_scan(tab.css_text, job.final_url != "" ? job.final_url : tab.url)
+                if job.font_families != len(g_face_families) do tab.zoom_applied = -1
                 job.dom = nil
                 job.layout = nil
                 job.vm = nil

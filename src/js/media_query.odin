@@ -156,6 +156,7 @@ mql_step :: proc(vm: ^Interp) -> bool {
     defer delete(snap)
     for o in vm.media_lists do append(&snap, o)
     for o in snap {
+        if vm_host_turn_expired(vm) do break
         now := mq_now(o)
         if now == truthy(o.props[MQ_LAST]) do continue
         o.props[MQ_LAST] = now

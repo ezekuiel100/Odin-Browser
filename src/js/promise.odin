@@ -43,6 +43,8 @@ drain_reaction_queue :: proc(vm: ^Interp) {
     defer vm.draining = was_draining
     processed := 0
     for len(vm.reaction_queue) > 0 {
+        // Preserve the remaining FIFO for the next host turn.
+        if vm_host_turn_expired(vm) do break
         job := vm.reaction_queue[0]
         ordered_remove(&vm.reaction_queue, 0) // FIFO; a fila fica curta (cada reação enfileira ~1)
         if job.microtask != nil {
@@ -103,6 +105,7 @@ promise_await_blocking :: proc(vm: ^Interp, v: Value) -> (out: Value, rejected: 
     waited: f64 = 0
     last := time.tick_now()
     for as_number(p.props["_state"]) == PROMISE_PENDING {
+        if vm_host_turn_expired(vm) do return mk_error(vm, "RangeError", "tempo de execucao excedido (await)"), true
         now := time.tick_now()
         dt := time.duration_milliseconds(time.tick_diff(last, now))
         last = now

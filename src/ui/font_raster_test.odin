@@ -22,6 +22,15 @@ test_native_font_raster_size_merge_and_rebuild :: proc(t: ^testing.T) {
     im.FontAtlas_AddFontFromMemoryTTF(atlas, raw_data(data), i32(len(data)), 40, &cfg, &merged[0])
     testing.expect(t, im.FontAtlas_Build(atlas))
 
+    // Interactive navigation uses the existing ladder, and must not queue a
+    // whole-atlas rebuild merely because a page uses another CSS font size.
+    previous_requests := g_native_font_requests_enabled
+    defer { g_native_font_requests_enabled = previous_requests }
+    g_native_font_requests_enabled = false
+    testing.expect(t, native_font_pick(base, 85.25) == base)
+    testing.expect(t, !native_fonts_pending())
+    g_native_font_requests_enabled = true
+
     // A large title initially falls back, without modifying the locked atlas.
     atlas.Locked = true
     testing.expect(t, native_font_pick(base, 85.25) == base)

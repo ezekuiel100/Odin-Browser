@@ -694,6 +694,7 @@ fontface_poll :: proc() -> bool {
     io := im.GetIO()
     if io == nil || io.Fonts == nil do return false
     added := native_fonts_add(io.Fonts)
+    if added do loading_trace_event("font-atlas reason=native-size")
 
     sync.mutex_lock(&g_face_lock)
     active := 0
@@ -763,6 +764,7 @@ fontface_poll :: proc() -> bool {
                 io.Fonts, raw_data(f.payload), c.int(len(f.payload)), sz, &cfg, &g_text_ranges[0])
         }
         added = true
+        loading_trace_event("font-atlas reason=webfont")
         _ = i
     }
     sync.mutex_unlock(&g_face_lock)

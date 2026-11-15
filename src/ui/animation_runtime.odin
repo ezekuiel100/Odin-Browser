@@ -54,15 +54,17 @@ animation_step_tree :: proc(b: ^Box, dt: f32) {
 // Handlers run after recording/replaying paint; callers subsequently check the
 // DOM fingerprint and rebuild if necessary.
 animation_dispatch :: proc(b: ^Box, vm: ^js.Interp) -> bool {
-    if b == nil || vm == nil do return false
+    if b == nil || vm == nil || js.vm_host_turn_expired(vm) do return false
     fired := false
     for &p in b.animations {
-        for ev in p.pending {
+        for len(p.pending) > 0 {
+            if js.vm_host_turn_expired(vm) do return fired
+            ev := p.pending[0]
+            ordered_remove(&p.pending, 0)
             if b.node != nil {
                 if js.dispatch_animation_event(vm, b.node, ev.kind, p.anim.name, f64(ev.elapsed)) do fired = true
             }
         }
-        clear(&p.pending)
     }
     for c in b.children do if animation_dispatch(c, vm) do fired = true
     for it in b.inlines do if it.box != nil && animation_dispatch(it.box, vm) do fired = true

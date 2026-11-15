@@ -81,9 +81,12 @@ fetch_abandon_pending :: proc(vm: ^Interp) {
 vm_pump_fetches :: proc(vm: ^Interp) -> bool {
     fired := false
     for i := len(vm.pending_fetches) - 1; i >= 0; i -= 1 {
+        if vm_host_turn_expired(vm) do break
         req := vm.pending_fetches[i]
         if intrinsics.atomic_load(&req.flag) != 1 do continue
         ordered_remove(&vm.pending_fetches, i)
+        vm.steps = 0
+        reset_task_clock(vm)
         mo_task_enter(vm) // cada conclusão é uma tarefa do hospedeiro
 
         if req.resp.ok {

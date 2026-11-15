@@ -339,6 +339,13 @@ mo_task_exit :: proc(vm: ^Interp) {
 
 // Ordering parcial: entrega de MO ainda ocorre em rodadas separadas, não como
 // um job na FIFO compartilhada; não implementa o ordering completo da spec.
+mo_has_records :: proc(vm: ^Interp) -> bool {
+    for obs in vm.mut_observers {
+        if q, ok := obs.props[MO_QUEUE].(^Array); ok && len(q.items) > 0 do return true
+    }
+    return false
+}
+
 mo_notify :: proc(vm: ^Interp) {
     if !mo_active(vm) || vm.mo_notifying do return
     vm.mo_notifying = true
@@ -356,6 +363,7 @@ mo_notify :: proc(vm: ^Interp) {
         clear(&snap)
         for o in vm.mut_observers do append(&snap, o)
         for obs in snap {
+            if vm_host_turn_expired(vm) do return
             q, ok := obs.props[MO_QUEUE].(^Array)
             if !ok || len(q.items) == 0 do continue
             recs := new_array(vm)

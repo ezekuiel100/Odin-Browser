@@ -334,6 +334,7 @@ io_step :: proc(vm: ^Interp) -> bool {
     for o in vm.int_observers do append(&snap, o)
 
     for obs in snap {
+        if vm_host_turn_expired(vm) do break
         targets, tok := obs.props[IO_TARGETS].(^Array)
         if !tok || len(targets.items) == 0 do continue
         q, qok := obs.props[IO_QUEUE].(^Array)

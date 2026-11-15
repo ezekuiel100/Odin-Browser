@@ -5,6 +5,7 @@ package js
 
 import "core:fmt"
 import "core:math"
+import "core:sort"
 import "core:strconv"
 import "core:strings"
 import "core:time"
@@ -399,6 +400,8 @@ Interp :: struct {
     stack_low:      uintptr, // fundo reservado da stack da thread atual (stack_guard.odin); 0 = guarda off
     task_start:     time.Tick, // relógio REAL do início da tarefa (watchdog por tempo)
     time_budget_ms: f64,   // teto de tempo de parede por tarefa; 0 = desligado (TIME_BUDGET_MS)
+    host_turn_start: time.Tick,
+    host_turn_budget_ms: f64, // aggregate UI budget; task resets must not extend it
     reaction_queue: [dynamic]Reaction_Job, // reações de Promise pendentes (microtasks; promise.odin)
     draining:       bool,  // já dentro de drain_reactions? (evita drain reentrante — mantém a stack flat)
     pump_depth:     int,   // profundidade de vm_pump_timers (await dentro de callback re-entra no pump)
@@ -532,6 +535,23 @@ reset_task_clock :: proc(vm: ^Interp) {
     vm.task_start = time.tick_now()
 }
 
+// The interactive host shares one deadline across events, timers and observers.
+// Workers/headless leave this disabled and retain the normal per-task watchdog.
+vm_begin_host_turn :: proc(vm: ^Interp, budget_ms: f64) {
+    if vm == nil do return
+    vm.host_turn_start = time.tick_now()
+    vm.host_turn_budget_ms = budget_ms
+}
+
+vm_end_host_turn :: proc(vm: ^Interp) {
+    if vm != nil do vm.host_turn_budget_ms = 0
+}
+
+vm_host_turn_expired :: proc(vm: ^Interp) -> bool {
+    return vm != nil && vm.host_turn_budget_ms > 0 &&
+        time.duration_milliseconds(time.tick_since(vm.host_turn_start)) >= vm.host_turn_budget_ms
+}
+
 // Máscara p/ checar o tempo só a cada 2^16 passos (time.tick_now não é grátis).
 @(private = "file")
 TIME_CHECK_MASK :: u64(0xFFFF)
@@ -563,6 +583,15 @@ loop_take_continue :: proc(vm: ^Interp, my_label: string) -> bool {
 @(private = "file")
 step_guard :: proc(vm: ^Interp) -> bool {
     vm.steps += 1
+    // Check more frequently on the UI thread. A callback that does not return
+    // cannot be deferred by the scheduler; interrupt it using the watchdog.
+    if vm.host_turn_budget_ms > 0 && (vm.steps == 1 || (vm.steps & 0x3FF) == 0) && vm_host_turn_expired(vm) {
+        if !vm.throwing {
+            vm.thrown = mk_error(vm, "RangeError", "tempo de execucao excedido (interface ocupada)")
+            vm.throwing = true
+        }
+        return true
+    }
     // teto por PASSOS
     if vm.steps > vm.step_limit {
         if !vm.throwing {
@@ -1066,9 +1095,19 @@ vm_destroy :: proc(vm: ^Interp) {
 // ou cancelar timers durante a execução sem invalidar a iteração.
 // Devolve true se algum disparou (o hospedeiro deve re-estilizar/re-layout).
 vm_pump_timers :: proc(vm: ^Interp, dt_ms: f64) -> bool {
-    fired := vm_pump_fetches(vm) // fetches concluídos resolvem suas Promises aqui
     refresh_stack_limit(vm)      // pode ser chamado de thread diferente (await na worker)
     vm.clock_ms += dt_ms
+    if vm_host_turn_expired(vm) do return false
+    fired := false
+    // Resume microtasks/observers left pending when the preceding UI turn ended.
+    if len(vm.reaction_queue) > 0 || mo_has_records(vm) {
+        fired = true
+        vm.steps = 0
+        reset_task_clock(vm)
+        mo_task_enter(vm)
+        mo_task_exit(vm)
+    }
+    if vm_pump_fetches(vm) do fired = true
     due: [dynamic]Timer // copia os vencidos (fn+raf) antes de disparar
     defer delete(due)
     i := 0
@@ -1087,14 +1126,33 @@ vm_pump_timers :: proc(vm: ^Interp, dt_ms: f64) -> bool {
     }
     // ordem de disparo: VENCIMENTO crescente, não ordem de registro —
     // setTimeout(f,100); setTimeout(g,50) vencidos juntos disparam g antes de f.
-    // Empate mantém a ordem de registro (insertion sort estável).
-    for a := 1; a < len(due); a += 1 {
-        for j := a; j > 0 && due[j].due < due[j-1].due; j -= 1 {
-            due[j], due[j-1] = due[j-1], due[j]
-        }
-    }
+    // O id desempata pela ordem de registro, inclusive após adiar para outro frame.
+    sort.quick_sort_proc(due[:], proc(a, b: Timer) -> int {
+        if a.due < b.due do return -1
+        if a.due > b.due do return 1
+        return a.id - b.id
+    })
+    scheduled_at := vm.clock_ms
     vm.pump_depth += 1
-    for t in due {
+    for t, index in due {
+        if vm_host_turn_expired(vm) {
+            // One-shots were removed by the snapshot above: restore those we
+            // haven't called. Intervals must remain due, not skip a firing.
+            for pending in due[index:] {
+                if vm.dead_timer_ids[pending.id] do continue
+                if pending.interval == 0 {
+                    append(&vm.timers, pending)
+                } else {
+                    for &timer in vm.timers {
+                        if timer.id == pending.id && timer.due == scheduled_at + pending.interval {
+                            timer.due = pending.due
+                            break
+                        }
+                    }
+                }
+            }
+            break
+        }
         // clearTimeout chamado por um callback ANTERIOR deste mesmo pump: o
         // disparo pendente é cancelado (como no navegador)
         if vm.dead_timer_ids[t.id] do continue
@@ -1125,7 +1183,7 @@ vm_pump_timers :: proc(vm: ^Interp, dt_ms: f64) -> bool {
 // Devolve true se algum callback rodou — o hospedeiro trata igual ao retorno de
 // `vm_pump_timers` (pode ter mexido no DOM: re-estilizar antes de pintar).
 vm_frame_step :: proc(vm: ^Interp) -> bool {
-    if vm == nil do return false
+    if vm == nil || vm_host_turn_expired(vm) do return false
     fired := io_step(vm)   // IntersectionObserver (intersection_observer.odin)
     if ro_step(vm)  do fired = true // ResizeObserver   (resize_observer.odin)
     if mql_step(vm) do fired = true // matchMedia 'change' (media_query.odin)
