@@ -1327,7 +1327,7 @@ arr_from :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
             i += w
         }
     case ^Collection:
-        for &e in o.entries do append(&res.items, e.val)
+        for &e in o.entries do if !e.dead do append(&res.items, e.val)
     case ^Object:
         // iterável por protocolo (Symbol.iterator/iterador — inclui TypedArray);
         // senão trata como array-like (.length + índices, ex.: arguments, NodeList)
@@ -2464,9 +2464,10 @@ structured_clone_val :: proc(vm: ^Interp, v: Value, memo: ^map[rawptr]Value) -> 
         nc := new_collection(vm, x.kind)
         memo[rawptr(x)] = nc
         for e in x.entries {
+            if e.dead do continue
             k := structured_clone_val(vm, e.key, memo); if vm.throwing do return nil
             val := structured_clone_val(vm, e.val, memo); if vm.throwing do return nil
-            append(&nc.entries, Coll_Entry{key = k, val = val})
+            coll_put(nc, k, val)
         }
         return nc
     case ^Object:

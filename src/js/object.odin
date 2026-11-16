@@ -108,7 +108,7 @@ obj_from_entries :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         }
     case ^Collection:
         if src.kind == .Map || src.kind == .Weak_Map {
-            for e in src.entries do oput(o, key_string(vm, e.key), e.val)
+            for e in src.entries do if !e.dead do oput(o, key_string(vm, e.key), e.val)
         }
     }
     return o

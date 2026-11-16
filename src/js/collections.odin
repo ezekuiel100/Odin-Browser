@@ -10,17 +10,21 @@ package js
 // comparadas por SameValueZero (identidade p/ objetos; valor p/ primitivos; e
 // NaN igual a NaN), então objetos servem de chave, como no JS real.
 //
-// O backing é uma lista em ordem de inserção com varredura linear (O(n) por
-// operação). Simples e correto; dá p/ trocar por hash depois se pesar.
+// Ordered entries with a hash index; deleted slots keep iteration cursors stable.
 
 Coll_Kind :: enum { Map, Set, Weak_Map, Weak_Set }
 
 Coll_Entry :: struct {
+    dead: bool,
+    next: int, // bucket chain, index + 1 (zero terminates)
     key: Value,
     val: Value, // Set/WeakSet: val == key (forEach passa (val, key) iguais)
 }
 
 Collection :: struct {
+    index: map[u64]int,
+    size: int,
+    iterating: int,
     kind:    Coll_Kind,
     entries: [dynamic]Coll_Entry,
 }
@@ -28,6 +32,7 @@ Collection :: struct {
 new_collection :: proc(vm: ^Interp, kind: Coll_Kind) -> ^Collection {
     c := new(Collection)
     c.kind = kind
+    c.index = make(map[u64]int)
     append(&vm.all_collections, c)
     return c
 }
@@ -53,8 +58,37 @@ same_value_zero :: proc(a, b: Value) -> bool {
 // Índice da entrada com esta chave, ou -1.
 @(private = "file")
 coll_find :: proc(c: ^Collection, key: Value) -> int {
-    for e, i in c.entries do if same_value_zero(e.key, key) do return i
+    for link := c.index[coll_hash(key)]; link != 0; link = c.entries[link-1].next {
+        if same_value_zero(c.entries[link-1].key, key) do return link-1
+    }
     return -1
+}
+
+// Equal SameValueZero keys must hash alike, including NaNs, signed zero and BigInts.
+@(private = "file")
+coll_hash :: proc(key: Value) -> u64 {
+    h: u64 = 14695981039346656037
+    switch x in key {
+    case f64:
+        if x == 0 do return 0
+        if x != x do return 0x7ff8000000000000
+        return transmute(u64)x
+    case string:
+        for b in transmute([]u8)x do h = (h ~ u64(b)) * 1099511628211
+    case ^BigInt:
+        h = u64(x.val.sign)
+        for i in 0..<x.val.used do h = (h ~ u64(x.val.digit[i])) * 1099511628211
+    case bool: return 1 if x else 2
+    case JS_Null: return 3
+    case ^Function: return u64(uintptr(x))
+    case ^Object: return u64(uintptr(x))
+    case ^Array: return u64(uintptr(x))
+    case ^Regex: return u64(uintptr(x))
+    case ^Collection: return u64(uintptr(x))
+    case ^Symbol: return u64(uintptr(x))
+    case: return 4
+    }
+    return h
 }
 
 @(private = "file")
@@ -69,11 +103,7 @@ map_set :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     c, ok := this.(^Collection)
     if !ok { throw_type_error(vm, "Method Map.prototype.set called on incompatible receiver"); return nil }
     k := arg(args, 0); v := arg(args, 1)
-    if i := coll_find(c, k); i >= 0 {
-        c.entries[i].val = v
-    } else {
-        append(&c.entries, Coll_Entry{key = k, val = v})
-    }
+    coll_put(c, k, v)
     return this // Map.set devolve o próprio (encadeável)
 }
 
@@ -82,7 +112,7 @@ set_add :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     c, ok := this.(^Collection)
     if !ok { throw_type_error(vm, "Method Set.prototype.add called on incompatible receiver"); return nil }
     k := arg(args, 0)
-    if coll_find(c, k) < 0 do append(&c.entries, Coll_Entry{key = k, val = k})
+    coll_put(c, k, k)
     return this // Set.add devolve o próprio
 }
 
@@ -104,7 +134,15 @@ coll_has :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 coll_delete :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     c, ok := this.(^Collection); if !ok do return false
     if i := coll_find(c, arg(args, 0)); i >= 0 {
-        ordered_remove(&c.entries, i) // preserva a ordem de inserção
+        hash := coll_hash(c.entries[i].key)
+        link := c.index[hash]
+        prev := 0
+        for link != i+1 { prev = link; link = c.entries[link-1].next }
+        if prev == 0 {
+            if c.entries[i].next == 0 { delete_key(&c.index, hash) } else { c.index[hash] = c.entries[i].next }
+        } else { c.entries[prev-1].next = c.entries[i].next }
+        c.entries[i] = Coll_Entry{dead = true}
+        c.size -= 1
         return true
     }
     return false
@@ -112,7 +150,13 @@ coll_delete :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 coll_clear :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if c, ok := this.(^Collection); ok do clear(&c.entries)
+    if c, ok := this.(^Collection); ok {
+        clear(&c.index)
+        c.size = 0
+        if c.iterating == 0 { clear(&c.entries) } else {
+            for &e in c.entries do e = Coll_Entry{dead = true}
+        }
+    }
     return nil
 }
 
@@ -126,9 +170,12 @@ coll_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     cb, cok := arg(args, 0).(^Function)
     if !cok { throw_type_error(vm, "callback is not a function"); return nil }
     this_arg := arg(args, 1)
+    c.iterating += 1
+    defer c.iterating -= 1
     // índice: entradas adicionadas durante a iteração também são visitadas (spec)
     for i := 0; i < len(c.entries); i += 1 {
         e := c.entries[i]
+        if e.dead do continue
         call_function(vm, cb, this_arg, []Value{e.val, e.key, this})
         if vm.throwing do break
     }
@@ -138,14 +185,14 @@ coll_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 @(private = "file")
 coll_keys :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_array(vm)
-    if c, ok := this.(^Collection); ok do for e in c.entries do append(&out.items, e.key)
+    if c, ok := this.(^Collection); ok do for e in c.entries do if !e.dead do append(&out.items, e.key)
     return make_array_iterator(vm, out) // Map/Set.keys() → ITERADOR (não array), como no JS
 }
 
 @(private = "file")
 coll_values :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_array(vm)
-    if c, ok := this.(^Collection); ok do for e in c.entries do append(&out.items, e.val)
+    if c, ok := this.(^Collection); ok do for e in c.entries do if !e.dead do append(&out.items, e.val)
     return make_array_iterator(vm, out)
 }
 
@@ -161,6 +208,7 @@ coll_entries :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_array(vm)
     if c, ok := this.(^Collection); ok {
         for e in c.entries {
+            if e.dead do continue
             pair := new_array(vm)
             append(&pair.items, e.key)
             append(&pair.items, e.val)
@@ -235,9 +283,31 @@ iterator_method_fn :: proc(v: Value, name: string) -> ^Function {
 
 // ── construtores ──────────────────────────────────────────────────────────────
 
-@(private = "file")
 coll_put :: proc(c: ^Collection, k, v: Value) {
-    if i := coll_find(c, k); i >= 0 { c.entries[i].val = v } else { append(&c.entries, Coll_Entry{key = k, val = v}) }
+    if i := coll_find(c, k); i >= 0 { c.entries[i].val = v; return }
+    // Amortized compaction; callbacks must retain their entry positions.
+    if c.iterating == 0 && len(c.entries) > 64 && len(c.entries) > 2*c.size {
+        clear(&c.index)
+        n := 0
+        for e in c.entries {
+            if e.dead do continue
+            hash := coll_hash(e.key)
+            entry := e
+            entry.next = c.index[hash]
+            c.entries[n] = entry
+            c.index[hash] = n+1
+            n += 1
+        }
+        resize(&c.entries, n)
+    }
+    key := k
+    if n, ok := key.(f64); ok && n == 0 do key = f64(0)
+    val := v
+    if coll_is_set(c) do val = key
+    hash := coll_hash(key)
+    append(&c.entries, Coll_Entry{key = key, val = val, next = c.index[hash]})
+    c.index[hash] = len(c.entries)
+    c.size += 1
 }
 
 // Adiciona UM item já materializado: Set guarda o valor solto; Map espera um par
@@ -267,7 +337,7 @@ coll_init_from :: proc(vm: ^Interp, c: ^Collection, src: Value) {
     case ^Array:
         for it in s.items do coll_add_item(vm, c, is_set, it)
     case ^Collection:
-        for e in s.entries do coll_put(c, e.key, is_set ? e.key : e.val)
+        for e in s.entries do if !e.dead do coll_put(c, e.key, is_set ? e.key : e.val)
     case:
         if is_nullish(src) do return // new Map()/new Map(null/undefined): vazio
         items: [dynamic]Value

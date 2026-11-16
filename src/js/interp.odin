@@ -1047,7 +1047,7 @@ vm_destroy :: proc(vm: ^Interp) {
     delete(vm.all_buffers)
     for re in vm.all_regexes do regex_destroy(re)
     delete(vm.all_regexes)
-    for c in vm.all_collections { delete(c.entries); free(c) }
+    for c in vm.all_collections { delete(c.entries); delete(c.index); free(c) }
     delete(vm.all_collections)
     for s in vm.all_symbols { delete(s.desc); free(s) }
     delete(vm.all_symbols)
@@ -1409,7 +1409,7 @@ to_text :: proc(sb: ^strings.Builder, v: Value) {
         case .Weak_Set: strings.write_string(sb, "WeakSet")
         }
         strings.write_byte(sb, '(')
-        write_number(sb, f64(len(x.entries)))
+        write_number(sb, f64(x.size))
         strings.write_byte(sb, ')')
     case ^Symbol:
         strings.write_string(sb, "Symbol(")
@@ -2133,7 +2133,7 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         if fn, ok := vm.object_methods[name]; ok do return fn
         return nil
     case ^Collection:
-        if name == "size" do return f64(len(o.entries))
+        if name == "size" do return f64(o.size)
         if fn, ok := vm.collection_methods[name]; ok do return fn
         if name == "constructor" {
             switch o.kind {
@@ -2498,9 +2498,10 @@ eval_args :: proc(vm: ^Interp, nodes: [dynamic]^Node, env: ^Env) -> [dynamic]Val
             case ^Collection:
                 // ...set = elementos; ...map = pares [k,v] (como o for-of)
                 if s.kind == .Set || s.kind == .Weak_Set {
-                    for e in s.entries do append(&out, e.key)
+                    for e in s.entries do if !e.dead do append(&out, e.key)
                 } else {
                     for e in s.entries {
+                        if e.dead do continue
                         pair := new_array(vm)
                         append(&pair.items, e.key); append(&pair.items, e.val)
                         append(&out, pair)
@@ -2536,9 +2537,10 @@ materialize_for_pattern :: proc(vm: ^Interp, val: Value) -> (^Array, bool) {
     case ^Collection:
         arr := new_array(vm)
         if v.kind == .Set || v.kind == .Weak_Set {
-            for e in v.entries do append(&arr.items, e.key)
+            for e in v.entries do if !e.dead do append(&arr.items, e.key)
         } else {
-            for e in v.entries { // Map: pares [k,v] (como o for-of)
+            for e in v.entries {
+                if e.dead do continue // Map: pares [k,v] (como o for-of)
                 pair := new_array(vm)
                 append(&pair.items, e.key); append(&pair.items, e.val)
                 append(&arr.items, pair)
@@ -2768,9 +2770,10 @@ collect_sync_values :: proc(vm: ^Interp, it: Value, out: ^[dynamic]Value) {
         for item in o.items do append(out, item)
     case ^Collection:
         if o.kind == .Set || o.kind == .Weak_Set {
-            for e in o.entries do append(out, e.key)
+            for e in o.entries do if !e.dead do append(out, e.key)
         } else {
             for e in o.entries {
+                if e.dead do continue
                 pair := new_array(vm)
                 append(&pair.items, e.key); append(&pair.items, e.val)
                 append(out, pair)
@@ -2870,9 +2873,10 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         case ^Collection:
             // Set/WeakSet: os elementos. Map/WeakMap: pares [chave, valor].
             if o.kind == .Set || o.kind == .Weak_Set {
-                for e in o.entries do append(&values, e.key)
+                for e in o.entries do if !e.dead do append(&values, e.key)
             } else {
                 for e in o.entries {
+                    if e.dead do continue
                     pair := new_array(vm)
                     append(&pair.items, e.key)
                     append(&pair.items, e.val)
@@ -4471,11 +4475,13 @@ eval_yield_star :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         copy(snap, s.entries[:])
         if s.kind == .Set || s.kind == .Weak_Set {
             for e in snap {
+                if e.dead do continue
                 generator_yield(vm, e.key)
                 if vm.throwing || vm.returning || vm.gen_hard_kill do return nil
             }
         } else {
             for e in snap {
+                if e.dead do continue
                 pair := new_array(vm)
                 append(&pair.items, e.key); append(&pair.items, e.val)
                 generator_yield(vm, pair)
