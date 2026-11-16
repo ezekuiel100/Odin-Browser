@@ -12,10 +12,10 @@ package js
 //
 // Linha de saída (stdout, sempre exit 0 — quem julga é o .ps1):
 //   __262__ status=pass  rec=<n>
-//   __262__ status=throw name=<Nome> rec=<n> msg=<mensagem numa linha>
-// onde `rec` = recuperações silenciosas do parser (o nosso parser tolera
-// sintaxe não suportada em vez de lançar SyntaxError; o .ps1 usa isso para
-// julgar os testes `negative: phase=parse`).
+//   __262__ status=throw name=<Nome> phase=runtime source=<index> rec=<n> msg=...
+// Recovery is diagnostic only. vm_exec has no genuine parse-error signal yet;
+// parse negatives must fail until that signal exists, even for SyntaxError thrown
+// by the test body. source distinguishes harness failures from test failures.
 
 import "core:os"
 import "core:fmt"
@@ -23,6 +23,8 @@ import "core:strings"
 
 // Resultado bruto de rodar uma sequência de fontes numa VM.
 Js262_Result :: struct {
+    phase:      string,
+    source:     int,
     threw:      bool,
     err_name:   string, // "TypeError" / "Test262Error" / "SyntaxError" / ...
     err_msg:    string, // primeira linha da mensagem
@@ -36,12 +38,15 @@ run_js262 :: proc(sources: []string) -> Js262_Result {
     vm := vm_create()
     defer vm_free(vm)
 
-    for src in sources {
+    failed_source := -1
+    for src, i in sources {
         _ = vm_exec(vm, src)
-        if vm.throwing do break // aborta na 1ª falha (assert lançou Test262Error)
+        if vm.throwing { failed_source = i; break }
     }
 
-    res := Js262_Result{ recoveries = vm.parse_recoveries }
+    // vm_exec currently exposes runtime throws only. Parser recovery is not
+    // evidence of a genuine SyntaxError and must never satisfy parse negatives.
+    res := Js262_Result{ recoveries = vm.parse_recoveries, phase = "runtime", source = failed_source }
     if vm.throwing {
         res.threw = true
         res.err_name, res.err_msg = describe_thrown(vm)
@@ -126,8 +131,8 @@ js262_main :: proc(paths: []string) -> int {
 
     res := run_js262(sources[:])
     if res.threw {
-        fmt.printfln("__262__ status=throw name=%s rec=%d msg=%s",
-            res.err_name, res.recoveries, res.err_msg)
+        fmt.printfln("__262__ status=throw name=%s phase=%s source=%d rec=%d msg=%s",
+            res.err_name, res.phase, res.source, res.recoveries, res.err_msg)
         delete(res.err_name)
         delete(res.err_msg)
     } else {

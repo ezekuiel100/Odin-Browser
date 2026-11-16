@@ -74,3 +74,5 @@ e a iteração do mapa vazia). Causa: mapa global chaveado por `^Node`, alocado 
 o rehash/clear usava o alocador errado e o header (`len`) dessincronizava dos
 buckets. M246 moveu o dado para `Computed.svg_css` (dono = `free_styles`); o
 portão é `test_svg_css_dono_e_o_computed` (50 passadas + free_styles pai/filho).
+
+Test262: o runner executa variantes normal/estrita (respeitando raw, noStrict e onlyStrict), ignora fixtures e registra modos module/async/CanBlock como SKIP. Negativos exigem tipo, fase e origem no corpo do teste; recuperacoes nao aprovam nenhum teste. O protocolo atual do motor identifica apenas runtime: negativos parse/resolution falham ate existir suporte real de deteccao dessas fases. Os 170/299 antigos nao sao uma medicao atual. Regressoes do veredito: powershell -File tests/test262-runner.ps1.

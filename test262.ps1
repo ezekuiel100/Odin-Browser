@@ -1,4 +1,4 @@
-# Runner do Test262 (suite oficial do ECMAScript) contra o nosso browser.exe.
+﻿# Runner do Test262 (suite oficial do ECMAScript) contra o nosso browser.exe.
 #
 # Para cada arquivo .js sob tests\test262\test:
 #   1. le o frontmatter /*--- ... ---*/  (includes, flags, negative)
@@ -8,8 +8,7 @@
 #   4. compara o veredito bruto com a expectativa:
 #        - sem `negative:`   -> PASS se nao lancou
 #        - com `negative:`   -> PASS se lancou o tipo esperado
-#          (phase=parse: como o nosso parser RECUPERA em vez de lancar SyntaxError,
-#           aceitamos rec>0 como o "erro de parse" esperado)
+#          exige tipo, fase e origem; recovery nunca aprova
 #
 # Uso:  .\test262.ps1                      (roda tudo)
 #       .\test262.ps1 -Filter Array        (so caminhos que casam)
@@ -23,6 +22,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "tools/test262-verdict.ps1")
 $root       = $PSScriptRoot
 $browser    = Join-Path $root "browser.exe"
 $t262Dir    = Join-Path $root "tests\test262"
@@ -71,7 +71,7 @@ function Get-Negative($fm) {
 }
 
 # ---- descoberta ----
-$all = Get-ChildItem -Recurse -File -Path $testDir -Filter *.js
+$all = @(Get-ChildItem -Recurse -File -Path $testDir -Filter *.js | Where-Object { $_.Name -notlike '*_FIXTURE.js' } | Sort-Object FullName)
 if ($Filter) { $all = $all | Where-Object { $_.FullName -like "*$Filter*" } }
 
 Write-Host ("Rodando {0} testes Test262..." -f $all.Count) -ForegroundColor Cyan
@@ -86,6 +86,20 @@ foreach ($t in $all) {
 
     $rel = $t.FullName.Substring($testDir.Length).TrimStart('\')
     $area = ($rel -split '\\')[0..1] -join '\'
+    if ($fm -match '(?m)^negative\s*:' -and
+        (-not $neg -or $neg.Phase -notin @('parse', 'resolution', 'runtime') -or -not $neg.Type)) {
+        $results += @{ Area = $area; Name = $rel; Status = "ERROR"; Reason = "negative invalido" }
+        continue
+    }
+
+    if (@($flags | Where-Object { $_ -in @('module', 'async', 'CanBlockIsFalse', 'CanBlockIsTrue') }).Count) {
+        $results += @{ Area = $area; Name = $rel; Status = "SKIP"; Reason = "modo nao suportado" }
+        continue
+    }
+    $variants = if ($flags -contains 'raw' -or $flags -contains 'noStrict') { @('normal') }
+                elseif ($flags -contains 'onlyStrict') { @('strict') }
+                else { @('normal', 'strict') }
+    foreach ($variant in $variants) {
 
     # monta a lista ordenada de fontes p/ o --js262
     $sources = New-Object System.Collections.Generic.List[string]
@@ -109,17 +123,22 @@ foreach ($t in $all) {
     # nao reescrevemos arquivos do harness, tratamos so o corpo: prefixa um
     # arquivo temporario. (noStrict roda como esta.)
     $tmpStrict = $null
-    if ($flags -contains 'onlyStrict' -and -not $isRaw) {
-        $tmpStrict = [System.IO.Path]::GetTempFileName() + ".js"
+    if ($variant -eq 'strict' -and -not $isRaw) {
+        $tmpStrict = [System.IO.Path]::GetTempFileName()
         [System.IO.File]::WriteAllText($tmpStrict, '"use strict";' + "`n" + $js)
         $sources[$sources.Count - 1] = $tmpStrict
     }
 
-    $out = & $browser --js262 @($sources.ToArray()) 2>$null
-    if ($tmpStrict) { Remove-Item -Force $tmpStrict -ErrorAction SilentlyContinue }
+    try {
+        $out = & $browser --js262 @($sources.ToArray()) 2>$null
+        $processExit = $LASTEXITCODE
+    } finally {
+        if ($tmpStrict) { Remove-Item -Force $tmpStrict -ErrorAction SilentlyContinue }
+    }
 
-    $line = ($out | Where-Object { $_ -match '^__262__' } | Select-Object -First 1)
-    if (-not $line) {
+    $verdicts = @($out | Where-Object { $_ -match '^__262__' })
+    $line = $verdicts | Select-Object -First 1
+    if ($verdicts.Count -ne 1 -or $processExit -ne 0) {
         $results += @{ Area = $area; Name = $rel; Status = "ERROR"; Reason = "sem veredito (crash?)" }
         continue
     }
@@ -128,31 +147,29 @@ foreach ($t in $all) {
     $name  = if ($line -match 'name=(\S+)') { $Matches[1] } else { "" }
     $rec   = if ($line -match 'rec=(\d+)')  { [int]$Matches[1] } else { 0 }
     $emsg  = if ($line -match 'msg=(.*)$')  { $Matches[1] } else { "" }
+    $phase = if ($line -match 'phase=(\S+)') { $Matches[1] } else { "" }
+    $sourceIndex = if ($line -match 'source=(-?\d+)') { [int]$Matches[1] } else { -1 }
 
     if ($neg) {
-        # esperava lancar
-        if ($neg.Phase -eq 'parse') {
-            # nosso parser recupera em vez de lancar SyntaxError: aceita rec>0 OU throw
-            $pass = ($rec -gt 0) -or $threw
-        } else {
-            $pass = $threw -and ($neg.Type -eq '' -or $name -eq $neg.Type)
-        }
-        $reason = "esperava {0}/{1}; got throw={2} name={3} rec={4}" -f $neg.Phase, $neg.Type, $threw, $name, $rec
+        $pass = Test-NegativeVerdict $neg $threw $name $phase $sourceIndex ($sources.Count - 1) $rec
+        $reason = "esperava $($neg.Phase)/$($neg.Type); got phase=$phase name=$name source=$sourceIndex rec=$rec"
     } else {
         # esperava NAO lancar
-        $pass = -not $threw
-        $reason = if ($threw) { "lancou $name`: $emsg" } else { "ok" }
+        $pass = ($line -match '^__262__ status=pass rec=0$')
+        $reason = if ($threw) { "lancou $name`: $emsg" } else { "rec=$rec; veredito=$line" }
     }
 
     $status = if ($pass) { "PASS" } else { "FAIL" }
-    $results += @{ Area = $area; Name = $rel; Status = $status; Reason = $reason }
+    $results += @{ Area = $area; Name = "$rel [$variant]"; Status = $status; Reason = $reason }
 
     if ($Verbose -or ($status -ne "PASS")) {
         $col = switch ($status) { "PASS" {"Green"} "FAIL" {"Red"} default {"Yellow"} }
-        $msg = "  {0,-5} {1}" -f $status, $rel
+        $msg = "  {0,-5} {1} [{2}]" -f $status, $rel, $variant
         if ($ShowThrow -and $status -ne "PASS") { $msg += "  ($reason)" }
         Write-Host $msg -ForegroundColor $col
     }
+}
+
 }
 
 # ---- resumo por area ----
