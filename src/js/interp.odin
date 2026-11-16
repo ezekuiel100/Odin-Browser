@@ -2698,6 +2698,29 @@ iterator_close :: proc(vm: ^Interp, iter: Value) {
     }
 }
 
+// Fecha um iterador assíncrono preservando a conclusão abrupta do corpo.
+async_iterator_close :: proc(vm: ^Interp, iter: Value) {
+    saved_throw, saved_exc := vm.throwing, vm.thrown
+    saved_ret, saved_val := vm.returning, vm.ret_val
+    saved_break, saved_continue := vm.breaking, vm.continuing
+    vm.throwing = false; vm.thrown = nil
+    vm.returning = false; vm.ret_val = nil
+    vm.breaking = false; vm.continuing = false
+    ret := get_member(vm, iter, "return")
+    if fn, ok := ret.(^Function); ok && !vm.throwing {
+        result := call_function(vm, fn, iter, nil)
+        if !vm.throwing do await_value(vm, result)
+    }
+    if vm.gen_hard_kill do return
+    if saved_throw {
+        vm.throwing = true; vm.thrown = saved_exc
+    }
+    if !vm.throwing {
+        vm.returning = saved_ret; vm.ret_val = saved_val
+        vm.breaking = saved_break; vm.continuing = saved_continue
+    }
+}
+
 // for (x of it) / for (x in it).
 //
 // Iteráveis por PROTOCOLO (generator, iterador de Map/Set, objeto com Symbol.iterator)
@@ -2705,10 +2728,14 @@ iterator_close :: proc(vm: ^Interp, iter: Value) {
 // essencial p/ generators infinitos (`for(x of fib())` com break) — materializar tudo
 // travaria — e faz `break` parar cedo de verdade. Iteráveis nativos (array/string/
 // Collection) e o for-in materializam num snapshot (evita invalidação se o corpo mutar).
-// Await bloqueante que traduz uma rejeição em exceção JS (throwing). Devolve o
-// valor resolvido (ou o próprio valor, se não-promise). Reusado por for-await.
+// Await comum a expressões, for-await e yield*. Corrotinas suspendem;
+// a entrada legada de topo ainda usa a espera de compatibilidade.
 @(private = "file")
-await_blocking_throw :: proc(vm: ^Interp, v: Value) -> Value {
+await_value :: proc(vm: ^Interp, v: Value) -> Value {
+    if vm.current_gen != nil && (vm.current_gen.is_async_fn || vm.current_gen.is_async) {
+        vm.current_gen.awaiting = true
+        return generator_yield(vm, v)
+    }
     res, rejected := promise_await_blocking(vm, v)
     if rejected { vm.thrown = res; vm.throwing = true; return nil }
     return res
@@ -2771,14 +2798,14 @@ eval_for_await :: proc(vm: ^Interp, n: ^Node, env: ^Env, it: Value, my_label: st
                 if step_guard(vm) do break
                 r := call_function(vm, next_fn, iter, nil)
                 if vm.throwing do return nil
-                r = await_blocking_throw(vm, r) // next() de async gen devolve Promise
+                r = await_value(vm, r) // next() de async gen devolve Promise
                 if vm.throwing do return nil
                 ro, rok := r.(^Object)
                 if !rok || truthy(ro.props["done"]) do break
-                val := await_blocking_throw(vm, ro.props["value"])
+                val := await_value(vm, ro.props["value"])
                 if vm.throwing do return nil
                 if for_of_run_body(vm, n, env, val, my_label) {
-                    iterator_close(vm, iter) // término abrupto → it.return()
+                    async_iterator_close(vm, iter) // término abrupto → it.return()
                     break
                 }
             }
@@ -2790,7 +2817,7 @@ eval_for_await :: proc(vm: ^Interp, n: ^Node, env: ^Env, it: Value, my_label: st
     defer delete(values)
     collect_sync_values(vm, it, &values)
     for v in values {
-        av := await_blocking_throw(vm, v)
+        av := await_value(vm, v)
         if vm.throwing do return nil
         if for_of_run_body(vm, n, env, av, my_label) do break
     }
@@ -2804,7 +2831,7 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     if vm.throwing do return nil
 
     // for await (x of it): drena um iterável ASSÍNCRONO (ou síncrono, awaitando
-    // cada valor). O await é bloqueante — pausa o loop até cada passo assentar.
+    // cada valor). Cada passo suspende a corrotina até assentar.
     if n.is_generator do return eval_for_await(vm, n, env, it, my_label)
 
     // caminho LAZY: for-of sobre iterável por protocolo
@@ -3053,21 +3080,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     case .Await:
         v := eval(vm, n.left, env)
         if vm.throwing do return nil
-        // Dentro de uma CORROTINA async: suspende (o driver async_step retoma quando
-        // a promise assentar). Fora dela — await de topo — cai no antigo caminho
-        // bloqueante, que ali é seguro porque não há continuação a agendar.
-        if vm.current_gen != nil && vm.current_gen.is_async_fn {
-            r := generator_yield(vm, v)
-            if vm.throwing || vm.returning do return nil // rejeição injetada como throw
-            return r
-        }
-        res, was_rejected := promise_await_blocking(vm, v)
-        if was_rejected { // await de promise rejeitada LANÇA (capturável por try/catch)
-            vm.thrown = res
-            vm.throwing = true
-            return nil
-        }
-        return res
+        return await_value(vm, v)
 
     case .TypeOf:
         // `typeof x` é a ÚNICA isenção da spec: não lança para identificador
@@ -3636,12 +3649,10 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             if vm.throwing do return nil
         }
         // async generator: AsyncGeneratorYield faz Await(value) antes de emitir —
-        // `yield promise` rende o valor RESOLVIDO (não a promise). O await é
-        // bloqueante e roda na thread do generator (pump normal).
+        // `yield promise` suspende até resolver, antes de emitir o yield.
         if vm.current_gen != nil && vm.current_gen.is_async {
-            res, rejected := promise_await_blocking(vm, val)
-            if rejected { vm.thrown = res; vm.throwing = true; return nil }
-            val = res
+            val = await_value(vm, val)
+            if vm.throwing || vm.returning do return nil
         }
         return generator_yield(vm, val)
 
@@ -4302,7 +4313,7 @@ eval_yield_star :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                         if throw_fn == nil {
                             if ret_fn := iterator_method_fn(it, "return"); ret_fn != nil {
                                 rr := call_function(vm, ret_fn, it, nil)
-                                if !vm.throwing do await_blocking_throw(vm, rr) // IteratorClose
+                                if !vm.throwing do await_value(vm, rr) // IteratorClose
                             }
                             vm.throwing = false; vm.thrown = nil // não mascara o TypeError
                             throw_type_error(vm, "The iterator does not provide a 'throw' method")
@@ -4320,7 +4331,7 @@ eval_yield_star :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                         r = call_function(vm, next_fn, it, []Value{sent})
                     }
                     if vm.throwing do return nil
-                    r = await_blocking_throw(vm, r) // método de async iterator devolve Promise
+                    r = await_value(vm, r) // método de async iterator devolve Promise
                     if vm.throwing do return nil
                     ro, rok := r.(^Object)
                     if !rok do break
@@ -4330,7 +4341,7 @@ eval_yield_star :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                         }
                         return ro.props["value"] // valor de retorno do delegado
                     }
-                    val := await_blocking_throw(vm, ro.props["value"])
+                    val := await_value(vm, ro.props["value"])
                     if vm.throwing do return nil
                     sent = generator_yield(vm, val)
                     mode = 0
@@ -4351,7 +4362,7 @@ eval_yield_star :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         defer delete(vals)
         collect_sync_values(vm, operand, &vals)
         for v in vals {
-            av := await_blocking_throw(vm, v)
+            av := await_value(vm, v)
             if vm.throwing do return nil
             generator_yield(vm, av)
             if vm.throwing || vm.returning || vm.gen_hard_kill do return nil

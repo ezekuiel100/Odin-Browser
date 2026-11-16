@@ -16,9 +16,8 @@ package js
 // (vm.call_depth e vm.stack_low — a guarda de stack nativa) é salvo/restaurado a
 // cada troca em gen_resume, pois cada thread tem a sua própria pilha nativa.
 //
-// LIMITAÇÕES: yield* NÃO encaminha next(v)/throw/return ao iterável delegado
-// (só repassa os valores); async generators não são suportados; um generator
-// deixado suspenso mantém a thread viva até o vm_destroy (limpeza abaixo).
+// Um generator deixado suspenso mantém a thread viva até vm_destroy.
+// Async generators serializam pedidos e retomam awaits pela fila de microtasks.
 
 import "core:thread"
 import "core:sync"
@@ -31,6 +30,12 @@ Gen_Inject :: enum {
     Return,    // return(v): yield vira `return v` (roda finally)
     Throw,     // throw(e): yield vira `throw e` (capturável no corpo)
     Terminate, // vm_destroy: desenrola o corpo SEM rodar mais JS (gen_hard_kill)
+}
+
+Async_Gen_Request :: struct {
+    value: Value,
+    kind: Gen_Inject,
+    promise: ^Object,
 }
 
 Generator :: struct {
@@ -54,6 +59,9 @@ Generator :: struct {
     // `await` suspende (generator_yield) em vez de bloquear. `async_promise` é a
     // Promise devolvida ao chamador, assentada quando o corpo termina. Ver
     // async_call/async_step — M130.
+    awaiting: bool, // último ponto de suspensão foi await, e não yield
+    async_busy: bool,
+    requests: [dynamic]Async_Gen_Request, // next/return/throw em FIFO
     is_async_fn:   bool,
     async_promise: Value,
     started: bool,       // a thread já foi criada? (1ª next inicia o corpo)
@@ -235,6 +243,7 @@ gen_resume :: proc(vm: ^Interp, g: ^Generator, val: Value, kind: Gen_Inject) -> 
     vm.call_depth = g.depth
     vm.stack_low = g.stack_low
 
+    g.awaiting = false
     g.running = true
     sync.sema_post(&g.resume)  // -> generator
     sync.sema_wait(&g.yielded) // <- generator parou de novo / terminou
@@ -317,58 +326,100 @@ native_gen_iter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 // ── async generators (async function*) ───────────────────────────────────────
 //
-// next/return/throw devolvem uma Promise de {value,done}. Como o await é
-// BLOQUEANTE (promise_await_blocking), gen_resume roda o corpo até o próximo
-// yield/fim de forma síncrona (os `await` internos bombeiam na thread do gen),
-// então basta empacotar o resultado numa promise já resolvida — ou rejeitada, se
-// o corpo lançou. O `yield` em si awaita o valor (feito no eval de .Yield).
-@(private = "file")
-async_gen_settle :: proc(vm: ^Interp, res: Value) -> Value {
+// Cada pedido conserva sua Promise até yield/fim. Await apenas suspende o
+// corpo: a reação de Promise retoma o mesmo pedido, sem bombear timers.
+async_gen_enqueue :: proc(vm: ^Interp, g: ^Generator, value: Value, kind: Gen_Inject) -> Value {
     p := promise_new(vm)
-    if vm.throwing {
-        vm.throwing = false
-        exc := vm.thrown; vm.thrown = nil
-        promise_settle(vm, p, PROMISE_REJECTED, exc)
-    } else {
-        promise_resolve_with(vm, p, res)
+    if g == nil {
+        promise_settle(vm, p, PROMISE_REJECTED, mk_error(vm, "TypeError", "Invalid async generator receiver"))
+        return p
     }
+    append(&g.requests, Async_Gen_Request{value = value, kind = kind, promise = p})
+    async_gen_drain(vm, g)
     return p
+}
+
+async_gen_drain :: proc(vm: ^Interp, g: ^Generator) {
+    if g.async_busy || len(g.requests) == 0 do return
+    g.async_busy = true
+    req := g.requests[0]
+    async_gen_step(vm, g, req.value, req.kind)
+}
+
+async_gen_finish :: proc(vm: ^Interp, g: ^Generator, value: Value, rejected: bool) {
+    req := g.requests[0]
+    ordered_remove(&g.requests, 0)
+    if rejected {
+        promise_settle(vm, req.promise, PROMISE_REJECTED, value)
+    } else {
+        promise_resolve_with(vm, req.promise, value)
+    }
+    // Desenrola a pilha antes do pedido seguinte (inclusive milhares de throws
+    // enfileirados enquanto o corpo estava suspenso).
+    if len(g.requests) > 0 {
+        hold := new_object(vm)
+        hold.host = rawptr(g)
+        job := new_function(vm)
+        job.native = async_gen_next_request
+        job.bound = hold
+        append(&vm.reaction_queue, Reaction_Job{microtask = job})
+    } else {
+        g.async_busy = false
+    }
+}
+
+async_gen_next_request :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if g := async_gen_from_bound(vm); g != nil {
+        g.async_busy = false
+        async_gen_drain(vm, g)
+    }
+    return nil
+}
+
+async_gen_step :: proc(vm: ^Interp, g: ^Generator, value: Value, kind: Gen_Inject) {
+    result := gen_resume(vm, g, value, kind)
+    if vm.throwing {
+        exc := vm.thrown
+        vm.throwing = false; vm.thrown = nil
+        async_gen_finish(vm, g, exc, true)
+        return
+    }
+    ro := result.(^Object)
+    if g.awaiting && !g.done {
+        async_wait(vm, g, ro.props["value"], async_resume_ok, async_resume_err)
+    } else if g.done {
+        // AsyncGenerator return awaita o valor antes de concluir o pedido.
+        async_wait(vm, g, ro.props["value"], async_gen_done_ok, async_gen_done_err)
+    } else {
+        async_gen_finish(vm, g, result, false)
+    }
+}
+
+async_gen_done_ok :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if g := async_gen_from_bound(vm); g != nil {
+        async_gen_finish(vm, g, make_iter_result(vm, arg(args, 0), true), false)
+    }
+    return nil
+}
+
+async_gen_done_err :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if g := async_gen_from_bound(vm); g != nil do async_gen_finish(vm, g, arg(args, 0), true)
+    return nil
 }
 
 @(private = "file")
 native_async_gen_next :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    g := gen_of(this)
-    if g == nil {
-        p := promise_new(vm)
-        promise_resolve_with(vm, p, make_iter_result(vm, nil, true))
-        return p
-    }
-    sent: Value = args[0] if len(args) >= 1 else nil
-    return async_gen_settle(vm, gen_resume(vm, g, sent, .None))
+    return async_gen_enqueue(vm, gen_of(this), arg(args, 0), .None)
 }
 
 @(private = "file")
 native_async_gen_return :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    g := gen_of(this)
-    v: Value = args[0] if len(args) >= 1 else nil
-    if g == nil {
-        p := promise_new(vm)
-        promise_resolve_with(vm, p, make_iter_result(vm, v, true))
-        return p
-    }
-    return async_gen_settle(vm, gen_resume(vm, g, v, .Return))
+    return async_gen_enqueue(vm, gen_of(this), arg(args, 0), .Return)
 }
 
 @(private = "file")
 native_async_gen_throw :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    g := gen_of(this)
-    v: Value = args[0] if len(args) >= 1 else nil
-    if g == nil {
-        p := promise_new(vm)
-        promise_settle(vm, p, PROMISE_REJECTED, v)
-        return p
-    }
-    return async_gen_settle(vm, gen_resume(vm, g, v, .Throw))
+    return async_gen_enqueue(vm, gen_of(this), arg(args, 0), .Throw)
 }
 
 install_generator :: proc(vm: ^Interp) {
@@ -416,6 +467,7 @@ cleanup_generators :: proc(vm: ^Interp) {
         } else {
             gen_join(g)
         }
+        delete(g.requests)
         delete(g.args)
         free(g)
     }
@@ -482,18 +534,24 @@ async_step :: proc(vm: ^Interp, g: ^Generator, val: Value, kind: Gen_Inject) {
     // parou num await: encadeia a retomada no valor awaitado. Envolver com
     // promise_resolve_with normaliza não-promise/thenable — assim `await 1`
     // também retoma por microtask, como na spec.
-    awaited := promise_new(vm)
-    promise_resolve_with(vm, awaited, ro.props["value"])
+    async_wait(vm, g, ro.props["value"], async_resume_ok, async_resume_err)
+}
+
+// Mesmo mecanismo de retomada para funções e geradores assíncronos.
+async_wait :: proc(vm: ^Interp, g: ^Generator, value: Value, onf, onr: Native_Fn) {
+    // Promise nativa: anexa diretamente. Uma adoção intermediária acrescenta
+    // um job e troca a ordem entre a continuação de await e queueMicrotask.
+    awaited := promise_for_await(vm, value)
     hold := new_object(vm)
     hold.host = rawptr(g) // o passo seguinte precisa do MESMO generator
 
     on_ok := new_function(vm)
-    on_ok.native = async_resume_ok
+    on_ok.native = onf
     on_ok.name = "asyncResume"
     on_ok.bound = hold
 
     on_err := new_function(vm)
-    on_err.native = async_resume_err
+    on_err.native = onr
     on_err.name = "asyncResumeErr"
     on_err.bound = hold
 
@@ -509,13 +567,19 @@ async_gen_from_bound :: proc(vm: ^Interp) -> ^Generator {
 
 @(private = "file")
 async_resume_ok :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if g := async_gen_from_bound(vm); g != nil do async_step(vm, g, arg(args, 0), .None)
+    if g := async_gen_from_bound(vm); g != nil {
+        if g.is_async_fn { async_step(vm, g, arg(args, 0), .None) }
+        else { async_gen_step(vm, g, arg(args, 0), .None) }
+    }
     return nil
 }
 
 @(private = "file")
 async_resume_err :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     // rejeição vira `throw` DENTRO do corpo, no ponto do await (capturável).
-    if g := async_gen_from_bound(vm); g != nil do async_step(vm, g, arg(args, 0), .Throw)
+    if g := async_gen_from_bound(vm); g != nil {
+        if g.is_async_fn { async_step(vm, g, arg(args, 0), .Throw) }
+        else { async_gen_step(vm, g, arg(args, 0), .Throw) }
+    }
     return nil
 }

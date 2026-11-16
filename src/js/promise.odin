@@ -385,6 +385,55 @@ is_promise :: proc(v: Value) -> (^Object, bool) {
     return o, has
 }
 
+// PromiseResolve para await: promises nativas não ganham adoção intermediária;
+// o getter de then é síncrono, mas a chamada ao thenable acontece em um job.
+promise_for_await :: proc(vm: ^Interp, value: Value) -> ^Object {
+    if p, ok := is_promise(value); ok do return p
+    p := promise_new(vm)
+    if o, ok := value.(^Object); ok {
+        then := get_member(vm, o, "then")
+        if vm.throwing {
+            exc := vm.thrown
+            vm.throwing = false; vm.thrown = nil
+            promise_settle(vm, p, PROMISE_REJECTED, exc)
+            return p
+        }
+        if fn, callable := then.(^Function); callable {
+            hold := new_object(vm)
+            hold.props["promise"] = p
+            hold.props["receiver"] = o
+            hold.props["then"] = fn
+            job := new_function(vm)
+            job.native = await_thenable_job
+            job.bound = hold
+            append(&vm.reaction_queue, Reaction_Job{microtask = job})
+            return p
+        }
+    }
+    promise_settle(vm, p, PROMISE_FULFILLED, value)
+    return p
+}
+
+@(private = "file")
+await_thenable_job :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    hold := vm.native_bound.(^Object)
+    p := hold.props["promise"].(^Object)
+    fn := hold.props["then"].(^Function)
+    resolve := new_function(vm)
+    resolve.native = native_promise_resolve_bound
+    resolve.bound = p
+    reject := new_function(vm)
+    reject.native = native_promise_reject_bound
+    reject.bound = p
+    call_function(vm, fn, hold.props["receiver"], []Value{resolve, reject})
+    if vm.throwing {
+        exc := vm.thrown
+        vm.throwing = false; vm.thrown = nil
+        promise_settle(vm, p, PROMISE_REJECTED, exc)
+    }
+    return nil
+}
+
 // Assenta a promise (idempotente) e dispara as reações pendentes — TODAS
 // enfileiradas antes do drain, p/ interleaving igual ao do navegador.
 promise_settle :: proc(vm: ^Interp, p: ^Object, state: f64, val: Value) {
