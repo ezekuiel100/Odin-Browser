@@ -471,3 +471,19 @@ finreg_ctor :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     if p, ok := vm.native_bound.(^Object); ok do o.proto = p
     return o
 }
+
+// Drop weak entries before sweeping their keys. Rebuild chains without moving slots.
+gc_prune_weak :: proc(c: ^Collection, g: ^GC_State) {
+    clear(&c.index)
+    for &e, i in c.entries {
+        if e.dead do continue
+        if !gc_live(g, e.key) {
+            e = Coll_Entry{dead = true}
+            c.size -= 1
+            continue
+        }
+        hash := coll_hash(e.key)
+        e.next = c.index[hash]
+        c.index[hash] = i+1
+    }
+}

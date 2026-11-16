@@ -221,6 +221,7 @@ fn_scope_env :: proc(env: ^Env) -> ^Env {
 // Estado de execução: escopo global + memória de runtime a liberar no fim +
 // o sinal de `return`.
 Interp :: struct {
+    gc_threshold: int, // adaptive host-safepoint collection threshold
     global:         ^Env,
     all_envs:       [dynamic]^Env,
     env_pool:       [dynamic]^Env, // escopos de chamada devolvidos por recycle_envs,
@@ -547,7 +548,10 @@ vm_begin_host_turn :: proc(vm: ^Interp, budget_ms: f64) {
 }
 
 vm_end_host_turn :: proc(vm: ^Interp) {
-    if vm != nil do vm.host_turn_budget_ms = 0
+    if vm != nil {
+        vm.host_turn_budget_ms = 0
+        if gc_heap_count(vm) >= max(4096, vm.gc_threshold) do vm_collect(vm)
+    }
 }
 
 vm_host_turn_expired :: proc(vm: ^Interp) -> bool {
