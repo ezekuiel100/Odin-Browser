@@ -145,15 +145,13 @@ entry_script_INLINE_nao_entra_no_registry :: proc(t: ^testing.T) {
 
 @(test)
 ciclo_de_dois_elos_ve_o_que_ja_rodou :: proc(t: ^testing.T) {
-    // Caso geral A→B→A. Em B, o namespace de A tem o que A já avaliou ANTES do
-    // import de B (`antes`), e ainda não tem o que vem depois (`depois`) — que é
-    // exatamente o que a spec promete p/ ciclo, e o motivo de o hook ser VIVO:
-    // quando A termina, uma leitura nova de B enxerga `depois`.
+    // Dependencies start before the importing body. In B both var exports
+    // of A are still undefined; a later namespace read observes A's value.
     vm := ciclo_vm(); defer vm_free(vm)
     vm.module_stubs["a.js"] = `
-        export const antes = "A-antes";
+        export var antes = "A-antes";
         import * as b from "b.js";
-        export const depois = "A-depois";
+        export var depois = "A-depois";
         bViuAntes = b.viuAntes;
         bViuDepois = b.viuDepois;
     `
@@ -165,7 +163,7 @@ ciclo_de_dois_elos_ve_o_que_ja_rodou :: proc(t: ^testing.T) {
         leDeNovo = function(){ return String(a.depois) };
     `
     vm_run_module(vm, `import * as m from "a.js";`)
-    testing.expect_value(t, vm_run(vm, `bViuAntes`).(string), "A-antes")
+    testing.expect_value(t, vm_run(vm, `bViuAntes`).(string), "undefined")
     testing.expect_value(t, vm_run(vm, `bViuDepois`).(string), "undefined") // ainda não rodou
     testing.expect_value(t, vm_run(vm, `leDeNovo()`).(string), "A-depois")  // agora sim (vivo)
 }

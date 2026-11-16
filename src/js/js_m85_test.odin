@@ -3,10 +3,9 @@ package js
 import "core:testing"
 
 // ── M85: async generators (async function*) + for-await-of ───────────────────
-// Reusa a infra de generator (thread + ping-pong). O await é bloqueante, então o
-// corpo roda até o próximo yield de forma síncrona (awaits internos bombeiam na
-// thread do gen); next/return/throw devolvem Promise<{value,done}>; yield awaita
-// o valor; for-await drena o async iterator awaitando cada passo.
+// Reusa a infra de generator (thread + ping-pong), suspendendo awaits e
+// retomando cada pedido por microtasks. Os testes de topo observam a Promise
+// de conclusão após o checkpoint e avançam timers explicitamente.
 
 // ── async generator básico via for-await ─────────────────────────────────────
 
@@ -18,7 +17,7 @@ test_async_gen_basico :: proc(t: ^testing.T) {
         for await (const x of g()) sum += x;
         sum
     `
-    testing.expect_value(t, as_number(run(src)), f64(6))
+    testing.expect_value(t, as_number(run_top_completion(src)), f64(6))
 }
 
 // next() de async gen devolve Promise<{value,done}>.
@@ -31,7 +30,7 @@ test_async_gen_next_promise :: proc(t: ^testing.T) {
         var r2 = await it.next();
         r1.value + ':' + r1.done + ':' + r2.value + ':' + r2.done
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "10:false:undefined:true", "next() deve dar {value,done} via Promise")
 }
 
@@ -44,7 +43,7 @@ test_async_gen_yield_awaita :: proc(t: ^testing.T) {
         for await (const x of g()) got = x;
         got
     `
-    testing.expect_value(t, as_number(run(src)), f64(42))
+    testing.expect_value(t, as_number(run_top_completion(src)), f64(42))
 }
 
 // await DENTRO do corpo do async gen (com timer real).
@@ -61,7 +60,7 @@ test_async_gen_await_interno :: proc(t: ^testing.T) {
         for await (const x of g()) out.push(x);
         out.join(',')
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src, 5).(string)
     testing.expect(t, v == "10,11", "await interno deve resolver antes dos yields")
 }
 
@@ -74,7 +73,7 @@ test_async_gen_throw_rejeita :: proc(t: ^testing.T) {
         try { await g().next(); } catch (e) { msg = e.message; }
         msg
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "boom", "corpo que lança deve rejeitar a promise de next()")
 }
 
@@ -91,7 +90,7 @@ test_async_gen_await_yield_alternados :: proc(t: ^testing.T) {
         for await (const x of range(4)) out.push(x);
         out.join(',')
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "0,2,4,6", "yield await deve render valores resolvidos em sequência")
 }
 
@@ -105,7 +104,7 @@ test_for_await_array_promises :: proc(t: ^testing.T) {
         for await (const x of [Promise.resolve(1), Promise.resolve(2), 3]) out.push(x);
         out.join(',')
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "1,2,3", "for-await sobre array de promises deve awaitar cada elemento")
 }
 
@@ -117,7 +116,7 @@ test_for_await_array_valores :: proc(t: ^testing.T) {
         for await (const x of [1,2,3]) out.push(x);
         out.join(',')
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "1,2,3", "for-await deve funcionar sobre array de valores simples")
 }
 
@@ -130,7 +129,7 @@ test_for_await_sync_generator :: proc(t: ^testing.T) {
         for await (const x of g()) out.push(x);
         out.join(',')
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "5,6,7", "for-await deve envolver um generator síncrono")
 }
 
@@ -146,7 +145,7 @@ test_for_await_break_fecha :: proc(t: ^testing.T) {
         for await (const x of g()) { out.push(x); if (x === 2) break; }
         out.join(',') + ':' + cleaned
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "1,2:true", "break no for-await deve rodar o finally via it.return()")
 }
 
@@ -162,7 +161,7 @@ test_async_gen_dentro_async_fn :: proc(t: ^testing.T) {
         }
         await total()
     `
-    testing.expect_value(t, as_number(run(src)), f64(6))
+    testing.expect_value(t, as_number(run_top_completion(src)), f64(6))
 }
 
 // return() encerra o async gen antes do fim.
@@ -176,7 +175,7 @@ test_async_gen_return :: proc(t: ^testing.T) {
         var b = await it.next();
         a.value + ':' + r.value + ':' + r.done + ':' + b.done
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "1:99:true:true", "it.return() deve encerrar o async gen")
 }
 
@@ -188,7 +187,7 @@ test_async_gen_symbol_async_iterator :: proc(t: ^testing.T) {
         var it = g();
         it[Symbol.asyncIterator]() === it
     `
-    testing.expect(t, truthy(run(src)), "async gen[Symbol.asyncIterator]() deve devolver o próprio iterador")
+    testing.expect(t, truthy(run_top_completion(src)), "async gen[Symbol.asyncIterator]() deve devolver o próprio iterador")
 }
 
 // ── yield* de iterável assíncrono (delegação) ────────────────────────────────
@@ -203,7 +202,7 @@ test_async_gen_yield_star_async :: proc(t: ^testing.T) {
         for await (const x of outer()) out.push(x);
         out.join(',')
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "0,1,2,3", "yield* deve delegar a outro async generator")
 }
 
@@ -216,7 +215,7 @@ test_async_gen_yield_star_array :: proc(t: ^testing.T) {
         for await (const x of g()) out.push(x);
         out.join(',')
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "10,20,30", "yield* deve delegar a um array dentro de async gen")
 }
 
@@ -229,6 +228,6 @@ test_async_gen_yield_star_promises :: proc(t: ^testing.T) {
         for await (const x of g()) out.push(x);
         out.join(',')
     `
-    v, _ := run(src).(string)
+    v, _ := run_top_completion(src).(string)
     testing.expect(t, v == "a,b", "yield* deve awaitar cada elemento delegado")
 }

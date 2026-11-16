@@ -29,19 +29,10 @@ import dom "../dom"
 
 // ── 1) referrer léxico do import() ───────────────────────────────────────────
 
-// O hook `module_resolve` é um ponteiro de proc SEM contexto de usuário, então o
-// referrer observado tem de sair por uma global. Global de ARQUIVO era compartilhada
-// entre os quatro testes abaixo, e o harness do Odin roda testes em PARALELO: um
-// zerava/escrevia enquanto o outro assertava (falha INTERMITENTE e simétrica —
-// ora "" onde se esperava a URL, ora o inverso). `thread_local` dá uma cópia por
-// thread do harness; cada teste roda inteiro numa thread só e zera a sua cópia em
-// `m137_vm()`, então não há mais estado atravessando testes.
-@(private = "file", thread_local)
-g_last_referrer: string
-
+// Record observations on the VM: module bodies may run on a coroutine thread.
 @(private = "file")
 rec_resolve :: proc(vm: ^Interp, specifier, referrer: string) -> string {
-    g_last_referrer = referrer
+    vm.module_stubs["<last-referrer>"] = referrer
     return strings.clone(specifier)
 }
 
@@ -58,7 +49,7 @@ m137_vm :: proc() -> ^Interp {
     vm.module_fetch = rec_fetch
     vm.module_stubs = make(map[string]string)
     vm.base_url = strings.clone("https://site.test/pagina.html")
-    g_last_referrer = ""
+    vm.module_stubs["<last-referrer>"] = ""
     return vm
 }
 
@@ -70,9 +61,9 @@ m137_import_adiado_mantem_o_referrer_do_modulo :: proc(t: ^testing.T) {
     vm.module_stubs["dep.js"] = `export const x = 1;`
     vm_run_module(vm, `maisTarde = function(){ import("dep.js") }`,
         "https://site.test/assets/app/app.js")
-    testing.expect_value(t, g_last_referrer, "") // ainda não chamou
+    testing.expect_value(t, vm.module_stubs["<last-referrer>"], "") // ainda não chamou
     vm_run(vm, `maisTarde()`)
-    testing.expect_value(t, g_last_referrer, "https://site.test/assets/app/app.js")
+    testing.expect_value(t, vm.module_stubs["<last-referrer>"], "https://site.test/assets/app/app.js")
 }
 
 @(test)
@@ -81,7 +72,7 @@ m137_import_imediato_continua_com_o_referrer_certo :: proc(t: ^testing.T) {
     vm := m137_vm(); defer vm_free(vm)
     vm.module_stubs["dep.js"] = `export const x = 1;`
     vm_run_module(vm, `import("dep.js")`, "https://site.test/assets/app/app.js")
-    testing.expect_value(t, g_last_referrer, "https://site.test/assets/app/app.js")
+    testing.expect_value(t, vm.module_stubs["<last-referrer>"], "https://site.test/assets/app/app.js")
 }
 
 @(test)
@@ -100,7 +91,7 @@ m137_script_classico_cai_no_base_url :: proc(t: ^testing.T) {
     vm := m137_vm(); defer vm_free(vm)
     vm.module_stubs["dep.js"] = `export const x = 1;`
     vm_run(vm, `import("dep.js")`)
-    testing.expect_value(t, g_last_referrer, "https://site.test/pagina.html")
+    testing.expect_value(t, vm.module_stubs["<last-referrer>"], "https://site.test/pagina.html")
 }
 
 // ── 2) ToString das APIs web passa pelo ToPrimitive ──────────────────────────

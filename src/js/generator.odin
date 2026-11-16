@@ -40,6 +40,10 @@ Async_Gen_Request :: struct {
 
 Generator :: struct {
     vm:      ^Interp,
+    program: ^Node,
+    program_env: ^Env,
+    module: ^Module,
+    program_result: Value,
     fn:      ^Function,  // a função generator (corpo a rodar)
     this:    Value,
     args:    []Value,    // clonados (posse do Generator)
@@ -84,6 +88,7 @@ make_generator :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) -
     g := new(Generator)
     g.vm = vm
     g.fn = fn
+    g.module = vm.current_module
     g.this = this
     g.args = make([]Value, len(args))
     copy(g.args, args)
@@ -237,9 +242,13 @@ gen_resume :: proc(vm: ^Interp, g: ^Generator, val: Value, kind: Gen_Inject) -> 
 
     // troca o contexto de execução por-pilha p/ o do generator e entrega o controle
     saved_gen := vm.current_gen
+    saved_module := vm.current_module
+    saved_short := vm.opt_short
     saved_depth := vm.call_depth
     saved_low := vm.stack_low
     vm.current_gen = g
+    vm.current_module = g.module
+    vm.opt_short = false
     vm.call_depth = g.depth
     vm.stack_low = g.stack_low
 
@@ -252,6 +261,8 @@ gen_resume :: proc(vm: ^Interp, g: ^Generator, val: Value, kind: Gen_Inject) -> 
     g.depth = vm.call_depth      // salva o progresso da pilha do generator
     g.stack_low = vm.stack_low
     vm.current_gen = saved_gen
+    vm.current_module = saved_module
+    vm.opt_short = saved_short
     vm.call_depth = saved_depth
     vm.stack_low = saved_low
 
@@ -485,7 +496,7 @@ cleanup_generators :: proc(vm: ^Interp) {
 // Agora o corpo roda na mesma máquina dos generators (thread + semáforos): cada
 // `await` faz generator_yield, devolvendo o controle ao chamador, e o valor
 // awaitado é encadeado com .then para RETOMAR a corrotina quando assentar.
-// O caminho bloqueante continua existindo para await de TOPO (fora de corrotina).
+// Programas com await de topo também usam esta máquina, preservando seu escopo.
 
 // Chama uma `async function` comum. Devolve a Promise do resultado; o corpo roda
 // até o 1º await de forma síncrona (como manda a spec) e depois suspende.
@@ -494,6 +505,7 @@ async_call :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) -> Va
     g := new(Generator)
     g.vm = vm
     g.fn = fn
+    g.module = vm.current_module
     g.this = this
     g.args = make([]Value, len(args))
     copy(g.args, args)
@@ -568,6 +580,7 @@ async_gen_from_bound :: proc(vm: ^Interp) -> ^Generator {
 @(private = "file")
 async_resume_ok :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if g := async_gen_from_bound(vm); g != nil {
+        if g.program != nil { program_step(vm, g, arg(args, 0), .None); return nil }
         if g.is_async_fn { async_step(vm, g, arg(args, 0), .None) }
         else { async_gen_step(vm, g, arg(args, 0), .None) }
     }
@@ -578,8 +591,63 @@ async_resume_ok :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 async_resume_err :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     // rejeição vira `throw` DENTRO do corpo, no ponto do await (capturável).
     if g := async_gen_from_bound(vm); g != nil {
+        if g.program != nil { program_step(vm, g, arg(args, 0), .Throw); return nil }
         if g.is_async_fn { async_step(vm, g, arg(args, 0), .Throw) }
         else { async_gen_step(vm, g, arg(args, 0), .Throw) }
     }
     return nil
+}
+
+// A program retains its original environment: top-level var/let are not
+// moved into a synthetic function scope. A suspended execution returns a Promise.
+program_call :: proc(vm: ^Interp, program: ^Node, env: ^Env) -> Value {
+    g := new(Generator)
+    g.vm = vm
+    g.program = program
+    g.program_env = env
+    g.module = vm.current_module
+    g.alloc = context.allocator
+    g.is_async_fn = true
+    if g.module != nil {
+        g.async_promise = g.module.evaluation
+    } else {
+        g.async_promise = promise_new(vm)
+    }
+    append(&vm.all_generators, g)
+    program_step(vm, g, nil, .None, true)
+    if g.done do return g.program_result
+    return g.async_promise
+}
+
+program_step :: proc(vm: ^Interp, g: ^Generator, value: Value, kind: Gen_Inject, initial := false) {
+    result := gen_resume(vm, g, value, kind)
+    p := g.async_promise.(^Object)
+    if vm.throwing {
+        exc := vm.thrown
+        vm.throwing = false; vm.thrown = nil
+        if g.module != nil {
+            g.module.state = .Failed
+            g.module.error = exc
+        } else if !initial {
+            vm_note_rejection(vm, exc)
+        }
+        promise_settle(vm, p, PROMISE_REJECTED, exc)
+        if initial { vm.throwing = true; vm.thrown = exc }
+        return
+    }
+    ro := result.(^Object)
+    if g.done {
+        g.program_result = ro.props["value"]
+        if g.module != nil {
+            module_snapshot_exports(vm, g.module)
+            g.module.state = .Done
+            promise_settle(vm, p, PROMISE_FULFILLED, g.module.ns)
+        } else {
+            // A completion value is not an async function return: do not adopt
+            // a Promise used merely as the final expression of the script.
+            promise_settle(vm, p, PROMISE_FULFILLED, g.program_result)
+        }
+    } else {
+        async_wait(vm, g, ro.props["value"], async_resume_ok, async_resume_err)
+    }
 }

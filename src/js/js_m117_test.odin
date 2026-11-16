@@ -35,9 +35,8 @@ m117_reader_reads_enqueued :: proc(t: ^testing.T) {
 @(test)
 m117_async_iterator :: proc(t: ^testing.T) {
     // for-await sobre um ReadableStream.
-    // ⚠️ DEGRADAÇÃO conhecida: o for-await ainda usa o await BLOQUEANTE
-    // (promise_await_blocking), então `sum` já vale 6 na MESMA tarefa — pela spec
-    // seria 0 ali. Lido na 2ª tarefa para não codificar esse desvio.
+    // O for-await suspende; a segunda tarefa observa o resultado após
+    // as retomadas por microtasks, sem depender da conclusão síncrona.
     r := run_settled(`
         var rs = new ReadableStream({
             start: function(c){ c.enqueue(1); c.enqueue(2); c.enqueue(3); c.close(); }

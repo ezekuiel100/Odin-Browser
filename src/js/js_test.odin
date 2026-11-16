@@ -950,7 +950,7 @@ test_async_arrow :: proc(t: ^testing.T) {
 
 @(test)
 test_await_top_level :: proc(t: ^testing.T) {
-    testing.expect_value(t, as_number(run("var v = await Promise.resolve(9); v")), f64(9))
+    testing.expect_value(t, as_number(run_top_completion("var v = await Promise.resolve(9); v")), f64(9))
 }
 
 @(test)

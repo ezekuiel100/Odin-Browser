@@ -7,7 +7,7 @@ package js
 //   _reactions: ^Array de reações {f, r, next} (next = promise derivada)
 //
 // Reações e queueMicrotask compartilham uma FIFO, drenada no checkpoint de
-// fim de tarefa. O await bloqueante mantém um pump aninhado de compatibilidade.
+// fim de tarefa. Await retoma corrotinas por esta mesma fila, sem pump aninhado.
 //
 // Encadeamento completo: then devolve promise derivada; callback que devolve
 // uma promise é ADOTADO (a derivada espera a interna — essencial p/ o padrão
@@ -36,8 +36,7 @@ Reaction_Job :: struct {
 // as microtasks de um navegador.
 @(private = "file")
 drain_reaction_queue :: proc(vm: ^Interp) {
-    // O await bloqueante pode entrar explicitamente neste drain enquanto o
-    // externo está suspenso. Checkpoints indiretos continuam bloqueados.
+    // Checkpoints indiretos não reentram no drain durante um callback.
     was_draining := vm.draining
     vm.draining = true
     defer vm.draining = was_draining
@@ -66,7 +65,7 @@ drain_reaction_queue :: proc(vm: ^Interp) {
 }
 
 // Fronteira pública de tarefa; nunca reentra por eventos/timers chamados
-// durante um callback. Só o await bloqueante chama o drain diretamente.
+// durante um callback.
 promise_checkpoint :: proc(vm: ^Interp) {
     if vm == nil || vm.draining do return
     saved_throwing, saved_thrown := vm.throwing, vm.thrown
@@ -86,50 +85,6 @@ promise_checkpoint :: proc(vm: ^Interp) {
 @(private = "file")
 schedule_reaction :: proc(vm: ^Interp, onf, onr: Value, next: ^Object, state: f64, val: Value) {
     append(&vm.reaction_queue, Reaction_Job{onf = onf, onr = onr, next = next, state = state, val = val})
-}
-
-// Espera BLOQUEANTE do await: bomba timers/fetches (relógio real) até a
-// promise assentar. Não-promise devolve na hora. `rejected` indica que o
-// await deve LANÇAR o valor. Teto de segurança contra promise que nunca
-// assenta (senão o navegador travaria para sempre).
-//
-// SIMPLIFICAÇÃO consciente: enquanto um await espera, a renderização pausa
-// (o frame não avança), mas timers/fetches/promises continuam fluindo pelo
-// pump aninhado — o resultado do código é o mesmo do navegador real.
-AWAIT_TIMEOUT_MS :: 10_000.0
-
-promise_await_blocking :: proc(vm: ^Interp, v: Value) -> (out: Value, rejected: bool) {
-    p, isp := is_promise(v)
-    if !isp do return v, false // await de não-promise: o próprio valor
-
-    waited: f64 = 0
-    last := time.tick_now()
-    for as_number(p.props["_state"]) == PROMISE_PENDING {
-        if vm_host_turn_expired(vm) do return mk_error(vm, "RangeError", "tempo de execucao excedido (await)"), true
-        now := time.tick_now()
-        dt := time.duration_milliseconds(time.tick_diff(last, now))
-        last = now
-        vm_pump_timers(vm, dt) // fetches + timers reais continuam rodando
-        // Se este await está DENTRO de um callback de .then (drain ativo), as
-        // reações enfileiradas durante a espera não rodariam nunca — o drenador
-        // externo está bloqueado exatamente aqui. Drena a fila nós mesmos, senão
-        // qualquer promise derivada de .then fica pendente até o timeout de 10s.
-        if len(vm.reaction_queue) > 0 do drain_reaction_queue(vm)
-        if as_number(p.props["_state"]) != PROMISE_PENDING do break
-        time.sleep(time.Millisecond) // não fritar a CPU
-        waited += dt + 1
-        if waited > AWAIT_TIMEOUT_MS {
-            e := new_object(vm)
-            e.props["name"] = "Error"
-            e.props["message"] = "await: tempo esgotado (promise nunca assentou)"
-            return e, true
-        }
-    }
-    // O await pausou a execução (bombeando timers) por um tempo real que NÃO deve
-    // contar contra o watchdog por tempo: reinicia o relógio p/ o código pós-await.
-    reset_task_clock(vm)
-    if as_number(p.props["_state"]) == PROMISE_REJECTED do return p.props["_value"], true
-    return p.props["_value"], false
 }
 
 install_promise :: proc(vm: ^Interp) {

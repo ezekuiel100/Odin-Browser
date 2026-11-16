@@ -6,17 +6,15 @@ package js
 // sites que servem ESM NATIVO (sem bundler) chamavam import() — que não existia —
 // e os imports estáticos de <script type="module"> eram silenciosamente ignorados.
 //
-// Desenho (consistente com a filosofia da engine: await/fetch BLOQUEANTES):
+// Desenho:
 //   • Registry por URL absoluta (cache + guarda de ciclo): 1 fetch e 1 avaliação
 //     por módulo, identidade estável do namespace.
 //   • load_module: resolve (hook) → cache? → fetch (hook) → avalia em escopo
-//     próprio (filho do global) → snapshot de exports no namespace.
-//   • Exports "adiados": `export {a}` registra o par (local→exportado); o valor é
-//     lido do escopo NO FIM da avaliação — `export {a}; a = 2` exporta 2 (aproxima
-//     live bindings p/ grafos acíclicos; em CICLOS o snapshot ainda pode ver
-//     undefined — limitação documentada, sem live bindings de verdade).
-//   • import() devolve Promise já assentada (resolve com o namespace; rejeita com
-//     o erro do fetch/avaliação) — consistente com o await bloqueante.
+//     próprio (filho do global). A avaliação pode suspender em await.
+//   • O namespace consulta live bindings no escopo do exportador.
+//   • import() aguarda a Promise de avaliação antes de entregar o namespace.
+//   • Dependências estáticas começam antes da espera; ciclos usam o namespace
+//     parcial. O importador suspende enquanto dependências externas não terminam.
 //   • Hooks module_resolve/module_fetch: instalados por dom_bindings (net); os
 //     testes instalam stubs em memória (vm.module_stubs). SEM hooks, import
 //     estático degrada p/ no-op (comportamento pré-M109) e import() rejeita.
@@ -59,6 +57,7 @@ load_module :: proc(vm: ^Interp, specifier, referrer: string) -> ^Module {
     m.url = url
     m.ns = new_object(vm)
     m.state = .Loading
+    m.parent = vm.current_module
     append(&vm.all_modules, m)
     vm.modules[m.url] = m // chave = m.url (owned pelo módulo; mapa deletado antes no destroy)
 
@@ -94,8 +93,6 @@ load_module :: proc(vm: ^Interp, specifier, referrer: string) -> ^Module {
         m.state = .Failed // exceção fica pendente: o CHAMADOR decide (rejeição/log)
         return m
     }
-    module_snapshot_exports(vm, m)
-    m.state = .Done
     return m
 }
 
@@ -150,7 +147,7 @@ module_local_of :: proc(m: ^Module, exported: string) -> string {
     return ""
 }
 
-// import(expr) → Promise<namespace>. Bloqueante: a Promise volta já assentada.
+// import(expr) → Promise<namespace>, assentada somente após a avaliação.
 eval_import_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     spec_v := eval(vm, n.left, env)
     if vm.throwing do return nil
@@ -174,12 +171,18 @@ eval_import_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     referrer := n.str
     if referrer == "" do referrer = vm.current_module != nil ? vm.current_module.url : vm.base_url
     m := load_module(vm, spec, referrer)
+    if m != nil && m.state == .Loading && m.evaluation != nil {
+        promise_resolve_with(vm, p, m.evaluation)
+        return p
+    }
     if m == nil || m.state != .Done {
         reason: Value
         if vm.throwing { // avaliação do módulo lançou: rejeita com o erro real
             reason = vm.thrown
             vm.throwing = false
             vm.thrown = nil
+        } else if m != nil && m.evaluation != nil {
+            reason = m.error
         } else {
             reason = mk_error(vm, "TypeError",
                 fmt.tprintf("Failed to fetch dynamically imported module: %s", spec))
@@ -199,6 +202,7 @@ eval_import_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) {
     if vm.module_resolve == nil || vm.module_fetch == nil do return
     referrer := vm.current_module != nil ? vm.current_module.url : vm.base_url
     m := load_module(vm, n.str, referrer)
+    if !module_wait_dependency(vm, m) do return
     ok := m != nil && m.state != .Failed // .Loading (ciclo) binda do ns parcial
     if !ok {
         fmt.eprintfln("[js] import estático falhou: %s → %s (%s)", n.str,
@@ -256,6 +260,7 @@ eval_export_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     if n.str != "" { // re-export: export {..} from / export * [as ns] from
         referrer := m != nil ? m.url : vm.base_url
         dep := load_module(vm, n.str, referrer)
+        if !module_wait_dependency(vm, dep) do return nil
         if dep == nil || dep.state == .Failed {
             fmt.eprintfln("[js] re-export falhou: %s", n.str)
             if vm.throwing do vm_clear_uncaught(vm)
@@ -309,4 +314,44 @@ eval_import_meta :: proc(vm: ^Interp, n: ^Node = nil) -> Value {
     if url == "" do url = vm.current_module != nil ? vm.current_module.url : vm.base_url
     o.props["url"] = own_str(vm, url)
     return o
+}
+
+// Static cycles bind the partial live namespace. All other importers suspend
+// until the dependency finishes; a suspended module is never treated as Done.
+module_wait_dependency :: proc(vm: ^Interp, dep: ^Module) -> bool {
+    if dep != nil && dep.state == .Failed && dep.evaluation != nil {
+        vm.throwing = true
+        vm.thrown = dep.error
+        return false
+    }
+    if dep == nil || dep.state != .Loading || dep.evaluation == nil do return true
+    for ancestor := vm.current_module; ancestor != nil; ancestor = ancestor.parent {
+        if ancestor == dep do return true
+    }
+    await_value(vm, dep.evaluation)
+    return !vm.throwing && !vm.gen_hard_kill
+}
+
+// Start every static dependency before waiting on any one of them. Otherwise
+// an await in the first sibling can prevent the second sibling from starting.
+module_start_dependencies :: proc(vm: ^Interp, program: ^Node) -> (pending: bool) {
+    if vm.module_resolve == nil || vm.module_fetch == nil do return false
+    referrer := vm.current_module != nil ? vm.current_module.url : vm.base_url
+    for node in program.body {
+        if node.kind == .ImportDecl || (node.kind == .ExportDecl && node.str != "") {
+            dep := load_module(vm, node.str, referrer)
+            if dep != nil && dep.state == .Loading {
+                cycle := false
+                for ancestor := vm.current_module; ancestor != nil; ancestor = ancestor.parent {
+                    if ancestor == dep { cycle = true; break }
+                }
+                if !cycle do pending = true
+            }
+            // The cached evaluation owns the error. The declaration will
+            // propagate it after all sibling dependencies have been started.
+            vm.throwing = false
+            vm.thrown = nil
+        }
+    }
+    return pending
 }

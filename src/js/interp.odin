@@ -132,6 +132,9 @@ Module :: struct {
     ns:       ^Object, // namespace de exports (vm-tracked)
     env:      ^Env,    // escopo do módulo (p/ snapshot adiado)
     state:    Module_State,
+    evaluation: ^Object, // settles only after the entire module body completes
+    error: Value,
+    parent: ^Module, // evaluation ancestry, for static cycles
     deferred: [dynamic]Deferred_Export,
 }
 
@@ -2728,17 +2731,16 @@ async_iterator_close :: proc(vm: ^Interp, iter: Value) {
 // essencial p/ generators infinitos (`for(x of fib())` com break) — materializar tudo
 // travaria — e faz `break` parar cedo de verdade. Iteráveis nativos (array/string/
 // Collection) e o for-in materializam num snapshot (evita invalidação se o corpo mutar).
-// Await comum a expressões, for-await e yield*. Corrotinas suspendem;
-// a entrada legada de topo ainda usa a espera de compatibilidade.
-@(private = "file")
+// Await comum a expressões, for-await e yield*, inclusive no topo.
+// Toda execução que pode aguardar usa uma corrotina; não há pump aninhado.
 await_value :: proc(vm: ^Interp, v: Value) -> Value {
     if vm.current_gen != nil && (vm.current_gen.is_async_fn || vm.current_gen.is_async) {
         vm.current_gen.awaiting = true
         return generator_yield(vm, v)
     }
-    res, rejected := promise_await_blocking(vm, v)
-    if rejected { vm.thrown = res; vm.throwing = true; return nil }
-    return res
+    vm.throwing = true
+    vm.thrown = mk_error(vm, "SyntaxError", "await outside an asynchronous execution")
+    return nil
 }
 
 // Resolve o iterador ASSÍNCRONO de `v`: Symbol.asyncIterator se existir; senão o
@@ -4272,6 +4274,14 @@ eval_tagged :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 // em generator.odin). Mesmo setup de call_function via setup_call_scope; os sinais
 // pendentes ao terminar (return/throw/fim) são traduzidos pela thread.
 run_generator_body :: proc(vm: ^Interp, g: ^Generator) {
+    if g.program != nil {
+        result := eval(vm, g.program, g.program_env)
+        if !vm.throwing && !vm.gen_hard_kill {
+            vm.returning = true
+            vm.ret_val = result
+        }
+        return
+    }
     fn := g.fn
     scope := setup_call_scope(vm, fn, g.this, g.args)
     if fn.body != nil {
@@ -4897,8 +4907,6 @@ vm_run_module :: proc(vm: ^Interp, src: string, url := "") -> Value {
     vm.returning = false
     vm.breaking = false
     vm.continuing = false
-    module_snapshot_exports(vm, m)
-    m.state = vm.throwing ? .Failed : .Done
     vm.current_module = prev
     vm_clear_uncaught(vm)
     mo_task_exit(vm)
@@ -5006,7 +5014,26 @@ vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil) -> Value {
     refresh_stack_limit(vm) // stack da thread atual (script pode rodar na worker de fetch)
     reset_task_clock(vm)    // relógio do watchdog por tempo
     run_env := env if env != nil else vm.global
+    m := vm.current_module
+    if m != nil do m.evaluation = promise_new(vm)
+    pending_dependencies := module_start_dependencies(vm, prog)
+    if program_needs_coroutine(prog) || pending_dependencies {
+        return program_call(vm, prog, run_env)
+    }
+    // Ordinary modules stay on the host thread, preserving synchronous host
+    // hooks which keep their layout context in thread locals.
     result := eval(vm, prog, run_env)
+    if m != nil {
+        if vm.throwing {
+            m.state = .Failed
+            m.error = vm.thrown
+            promise_settle(vm, m.evaluation, PROMISE_REJECTED, vm.thrown)
+        } else {
+            module_snapshot_exports(vm, m)
+            m.state = .Done
+            promise_settle(vm, m.evaluation, PROMISE_FULFILLED, m.ns)
+        }
+    }
     return result
 }
 
@@ -5051,4 +5078,13 @@ run_settled :: proc(src, probe: string) -> Value {
     v := vm_run(vm, probe)
     check_parse_recoveries(vm, src)
     return v
+}
+
+program_needs_coroutine :: proc(n: ^Node) -> bool {
+    if n == nil || n.kind == .Func do return false
+    if n.kind == .Await do return true
+    if n.kind == .ForOf && n.is_generator do return true
+    if program_needs_coroutine(n.left) || program_needs_coroutine(n.right) || program_needs_coroutine(n.third) || program_needs_coroutine(n.callee) do return true
+    for child in n.body do if program_needs_coroutine(child) do return true
+    return false
 }
