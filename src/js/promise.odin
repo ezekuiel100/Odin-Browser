@@ -516,10 +516,7 @@ native_promise_catch :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return promise_then_impl(vm, p, nil, onr)
 }
 
-// p.finally(cb): cb roda nos DOIS desfechos, sem receber o valor; o resultado
-// passa adiante (valor preservado, rejeição re-lançada). Se o cb lançar, a
-// exceção dele prevalece (run_reaction rejeita a derivada). SIMPLIFICAÇÃO:
-// cb que devolve promise não é aguardado (spec espera; raro).
+// finally aguarda o retorno do callback antes de propagar o resultado original.
 @(private = "file")
 native_promise_finally :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     p, ok := is_promise(this)
@@ -537,31 +534,52 @@ native_promise_finally :: proc(vm: ^Interp, this: Value, args: []Value) -> Value
 
 @(private = "file")
 finally_on_fulfilled :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if cb, ok := vm.native_bound.(^Function); ok {
-        call_function(vm, cb, nil, nil)
-        if vm.throwing do return nil // exceção do cb rejeita a derivada
-    }
-    return arg(args, 0) // valor original segue adiante
+    return finally_wait(vm, arg(args, 0), false)
 }
 
 @(private = "file")
 finally_on_rejected :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if cb, ok := vm.native_bound.(^Function); ok {
-        call_function(vm, cb, nil, nil)
-        if vm.throwing do return nil // exceção do cb substitui a razão
+    return finally_wait(vm, arg(args, 0), true)
+}
+
+@(private = "file")
+finally_wait :: proc(vm: ^Interp, value: Value, rejected: bool) -> Value {
+    cb := vm.native_bound.(^Function)
+    result := call_function(vm, cb, nil, nil)
+    if vm.throwing do return nil
+    cleanup := promise_for_await(vm, result)
+    resume := new_function(vm)
+    resume.native = finally_resume
+    hold := new_object(vm)
+    hold.props["value"] = value
+    hold.props["rejected"] = rejected
+    resume.bound = hold
+    // A rejeicao do cleanup passa direto; so o cumprimento restaura o original.
+    return promise_then_impl(vm, cleanup, resume, nil)
+}
+
+@(private = "file")
+finally_resume :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    hold := vm.native_bound.(^Object)
+    value := hold.props["value"]
+    if hold.props["rejected"].(bool) {
+        vm.thrown = value
+        vm.throwing = true
+        return nil
     }
-    vm.thrown = arg(args, 0) // re-lança a razão original
-    vm.throwing = true
-    return nil
+    return value
 }
 
 // new Promise(function(resolve, reject) { ... })
 @(private = "file")
 native_promise_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    executor, ok := arg(args, 0).(^Function)
+    if !ok {
+        vm.thrown = mk_error(vm, "TypeError", "Promise executor must be callable")
+        vm.throwing = true
+        return nil
+    }
     p := promise_new(vm)
-    if len(args) < 1 do return p // sem executor: fica pendente para sempre
-    executor, ok := args[0].(^Function)
-    if !ok do return p
 
     resolve_fn := new_function(vm)
     resolve_fn.native = native_promise_resolve_bound
