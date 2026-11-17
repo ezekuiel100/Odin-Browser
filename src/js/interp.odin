@@ -589,7 +589,6 @@ loop_take_continue :: proc(vm: ^Interp, my_label: string) -> bool {
     return false
 }
 
-@(private = "file")
 step_guard :: proc(vm: ^Interp) -> bool {
     vm.steps += 1
     // Check more frequently on the UI thread. A callback that does not return
@@ -2694,7 +2693,6 @@ for_of_run_body :: proc(vm: ^Interp, n: ^Node, env: ^Env, v: Value, my_label: st
 // exceção lançada DENTRO do return() prevalece (spec). DESVIO consciente: com
 // exceção já em voo no corpo do for-of, NÃO chamamos return() (a spec chama e
 // preserva a exceção original; aqui evitamos rodar finally sob exceção pendente).
-@(private = "file")
 iterator_close :: proc(vm: ^Interp, iter: Value) {
     if vm.throwing do return
     ret_v := get_member(vm, iter, "return")

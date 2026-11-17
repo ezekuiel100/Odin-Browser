@@ -244,6 +244,7 @@ iter_next :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     res := new_object(vm)
     o, ok := this.(^Object)
     if !ok { res.props["value"] = nil; res.props["done"] = true; return res }
+    if _, live := o.props["_kind"]; live do return arr_iter_next(vm, o)
     arr, aok := o.props["_arr"].(^Array)
     i := int(as_number(o.props["_i"]))
     if !aok || i >= len(arr.items) {

@@ -164,7 +164,9 @@ str_code_unit_at :: proc(s: string, ui: int) -> (u16, bool) {
 // Índice no estilo JS: negativo conta do fim; resultado limitado a [0, n].
 @(private = "file")
 idx_from :: proc(v: f64, n: int) -> int {
-    if v != v do return 0 // NaN (ToIntegerOrInfinity(NaN) = 0); int(NaN) seria UB
+    if v != v do return 0 // NaN
+    if v >= f64(n) do return n
+    if v <= -f64(n) do return 0
     i := int(v)
     if i < 0 do i += n
     if i < 0 do i = 0
@@ -176,30 +178,41 @@ idx_from :: proc(v: f64, n: int) -> int {
 
 @(private = "file")
 arr_push :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return nil
-    for v in args do append(&a.items, v)
-    return f64(len(a.items))
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    if n + len(args) > (1 << 53) - 1 { throw_type_error(vm, "Invalid array-like length"); return nil }
+    for v, i in args { arr_set(vm, this, n + i, v); if vm.throwing do return nil }
+    arr_write(vm, this, "length", f64(n + len(args)))
+    return f64(n + len(args))
 }
 
 @(private = "file")
 arr_pop :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok || len(a.items) == 0 do return nil
-    return pop(&a.items)
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    v: Value
+    if n > 0 {
+        v = array_like_get(vm, this, n - 1)
+        if vm.throwing do return nil
+        arr_delete(vm, this, n - 1)
+    }
+    arr_write(vm, this, "length", f64(max(0, n - 1)))
+    return v
 }
 
 @(private = "file")
 arr_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    target := arg(args, 0)
-    a, ok := this.(^Array)
-    if !ok { // array-like (HTMLCollection/NodeList/arguments): length + índices
-        n := array_like_len(vm, this)
-        for i := 0; i < n; i += 1 {
-            if array_like_get(vm, this, i) == target do return f64(i)
-        }
-        return f64(-1)
-    }
-    for it, i in a.items {
-        if it == target do return f64(i) // == na union Value = igualdade estrita
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    if n == 0 do return f64(-1)
+    from := arr_integer(vm, arg(args, 1))
+    if vm.throwing do return nil
+    if from < 0 do from = max(n + from, 0)
+    for i := from; i < n; i += 1 {
+        if !array_like_has(this, i) do continue
+        v := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        if v == arg(args, 0) do return f64(i)
     }
     return f64(-1)
 }
@@ -209,17 +222,17 @@ arr_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // o que o separa do indexOf, porque só assim `[NaN].includes(NaN)` é true. Usava o
 // `==` da union, onde NaN != NaN pelo IEEE, e o caso NaN falhava calado.
 arr_includes :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    target := arg(args, 0)
-    a, ok := this.(^Array)
-    if !ok { // array-like: ver arr_index_of
-        n := array_like_len(vm, this)
-        for i := 0; i < n; i += 1 {
-            if same_value_zero(array_like_get(vm, this, i), target) do return true
-        }
-        return false
-    }
-    for it in a.items {
-        if same_value_zero(it, target) do return true
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    if n == 0 do return false
+    from := arr_integer(vm, arg(args, 1))
+    if vm.throwing do return nil
+    if from < 0 do from = max(n + from, 0)
+    for i := from; i < n; i += 1 {
+        
+        v := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        if same_value_zero(v, arg(args, 0)) do return true
     }
     return false
 }
@@ -230,14 +243,17 @@ arr_join :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     // SEM length dá n=0 e o resultado continua "", como antes.
     a, is_arr := this.(^Array)
     n := is_arr ? len(a.items) : array_like_len(vm, this)
+    if vm.throwing do return nil
     sep := ","
-    if s, sok := arg(args, 0).(string); sok do sep = s
+    if arg(args, 0) != nil do sep = to_js_string(vm, args[0])
+    if vm.throwing do return nil
     sb: strings.Builder
     strings.builder_init(&sb)
     defer strings.builder_destroy(&sb)
     for i := 0; i < n; i += 1 {
         if i > 0 do strings.write_string(&sb, sep)
-        it := is_arr ? a.items[i] : array_like_get(vm, this, i)
+        it := array_like_get(vm, this, i)
+        if vm.throwing do return nil
         // spec: null/undefined viram STRING VAZIA no join (não "null"/"undefined")
         if it == nil do continue
         if _, is_null := it.(JS_Null); is_null do continue
@@ -255,12 +271,16 @@ arr_join :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 arr_slice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     a, is_arr := this.(^Array)
     n := is_arr ? len(a.items) : array_like_len(vm, this)
+    if vm.throwing do return nil
     // undefined explícito conta como ausente (spec: end undefined → até o fim)
-    start := len(args) >= 1 && args[0] != nil ? idx_from(as_number(args[0]), n) : 0
-    end   := len(args) >= 2 && args[1] != nil ? idx_from(as_number(args[1]), n) : n
+    start := len(args) >= 1 && args[0] != nil ? idx_from(to_number(vm, args[0]), n) : 0
+    if vm.throwing do return nil
+    end   := len(args) >= 2 && args[1] != nil ? idx_from(to_number(vm, args[1]), n) : n
     res := new_array(vm)
+    if vm.throwing do return nil
     for i := start; i < end; i += 1 {
-        append(&res.items, is_arr ? a.items[i] : array_like_get(vm, this, i))
+        append(&res.items, array_like_get(vm, this, i))
+        if vm.throwing do return nil
     }
     return res
 }
@@ -272,13 +292,17 @@ arr_slice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // pelo caminho rápido (items diretos); ^Object/^Function leem length+índice.
 @(private = "file")
 array_like_len :: proc(vm: ^Interp, this: Value) -> int {
+    if is_nullish(this) { throw_type_error(vm, "Array method called on null or undefined"); return 0 }
     #partial switch t in this {
     case ^Array:  return len(t.items)
     case string:  return str_rlen(t)
     case ^Object, ^Function:
-        n := as_number(get_member(vm, this, "length"))
+        length := get_member(vm, this, "length")
+        if vm.throwing do return 0
+        n := to_number(vm, length)
+        if vm.throwing do return 0
         if n != n || n <= 0 do return 0 // NaN / negativo → 0 (ToLength)
-        MAXLEN :: 1 << 53
+        MAXLEN :: (1 << 53) - 1
         if n > f64(MAXLEN) do return MAXLEN
         return int(n) // positivo trunca p/ baixo
     }
@@ -288,8 +312,8 @@ array_like_len :: proc(vm: ^Interp, this: Value) -> int {
 @(private = "file")
 array_like_get :: proc(vm: ^Interp, this: Value, i: int) -> Value {
     #partial switch t in this {
-    case ^Array:  return t.items[i]
-    case string:  return own_str(vm, str_rslice(t, i, i + 1))
+    case ^Array:  return t.items[i] if i >= 0 && i < len(t.items) else nil
+    case string:  return own_str(vm, str_rslice(t, i, i + 1)) if i >= 0 && i < str_rlen(t) else nil
     case ^Object, ^Function:
         buf: [24]u8
         return get_member(vm, this, strconv.write_int(buf[:], i64(i), 10))
@@ -344,10 +368,11 @@ array_like_has :: proc(this: Value, i: int) -> bool {
 @(private = "file")
 arr_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if is_nullish(this) { throw_type_error(vm, "Array.prototype.forEach called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
     cb, cok := arg(args, 0).(^Function)
     if !cok { throw_type_error(vm, "Array.prototype.forEach: callback não é função"); return nil }
     this_arg := arg(args, 1)
-    n := array_like_len(vm, this)
     for i := 0; i < n; i += 1 {
         if !array_like_has(this, i) do continue // pula buracos (HasProperty)
         it := array_like_get(vm, this, i)
@@ -362,10 +387,11 @@ arr_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 arr_map :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     res := new_array(vm)
     if is_nullish(this) { throw_type_error(vm, "Array.prototype.map called on null or undefined"); return res }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
     cb, cok := arg(args, 0).(^Function)
     if !cok { throw_type_error(vm, "Array.prototype.map: callback não é função"); return res }
     this_arg := arg(args, 1)
-    n := array_like_len(vm, this)
     for i := 0; i < n; i += 1 {
         if !array_like_has(this, i) { append(&res.items, nil); continue } // buraco → undefined (preserva posição)
         it := array_like_get(vm, this, i)
@@ -380,10 +406,11 @@ arr_map :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 arr_filter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     res := new_array(vm)
     if is_nullish(this) { throw_type_error(vm, "Array.prototype.filter called on null or undefined"); return res }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
     cb, cok := arg(args, 0).(^Function)
     if !cok { throw_type_error(vm, "Array.prototype.filter: callback não é função"); return res }
     this_arg := arg(args, 1)
-    n := array_like_len(vm, this)
     for i := 0; i < n; i += 1 {
         if !array_like_has(this, i) do continue // pula buracos (HasProperty)
         it := array_like_get(vm, this, i)
@@ -396,53 +423,80 @@ arr_filter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 arr_reverse :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return this
-    n := len(a.items)
-    for i := 0; i < n / 2; i += 1 {
-        a.items[i], a.items[n - 1 - i] = a.items[n - 1 - i], a.items[i]
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    for lo := 0; lo < n / 2; lo += 1 {
+        hi := n - lo - 1
+        lh := array_like_has(this, lo)
+        lv: Value; if lh do lv = array_like_get(vm, this, lo)
+        if vm.throwing do return nil
+        hh := array_like_has(this, hi)
+        hv: Value; if hh do hv = array_like_get(vm, this, hi)
+        if vm.throwing do return nil
+        if hh { arr_set(vm, this, lo, hv) } else { arr_delete(vm, this, lo) }
+        if vm.throwing do return nil
+        if lh { arr_set(vm, this, hi, lv) } else { arr_delete(vm, this, hi) }
+        if vm.throwing do return nil
     }
-    return a
+    return this
 }
 
 // "x vem depois de y?" para o sort: comparador JS (>0) ou, sem comparador, a
 // comparação de STRINGS do JS (por isso [10,9,1].sort() dá [1,10,9]).
 @(private = "file")
 sort_after :: proc(vm: ^Interp, cmp: ^Function, x, y: Value) -> bool {
+    if x == nil do return y != nil
+    if y == nil do return false
     if cmp != nil {
-        return as_number(call_function(vm, cmp, nil, []Value{x, y})) > 0
+        result := call_function(vm, cmp, nil, []Value{x, y})
+        if vm.throwing do return false
+        return to_number(vm, result) > 0
     }
     sbx, sby: strings.Builder
     strings.builder_init(&sbx); defer strings.builder_destroy(&sbx)
     strings.builder_init(&sby); defer strings.builder_destroy(&sby)
-    to_text(&sbx, x)
-    to_text(&sby, y)
+    write_text_spec(&sbx, vm, x)
+    if vm.throwing do return false
+    write_text_spec(&sby, vm, y)
     return strings.to_string(sbx) > strings.to_string(sby)
 }
 
 // sort in-place (insertion sort — arrays de página são pequenos), devolve o array.
 @(private = "file")
 arr_sort :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return this
-    cmp, _ := arg(args, 0).(^Function)
-    for i := 1; i < len(a.items); i += 1 {
-        v := a.items[i]
-        j := i - 1
-        for j >= 0 && sort_after(vm, cmp, a.items[j], v) {
-            a.items[j + 1] = a.items[j]
-            j -= 1
-        }
-        a.items[j + 1] = v
-        if vm.throwing do break // comparador lançou
+    cmp, ok := arg(args, 0).(^Function)
+    if arg(args, 0) != nil && !ok { throw_type_error(vm, "Comparator is not a function"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    values := new_array(vm)
+    for i := 0; i < n; i += 1 {
+        if !array_like_has(this, i) do continue
+        append(&values.items, array_like_get(vm, this, i))
+        if vm.throwing do return nil
     }
-    return a
+    for i := 1; i < len(values.items); i += 1 {
+        v := values.items[i]
+        j := i - 1
+        for j >= 0 {
+            after := sort_after(vm, cmp, values.items[j], v)
+            if vm.throwing do return nil
+            if !after do break
+            values.items[j + 1] = values.items[j]; j -= 1
+        }
+        values.items[j + 1] = v
+    }
+    for v, i in values.items { arr_set(vm, this, i, v); if vm.throwing do return nil }
+    for i := len(values.items); i < n; i += 1 { arr_delete(vm, this, i); if vm.throwing do return nil }
+    return this
 }
 
 @(private = "file")
 arr_reduce :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if is_nullish(this) { throw_type_error(vm, "Array.prototype.reduce called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
     cb, cok := arg(args, 0).(^Function)
     if !cok { throw_type_error(vm, "Array.prototype.reduce: callback não é função"); return nil }
-    n := array_like_len(vm, this)
     acc: Value
     start := 0
     if len(args) >= 2 {
@@ -453,6 +507,7 @@ arr_reduce :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         // TypeError REAL (era string crua → assert.throws(TypeError) não casava)
         if start >= n { throw_type_error(vm, "Reduce of empty array with no initial value"); return nil }
         acc = array_like_get(vm, this, start)
+        if vm.throwing do return nil
         start += 1
     }
     for i := start; i < n; i += 1 {
@@ -468,23 +523,29 @@ arr_reduce :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // reduceRight: como reduce, mas da direita p/ a esquerda. callback(acc, cur, idx, array).
 @(private = "file")
 arr_reduce_right :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return nil
-    cb, cok := arg(args, 0).(^Function); if !cok do return nil
+    if is_nullish(this) { throw_type_error(vm, "Array.prototype.reduceRight called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    cb, cok := arg(args, 0).(^Function)
+    if !cok { throw_type_error(vm, "Array.prototype.reduceRight: callback não é função"); return nil }
     acc: Value
-    start := len(a.items) - 1
+    start := n - 1
     if len(args) >= 2 {
         acc = args[1]
     } else {
-        if len(a.items) == 0 { // JS lança TypeError aqui
-            vm.thrown = mk_error(vm, "TypeError", "Reduce of empty array with no initial value")
-            vm.throwing = true
-            return nil
-        }
-        acc = a.items[start]
+        // sem valor inicial: acc = 1º índice PRESENTE (pula buracos à esquerda)
+        for start >= 0 && !array_like_has(this, start) do start -= 1
+        // TypeError REAL (era string crua → assert.throws(TypeError) não casava)
+        if start < 0 { throw_type_error(vm, "Reduce of empty array with no initial value"); return nil }
+        acc = array_like_get(vm, this, start)
+        if vm.throwing do return nil
         start -= 1
     }
     for i := start; i >= 0; i -= 1 {
-        acc = call_function(vm, cb, nil, []Value{acc, a.items[i], f64(i), a})
+        if !array_like_has(this, i) do continue // pula buracos (HasProperty)
+        cur := array_like_get(vm, this, i)
+        if vm.throwing do break
+        acc = call_function(vm, cb, nil, []Value{acc, cur, f64(i), this})
         if vm.throwing do break
     }
     return acc
@@ -495,6 +556,9 @@ arr_concat :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     res := new_array(vm)
     if a, ok := this.(^Array); ok {
         for it in a.items do append(&res.items, it)
+    } else {
+        if is_nullish(this) { throw_type_error(vm, "concat called on null or undefined"); return nil }
+        append(&res.items, this)
     }
     for v in args { // arrays achatam um nível; o resto entra como está
         if b, ok := v.(^Array); ok {
@@ -578,19 +642,31 @@ arr_every :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 arr_shift :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok || len(a.items) == 0 do return nil
-    v := a.items[0]
-    ordered_remove(&a.items, 0)
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    v: Value
+    if n > 0 {
+        v = array_like_get(vm, this, 0)
+        if vm.throwing do return nil
+        for i := 1; i < n; i += 1 { arr_move(vm, this, i, i - 1); if vm.throwing do return nil }
+        arr_delete(vm, this, n - 1)
+    }
+    arr_write(vm, this, "length", f64(max(0, n - 1)))
     return v
 }
 
 @(private = "file")
 arr_unshift :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return nil
-    for i := len(args) - 1; i >= 0; i -= 1 {
-        inject_at(&a.items, 0, args[i])
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    count := len(args)
+    if n + count > (1 << 53) - 1 { throw_type_error(vm, "Invalid array-like length"); return nil }
+    if count > 0 {
+        for i := n - 1; i >= 0; i -= 1 { arr_move(vm, this, i, i + count); if vm.throwing do return nil }
+        for v, i in args { arr_set(vm, this, i, v); if vm.throwing do return nil }
     }
-    return f64(len(a.items))
+    arr_write(vm, this, "length", f64(n + count))
+    return f64(n + count)
 }
 
 // ── Change Array by Copy (ES2023) ───────────────────────────────────────────
@@ -607,48 +683,62 @@ arr_copy_of :: proc(vm: ^Interp, this: Value) -> ^Array {
     res := new_array(vm)
     a, is_arr := this.(^Array)
     n := is_arr ? len(a.items) : array_like_len(vm, this)
+    if vm.throwing do return nil
     for i := 0; i < n; i += 1 {
-        append(&res.items, is_arr ? a.items[i] : array_like_get(vm, this, i))
+        append(&res.items, array_like_get(vm, this, i))
+        if vm.throwing do return nil
     }
     return res
 }
 
 @(private = "file")
 arr_to_reversed :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    res := arr_copy_of(vm, this)
-    n := len(res.items)
-    for i := 0; i < n / 2; i += 1 {
-        res.items[i], res.items[n - 1 - i] = res.items[n - 1 - i], res.items[i]
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    res := new_array(vm)
+    for i := n - 1; i >= 0; i -= 1 {
+        v := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        append(&res.items, v)
     }
     return res
 }
 
-// ⚠️ Delega ao `arr_sort` de propósito: as duas ordenações têm de concordar
-// (mesmo comparador, mesma comparação de STRINGS quando não há um). Herda com
-// isso a mesma LENIÊNCIA do `sort`: a spec manda TypeError quando o comparador
-// não é undefined nem função, e nenhum dos dois faz essa checagem.
+// The copy is dense; sorting shares comparator validation and ordering.
 @(private = "file")
 arr_to_sorted :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return arr_sort(vm, arr_copy_of(vm, this), args)
+    _, ok := arg(args, 0).(^Function)
+    if arg(args, 0) != nil && !ok { throw_type_error(vm, "Comparator is not a function"); return nil }
+    res := arr_copy_of(vm, this)
+    if vm.throwing do return nil
+    return arr_sort(vm, res, args)
 }
 
 // toSpliced(start, skipCount, ...novos): como splice, mas devolve o array NOVO
 // (o splice devolve os REMOVIDOS — a diferença é fácil de errar).
 @(private = "file")
 arr_to_spliced :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    src := arr_copy_of(vm, this)
-    n := len(src.items)
-    start := len(args) >= 1 ? idx_from(as_number(args[0]), n) : 0
-    skip := n - start
-    if len(args) >= 2 {
-        skip = as_int(args[1])
-        if skip < 0 do skip = 0
-        if skip > n - start do skip = n - start
-    }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    start := idx_from(to_number(vm, arg(args, 0)), n)
+    if vm.throwing do return nil
+    skip := n - start if len(args) > 0 else 0
+    if len(args) >= 2 do skip = min(max(arr_integer(vm, args[1]), 0), n - start)
+    if vm.throwing do return nil
+    count := max(0, len(args) - 2)
+    if n - skip + count > (1 << 53) - 1 { throw_type_error(vm, "Invalid array-like length"); return nil }
     res := new_array(vm)
-    for i := 0; i < start; i += 1 do append(&res.items, src.items[i])
+    for i := 0; i < start; i += 1 {
+        v := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        append(&res.items, v)
+    }
     for i := 2; i < len(args); i += 1 do append(&res.items, args[i])
-    for i := start + skip; i < n; i += 1 do append(&res.items, src.items[i])
+    for i := start + skip; i < n; i += 1 {
+        v := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        append(&res.items, v)
+    }
     return res
 }
 
@@ -656,39 +746,46 @@ arr_to_spliced :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // fora do range é RangeError (não silêncio) — é o que distingue do `arr[i]=v`.
 @(private = "file")
 arr_with :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    res := arr_copy_of(vm, this)
-    n := len(res.items)
-    i := as_int(arg(args, 0))
-    if i < 0 do i += n
-    if i < 0 || i >= n {
-        vm.thrown = mk_error(vm, "RangeError", "Invalid index") // não há helper de RangeError (só o do bigint, file-private)
-        vm.throwing = true
-        return nil
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    index := arr_integer(vm, arg(args, 0))
+    if vm.throwing do return nil
+    if index < 0 do index += n
+    if index < 0 || index >= n { vm.thrown = mk_error(vm, "RangeError", "Invalid index"); vm.throwing = true; return nil }
+    res := new_array(vm)
+    for i := 0; i < n; i += 1 {
+        v := arg(args, 1) if i == index else array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        append(&res.items, v)
     }
-    res.items[i] = arg(args, 1)
     return res
 }
 
 // splice(start, deleteCount, ...novos) — remove/insere in-place; devolve os removidos.
 @(private = "file")
 arr_splice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    start := idx_from(to_number(vm, arg(args, 0)), n)
+    if vm.throwing do return nil
+    delc := n - start if len(args) > 0 else 0
+    if len(args) >= 2 do delc = min(max(arr_integer(vm, args[1]), 0), n - start)
+    if vm.throwing do return nil
+    count := max(0, len(args) - 2)
+    if n - delc + count > (1 << 53) - 1 { throw_type_error(vm, "Invalid array-like length"); return nil }
     removed := new_array(vm)
-    a, ok := this.(^Array); if !ok do return removed
-    n := len(a.items)
-    start := len(args) >= 1 ? idx_from(as_number(args[0]), n) : 0
-    delc := n - start
-    if len(args) >= 2 {
-        delc = as_int(args[1])
-        if delc < 0 do delc = 0
-        if delc > n - start do delc = n - start
+    for i := 0; i < delc; i += 1 {
+        append(&removed.items, array_like_get(vm, this, start + i))
+        if vm.throwing do return nil
     }
-    nova: [dynamic]Value
-    for i := 0; i < start; i += 1 do append(&nova, a.items[i])
-    for i := 2; i < len(args); i += 1 do append(&nova, args[i])
-    for i := start; i < start + delc; i += 1 do append(&removed.items, a.items[i])
-    for i := start + delc; i < n; i += 1 do append(&nova, a.items[i])
-    delete(a.items)
-    a.items = nova
+    if count < delc {
+        for i := start; i < n - delc; i += 1 { arr_move(vm, this, i + delc, i + count); if vm.throwing do return nil }
+        for i := n - 1; i >= n - delc + count; i -= 1 { arr_delete(vm, this, i); if vm.throwing do return nil }
+    } else if count > delc {
+        for i := n - delc - 1; i >= start; i -= 1 { arr_move(vm, this, i + delc, i + count); if vm.throwing do return nil }
+    }
+    for i := 0; i < count; i += 1 { arr_set(vm, this, start + i, args[i + 2]); if vm.throwing do return nil }
+    arr_write(vm, this, "length", f64(n - delc + count))
     return removed
 }
 
@@ -1342,102 +1439,134 @@ str_at :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // Array.from
 @(private = "file")
 arr_from :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    res := new_array(vm)
-    v := arg(args, 0)
-    mapfn, has_map := arg(args, 1).(^Function)
-    #partial switch o in v {
-    case ^Array:
-        for it in o.items do append(&res.items, it)
-    case string: // Array.from('café') → runas inteiras
-        for i := 0; i < len(o); {
-            _, w := utf8.decode_rune(o[i:])
-            append(&res.items, own_str(vm, o[i:i + w]))
-            i += w
-        }
-    case ^Collection:
-        for &e in o.entries do if !e.dead do append(&res.items, e.val)
-    case ^Object:
-        // iterável por protocolo (Symbol.iterator/iterador — inclui TypedArray);
-        // senão trata como array-like (.length + índices, ex.: arguments, NodeList)
-        tmp: [dynamic]Value; defer delete(tmp)
-        if iterate_protocol(vm, o, &tmp) {
-            for it in tmp do append(&res.items, it)
-        } else {
-            n := int(as_number(get_member(vm, o, "length")))
-            for i in 0 ..< n do append(&res.items, get_member(vm, o, key_string(vm, f64(i))))
+    src := arg(args, 0)
+    mapper, mapped := arg(args, 1).(^Function)
+    if arg(args, 1) != nil && !mapped { throw_type_error(vm, "Mapper is not a function"); return nil }
+    if is_nullish(src) { throw_type_error(vm, "Array.from called on null or undefined"); return nil }
+    out := new_array(vm)
+    method := get_member(vm, src, vm.sym_iterator_key)
+    if vm.throwing do return nil
+    if !is_nullish(method) {
+        fn, ok := method.(^Function)
+        if !ok { throw_type_error(vm, "Iterator method is not callable"); return nil }
+        iter := call_function(vm, fn, src, nil)
+        if vm.throwing do return nil
+        next := iterator_next_fn(iter)
+        if next == nil { throw_type_error(vm, "Invalid iterator"); return nil }
+        for i := 0; ; i += 1 {
+            if step_guard(vm) do return nil
+            result := call_function(vm, next, iter, nil)
+            if vm.throwing do return nil
+            if _, ok := result.(^Object); !ok { throw_type_error(vm, "Invalid iterator result"); return nil }
+            done := get_member(vm, result, "done")
+            if vm.throwing do return nil
+            if truthy(done) do return out
+            v := get_member(vm, result, "value")
+            if vm.throwing do return nil
+            if mapped {
+                v = call_function(vm, mapper, arg(args, 2), []Value{v, f64(i)})
+                if vm.throwing {
+                    exception := vm.thrown
+                    vm.throwing = false
+                    iterator_close(vm, iter)
+                    vm.throwing = true; vm.thrown = exception
+                    return nil
+                }
+            }
+            append(&out.items, v)
         }
     }
-    if has_map { // Array.from(x, fn): mapeia cada elemento
-        for &it, i in res.items {
-            it = call_function(vm, mapfn, nil, []Value{it, f64(i)})
-            if vm.throwing do break
-        }
+    n := array_like_len(vm, src)
+    if vm.throwing do return nil
+    for i := 0; i < n; i += 1 {
+        v := array_like_get(vm, src, i)
+        if vm.throwing do return nil
+        if mapped do v = call_function(vm, mapper, arg(args, 2), []Value{v, f64(i)})
+        if vm.throwing do return nil
+        append(&out.items, v)
     }
-    return res
+    return out
 }
 
 // ── Array moderno (M59) ─────────────────────────────────────────────────────
 
 @(private = "file")
-arr_flatten_into :: proc(vm: ^Interp, src: ^Array, depth: int, out: ^Array) {
-    for it in src.items {
+arr_flatten_into :: proc(vm: ^Interp, src: Value, depth: int, out: ^Array) {
+    n := array_like_len(vm, src)
+    if vm.throwing do return
+    for i := 0; i < n; i += 1 {
+        if !array_like_has(src, i) do continue
+        it := array_like_get(vm, src, i)
+        if vm.throwing do return
         if sub, ok := it.(^Array); ok && depth > 0 {
+            if vm.call_depth >= vm.call_depth_limit { vm.thrown = mk_error(vm, "RangeError", "Flatten recursion exceeded"); vm.throwing = true; return }
+            vm.call_depth += 1
             arr_flatten_into(vm, sub, depth - 1, out)
-        } else {
-            append(&out.items, it)
-        }
+            vm.call_depth -= 1
+            if vm.throwing do return
+        } else { append(&out.items, it) }
     }
 }
 
 @(private = "file")
 arr_flat :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return new_array(vm)
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
     depth := 1
-    if len(args) >= 1 && args[0] != nil {
-        d := as_number(args[0])
-        depth = d == math.inf_f64(1) ? 1 << 30 : as_int(args[0])
-    }
+    if arg(args, 0) != nil do depth = arr_integer(vm, args[0])
+    if vm.throwing do return nil
     out := new_array(vm)
-    arr_flatten_into(vm, a, depth, out)
+    for i := 0; i < n; i += 1 {
+        if !array_like_has(this, i) do continue
+        it := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        if sub, ok := it.(^Array); ok && depth > 0 { arr_flatten_into(vm, sub, depth - 1, out) } else { append(&out.items, it) }
+        if vm.throwing do return nil
+    }
     return out
 }
 
 @(private = "file")
 arr_flat_map :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return new_array(vm)
-    fn, fok := arg(args, 0).(^Function); if !fok do return new_array(vm)
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    fn, ok := arg(args, 0).(^Function)
+    if !ok { throw_type_error(vm, "Callback is not a function"); return nil }
     out := new_array(vm)
-    for it, i in a.items {
-        r := call_function(vm, fn, nil, []Value{it, f64(i), a})
-        if vm.throwing do break
-        if sub, sok := r.(^Array); sok {
-            for v in sub.items do append(&out.items, v) // achata só 1 nível (spec)
-        } else {
-            append(&out.items, r)
-        }
+    for i := 0; i < n; i += 1 {
+        if !array_like_has(this, i) do continue
+        it := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        r := call_function(vm, fn, arg(args, 1), []Value{it, f64(i), this})
+        if vm.throwing do return nil
+        if sub, ok := r.(^Array); ok { arr_flatten_into(vm, sub, 0, out) } else { append(&out.items, r) }
+        if vm.throwing do return nil
     }
     return out
 }
 
 @(private = "file")
 arr_fill :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return this
-    v := arg(args, 0)
-    n := len(a.items)
-    start := len(args) >= 2 && args[1] != nil ? idx_from(as_number(args[1]), n) : 0
-    end   := len(args) >= 3 && args[2] != nil ? idx_from(as_number(args[2]), n) : n
-    for i := start; i < end; i += 1 do a.items[i] = v
-    return a
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    start := idx_from(to_number(vm, arg(args, 1)), n)
+    if vm.throwing do return nil
+    end := n
+    if arg(args, 2) != nil do end = idx_from(to_number(vm, args[2]), n)
+    if vm.throwing do return nil
+    for i := start; i < end; i += 1 { arr_set(vm, this, i, arg(args, 0)); if vm.throwing do return nil }
+    return this
 }
 
 @(private = "file")
 arr_at :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, is_arr := this.(^Array)
-    n := is_arr ? len(a.items) : array_like_len(vm, this) // array-like: ver arr_index_of
-    i := as_int(arg(args, 0))
-    if i < 0 do i += n
-    if i < 0 || i >= n do return nil
-    return is_arr ? a.items[i] : array_like_get(vm, this, i)
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    index := arr_integer(vm, arg(args, 0))
+    if vm.throwing do return nil
+    if index < 0 do index += n
+    if index < 0 || index >= n do return nil
+    return array_like_get(vm, this, index)
 }
 
 @(private = "file")
@@ -1476,28 +1605,30 @@ arr_find_last_index :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 arr_copy_within :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return this
-    n := len(a.items)
-    tgt   := len(args) >= 1 && args[0] != nil ? idx_from(as_number(args[0]), n) : 0
-    start := len(args) >= 2 && args[1] != nil ? idx_from(as_number(args[1]), n) : 0
-    end   := len(args) >= 3 && args[2] != nil ? idx_from(as_number(args[2]), n) : n
-    if start >= end do return a
-    tmp := make([]Value, end - start, context.temp_allocator)
-    copy(tmp, a.items[start:end])
-    for v, k in tmp {
-        if tgt + k >= n do break
-        a.items[tgt + k] = v
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    dst := idx_from(to_number(vm, arg(args, 0)), n)
+    if vm.throwing do return nil
+    src := idx_from(to_number(vm, arg(args, 1)), n)
+    if vm.throwing do return nil
+    end := n
+    if arg(args, 2) != nil do end = idx_from(to_number(vm, args[2]), n)
+    if vm.throwing do return nil
+    count := min(end - src, n - dst)
+    step := 1
+    if src < dst && dst < src + count { src += count - 1; dst += count - 1; step = -1 }
+    for count > 0 {
+        arr_move(vm, this, src, dst)
+        if vm.throwing do return nil
+        src += step; dst += step; count -= 1
     }
-    return a
+    return this
 }
 
-// keys()/values()/entries() — iteradores (reusa make_array_iterator sobre um
-// snapshot; suficiente p/ `for..of arr.entries()`)
+// Array iterators read their receiver lazily at each next().
 @(private = "file")
 arr_keys_iter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    ks := new_array(vm)
-    for i := 0; i < arr_iter_len(vm, this); i += 1 do append(&ks.items, f64(i))
-    return make_array_iterator(vm, ks)
+    return arr_live_iterator(vm, this, 0)
 }
 
 // `values` é também o Symbol.iterator de Array.prototype (ver install), e é ele que
@@ -1505,28 +1636,12 @@ arr_keys_iter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // `for (x of el.children)` iteravam ZERO elemento sem lançar nada.
 @(private = "file")
 arr_values_iter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, is_arr := this.(^Array)
-    vs := new_array(vm)
-    if is_arr {
-        for it in a.items do append(&vs.items, it)
-    } else {
-        n := array_like_len(vm, this)
-        for i := 0; i < n; i += 1 do append(&vs.items, array_like_get(vm, this, i))
-    }
-    return make_array_iterator(vm, vs)
+    return arr_live_iterator(vm, this, 1)
 }
 
 @(private = "file")
 arr_entries_iter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, is_arr := this.(^Array)
-    es := new_array(vm)
-    n := is_arr ? len(a.items) : array_like_len(vm, this)
-    for i := 0; i < n; i += 1 {
-        pair := new_array(vm)
-        append(&pair.items, f64(i), is_arr ? a.items[i] : array_like_get(vm, this, i))
-        append(&es.items, pair)
-    }
-    return make_array_iterator(vm, es)
+    return arr_live_iterator(vm, this, 2)
 }
 
 // length de `this` para os três iteradores acima (array real ou array-like).
@@ -1591,7 +1706,7 @@ arr_construct :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
             // RangeError. Aqui: array vazio (evita alocar bilhões de slots — o
             // int(NaN) virava lixo gigante e travava o processo num for nativo).
             if n != n || n < 0 || n != math.trunc(n) || n > 4294967295 {
-                return a // comprimento inválido: array vazio (JS lançaria RangeError)
+                vm.thrown = mk_error(vm, "RangeError", "Invalid array length"); vm.throwing = true; return nil
             }
             count := int(n)
             for i := 0; i < count; i += 1 do append(&a.items, nil) // slots = undefined
@@ -2550,6 +2665,7 @@ install_builtins :: proc(vm: ^Interp) {
 
     vm.array_methods["push"]      = mk_builtin_method(vm, arr_push, "push", 1)
     vm.array_methods["pop"]       = mk_builtin_method(vm, arr_pop, "pop", 0)
+    vm.array_methods["lastIndexOf"] = mk_builtin_method(vm, arr_last_index_of, "lastIndexOf", 1)
     vm.array_methods["indexOf"]   = mk_builtin_method(vm, arr_index_of, "indexOf", 1)
     vm.array_methods["includes"]  = mk_builtin_method(vm, arr_includes, "includes", 1)
     vm.array_methods["join"]      = mk_builtin_method(vm, arr_join, "join", 1)
@@ -3051,4 +3167,125 @@ mk_builtin_method :: proc(vm: ^Interp, fn: Native_Fn, name: string, arity: int) 
     f.native_length = arity
     f.non_constructor = true
     return f
+}
+
+@(private = "file")
+arr_integer :: proc(vm: ^Interp, v: Value) -> int {
+    return as_int(to_number(vm, v))
+}
+@(private = "file")
+arr_write :: proc(vm: ^Interp, this: Value, key: string, v: Value) {
+    if vm.throwing do return
+    #partial switch o in this {
+    case ^Array:
+        if key == "length" {
+            n := as_int(v)
+            if n < len(o.items) { resize(&o.items, n) } else { for len(o.items) < n do append(&o.items, nil) }
+            return
+        }
+        set_index(vm, this, key, v)
+        return
+    case ^Object:
+        if o.set != nil { set_member(vm, o, key, v); return }
+        for cur := o; cur != nil; cur = cur.proto {
+            if setter, ok := cur.setters[key]; ok {
+                if setter == nil { throw_type_error(vm, "Cannot write accessor"); return }
+                call_function(vm, setter, o, []Value{v}); return
+            }
+            if _, ok := cur.getters[key]; ok { throw_type_error(vm, "Cannot write accessor"); return }
+            if _, ok := cur.props[key]; ok {
+                if .Writable not_in prop_attrs(cur, key) { throw_type_error(vm, "Cannot write read-only property"); return }
+                break
+            }
+        }
+        if _, own := o.props[key]; !own && o.non_extensible { throw_type_error(vm, "Cannot add property"); return }
+    case string:
+        throw_type_error(vm, "Cannot modify string"); return
+    }
+    set_member(vm, this, key, v)
+}
+@(private = "file")
+arr_set :: proc(vm: ^Interp, this: Value, i: int, v: Value) {
+    buf: [24]u8
+    arr_write(vm, this, own_str_raw(vm, strconv.write_int(buf[:], i64(i), 10)), v)
+}
+@(private = "file")
+arr_delete :: proc(vm: ^Interp, this: Value, i: int) {
+    if vm.throwing do return
+    buf: [24]u8
+    key := strconv.write_int(buf[:], i64(i), 10)
+    #partial switch o in this {
+    case ^Object:
+        _, data := o.props[key]; _, getter := o.getters[key]; _, setter := o.setters[key]
+        if (data || getter || setter) && .Configurable not_in prop_attrs(o, key) { throw_type_error(vm, "Cannot delete property"); return }
+        oremove(o, key); delete_key(&o.getters, key); delete_key(&o.setters, key)
+    case ^Function:
+        delete_key(&o.props, key); delete_key(&o.getters, key); delete_key(&o.setters, key)
+    case ^Array:
+        if i >= 0 && i < len(o.items) do o.items[i] = nil
+    case string:
+        if i >= 0 && i < str_rlen(o) do throw_type_error(vm, "Cannot delete string index")
+    }
+}
+@(private = "file")
+arr_move :: proc(vm: ^Interp, this: Value, src, dst: int) {
+    if vm.throwing do return
+    if array_like_has(this, src) {
+        v := array_like_get(vm, this, src)
+        if !vm.throwing do arr_set(vm, this, dst, v)
+    } else { arr_delete(vm, this, dst) }
+}
+
+@(private = "file")
+arr_last_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    if n == 0 do return f64(-1)
+    from := n - 1
+    if len(args) > 1 do from = arr_integer(vm, args[1])
+    if vm.throwing do return nil
+    if from < 0 { from += n } else { from = min(from, n - 1) }
+    for i := from; i >= 0; i -= 1 {
+        if !array_like_has(this, i) do continue
+        v := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        if v == arg(args, 0) do return f64(i)
+    }
+    return f64(-1)
+}
+
+// The shared iterator prototype dispatches these live iterators here.
+arr_iter_next :: proc(vm: ^Interp, o: ^Object) -> Value {
+    res := new_object(vm)
+    res.props["value"] = nil
+    res.props["done"] = true
+    if truthy(o.props["_done"]) do return res
+    src := o.props["_source"]
+    n := array_like_len(vm, src)
+    if vm.throwing do return nil
+    i := as_int(o.props["_i"])
+    if i >= n { o.props["_done"] = true; o.props["_source"] = nil; return res }
+    o.props["_i"] = f64(i + 1)
+    kind := as_int(o.props["_kind"])
+    v: Value = f64(i)
+    if kind != 0 {
+        v = array_like_get(vm, src, i)
+        if vm.throwing do return nil
+        if kind == 2 {
+            pair := new_array(vm)
+            append(&pair.items, f64(i), v)
+            v = pair
+        }
+    }
+    res.props["value"] = v
+    res.props["done"] = false
+    return res
+}
+@(private = "file")
+arr_live_iterator :: proc(vm: ^Interp, src: Value, kind: int) -> Value {
+    if is_nullish(src) { throw_type_error(vm, "Array iterator called on null or undefined"); return nil }
+    it := make_array_iterator(vm, nil).(^Object)
+    it.props["_source"] = src
+    it.props["_kind"] = f64(kind)
+    return it
 }
