@@ -136,7 +136,7 @@ test_define_property_on_function :: proc(t: ^testing.T) {
         C.tag + ':' + d.value + ':' + d.enumerable
     `
     v, _ := run(src).(string)
-    testing.expect(t, v == "42:42:true", "defineProperty/getOwnPropertyDescriptor devem operar em funções")
+    testing.expect(t, v == "42:42:false", "defineProperty/getOwnPropertyDescriptor devem operar em funções")
 }
 
 // getOwnPropertyDescriptor de chave AUSENTE numa função → undefined (não crash).

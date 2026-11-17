@@ -155,6 +155,7 @@ Function :: struct {
     closure:  ^Env,
     native:   Native_Fn,
     name:     string,
+    attrs: map[string]Prop_Attrs,
     native_length: int,
     non_constructor: bool,
     is_arrow: bool, // arrow não vincula `this` próprio (herda o léxico via closure)
@@ -255,6 +256,8 @@ Interp :: struct {
     symbol_keys:     map[string]^Symbol,   // chave-string de propriedade → ^Symbol que a gerou
                                            // (inverso de symbol_key); base do
                                            // Object.getOwnPropertySymbols. nil até o 1º uso.
+    sym_species_key: string,
+    sym_concat_spreadable_key: string,
     sym_iterator_key: string,              // chave-string do Symbol.iterator (p/ protocolo de iterador)
     sym_async_iterator_key: string,        // chave-string do Symbol.asyncIterator (for-await + async generators)
     sym_toprimitive_key: string,           // chave-string do Symbol.toPrimitive (ToPrimitive consulta antes de valueOf/toString)
@@ -1014,6 +1017,7 @@ vm_destroy :: proc(vm: ^Interp) {
     delete(vm.env_pool)
     delete(vm.probe_stack) // vazia fora de build com MEMBERPROBE
     for f in vm.all_funcs {
+        delete(f.attrs)
         delete(f.props)
         if f.bind_args != nil do delete(f.bind_args)
         if f.getters != nil do delete(f.getters)
@@ -2130,6 +2134,14 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         if o.props != nil { // props não-índice (exec.index, strings.raw)
             if v, ok := o.props[name]; ok do return v
         }
+        if vm.array_ctor != nil {
+            if proto, ok := vm.array_ctor.props["prototype"].(^Object); ok {
+                for cur := proto; cur != nil; cur = cur.proto {
+                    if g, has := cur.getters[name]; has do return call_function(vm, g, o, nil)
+                    if v, has := cur.props[name]; has do return v
+                }
+            }
+        }
         if fn, ok := vm.array_methods[name]; ok do return fn
         if name == "constructor" do return vm.array_ctor // `[].constructor === Array`
         // Array herda de Object.prototype: hasOwnProperty/isPrototypeOf/toLocaleString.
@@ -2290,6 +2302,13 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) {
         if !prop_writable(o, name) do return
         oput(o, name, val)
     case ^Function:
+        if a, explicit := o.attrs[name]; explicit {
+            if _, accessor := o.getters[name]; accessor {
+                if setter, ok := o.setters[name]; ok && setter != nil do call_function(vm, setter, o, []Value{val})
+                return
+            }
+            if .Writable not_in a do return
+        }
         // setter static de classe (static set x(v){}) — invoca com this = a classe
         if o.setters != nil {
             if s, ok := o.setters[name]; ok { call_function(vm, s, o, []Value{val}); return }
@@ -4024,7 +4043,7 @@ unwrap_prim :: proc(vm: ^Interp, fn: ^Function, this: Value) -> Value {
     if !ok || o.prim == nil do return this
     #partial switch _ in o.prim {
     case ^Collection: for _, m in vm.collection_methods do if m == fn do return o.prim
-    case ^Array:      for _, m in vm.array_methods      do if m == fn do return o.prim
+    case ^Array:      return this
     }
     return this
 }

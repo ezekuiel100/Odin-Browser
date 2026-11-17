@@ -269,20 +269,25 @@ arr_join :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // mais comum que existe. Enquanto o `!ok` devolvia array VAZIO, trocar children de
 // ^Array para coleção viva teria zerado esse idioma EM SILÊNCIO.
 arr_slice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, is_arr := this.(^Array)
-    n := is_arr ? len(a.items) : array_like_len(vm, this)
+    n := array_like_len(vm, this)
     if vm.throwing do return nil
-    // undefined explícito conta como ausente (spec: end undefined → até o fim)
-    start := len(args) >= 1 && args[0] != nil ? idx_from(to_number(vm, args[0]), n) : 0
+    start := idx_from(to_number(vm, arg(args, 0)), n)
     if vm.throwing do return nil
-    end   := len(args) >= 2 && args[1] != nil ? idx_from(to_number(vm, args[1]), n) : n
-    res := new_array(vm)
+    end := n
+    if arg(args, 1) != nil do end = idx_from(to_number(vm, args[1]), n)
     if vm.throwing do return nil
-    for i := start; i < end; i += 1 {
-        append(&res.items, array_like_get(vm, this, i))
+    count := max(0, end - start)
+    out := array_species_create(vm, this, count)
+    if vm.throwing do return nil
+    for i := 0; i < count; i += 1 {
+        if !array_like_has(this, start + i) do continue
+        v := array_like_get(vm, this, start + i)
+        if vm.throwing do return nil
+        array_result_set(vm, out, i, v)
         if vm.throwing do return nil
     }
-    return res
+    arr_write(vm, out, "length", f64(count))
+    return out
 }
 
 // ── acesso genérico a array-like ────────────────────────────────────────────
@@ -316,7 +321,7 @@ array_like_get :: proc(vm: ^Interp, this: Value, i: int) -> Value {
     case string:  return own_str(vm, str_rslice(t, i, i + 1)) if i >= 0 && i < str_rlen(t) else nil
     case ^Object, ^Function:
         buf: [24]u8
-        return get_member(vm, this, strconv.write_int(buf[:], i64(i), 10))
+        return get_index(vm, this, f64(i))
     }
     return nil
 }
@@ -354,6 +359,7 @@ array_like_has :: proc(this: Value, i: int) -> bool {
             if cur.props == nil do continue
             if _, has := cur.props[key]; has do return true
         }
+        if array_is_array(t.prim) do return array_like_has(t.prim, i)
         if x := proto_exotic_end(t); x != nil do return array_like_has(x, i)
         return false
     case ^Function:
@@ -385,18 +391,21 @@ arr_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 arr_map :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    res := new_array(vm)
-    if is_nullish(this) { throw_type_error(vm, "Array.prototype.map called on null or undefined"); return res }
+    if is_nullish(this) { throw_type_error(vm, "Array.prototype.map called on null or undefined"); return nil }
     n := array_like_len(vm, this)
     if vm.throwing do return nil
     cb, cok := arg(args, 0).(^Function)
-    if !cok { throw_type_error(vm, "Array.prototype.map: callback não é função"); return res }
+    if !cok { throw_type_error(vm, "Array.prototype.map: callback não é função"); return nil }
+    res := array_species_create(vm, this, n)
+    if vm.throwing do return nil
     this_arg := arg(args, 1)
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) { append(&res.items, nil); continue } // buraco → undefined (preserva posição)
+        if !array_like_has(this, i) { continue } // buraco → undefined (preserva posição)
         it := array_like_get(vm, this, i)
         if vm.throwing do break
-        append(&res.items, call_function(vm, cb, this_arg, []Value{it, f64(i), this}))
+        v := call_function(vm, cb, this_arg, []Value{it, f64(i), this})
+        if vm.throwing do return nil
+        array_result_set(vm, res, i, v)
         if vm.throwing do break
     }
     return res
@@ -404,18 +413,22 @@ arr_map :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 arr_filter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    res := new_array(vm)
-    if is_nullish(this) { throw_type_error(vm, "Array.prototype.filter called on null or undefined"); return res }
+    if is_nullish(this) { throw_type_error(vm, "Array.prototype.filter called on null or undefined"); return nil }
     n := array_like_len(vm, this)
     if vm.throwing do return nil
     cb, cok := arg(args, 0).(^Function)
-    if !cok { throw_type_error(vm, "Array.prototype.filter: callback não é função"); return res }
+    if !cok { throw_type_error(vm, "Array.prototype.filter: callback não é função"); return nil }
+    res := array_species_create(vm, this, 0)
+    if vm.throwing do return nil
+    target := 0
     this_arg := arg(args, 1)
     for i := 0; i < n; i += 1 {
         if !array_like_has(this, i) do continue // pula buracos (HasProperty)
         it := array_like_get(vm, this, i)
         if vm.throwing do break
-        if truthy(call_function(vm, cb, this_arg, []Value{it, f64(i), this})) do append(&res.items, it)
+        accepted := call_function(vm, cb, this_arg, []Value{it, f64(i), this})
+        if vm.throwing do return nil
+        if truthy(accepted) { array_result_set(vm, res, target, it); target += 1 }
         if vm.throwing do break
     }
     return res
@@ -553,21 +566,40 @@ arr_reduce_right :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 arr_concat :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    res := new_array(vm)
-    if a, ok := this.(^Array); ok {
-        for it in a.items do append(&res.items, it)
-    } else {
-        if is_nullish(this) { throw_type_error(vm, "concat called on null or undefined"); return nil }
-        append(&res.items, this)
-    }
-    for v in args { // arrays achatam um nível; o resto entra como está
-        if b, ok := v.(^Array); ok {
-            for it in b.items do append(&res.items, it)
+    if is_nullish(this) { throw_type_error(vm, "concat called on null or undefined"); return nil }
+    out := array_species_create(vm, this, 0)
+    if vm.throwing do return nil
+    target := 0
+    for part := -1; part < len(args); part += 1 {
+        item := this if part < 0 else args[part]
+        spread := false
+        if !is_primitive(item) {
+            marker := get_member(vm, item, vm.sym_concat_spreadable_key)
+            if vm.throwing do return nil
+            spread = array_is_array(item) if marker == nil else truthy(marker)
+        }
+        if spread {
+            n := array_like_len(vm, item)
+            if vm.throwing do return nil
+            if target + n > (1 << 53) - 1 { throw_type_error(vm, "Invalid concat length"); return nil }
+            for i := 0; i < n; i += 1 {
+                if array_like_has(item, i) {
+                    v := array_like_get(vm, item, i)
+                    if vm.throwing do return nil
+                    array_result_set(vm, out, target, v)
+                    if vm.throwing do return nil
+                }
+                target += 1
+            }
         } else {
-            append(&res.items, v)
+            if target >= (1 << 53) - 1 { throw_type_error(vm, "Invalid concat length"); return nil }
+            array_result_set(vm, out, target, item)
+            if vm.throwing do return nil
+            target += 1
         }
     }
-    return res
+    arr_write(vm, out, "length", f64(target))
+    return out
 }
 
 @(private = "file")
@@ -773,11 +805,17 @@ arr_splice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     count := max(0, len(args) - 2)
     if n - delc + count > (1 << 53) - 1 { throw_type_error(vm, "Invalid array-like length"); return nil }
-    removed := new_array(vm)
+    removed := array_species_create(vm, this, delc)
+    if vm.throwing do return nil
     for i := 0; i < delc; i += 1 {
-        append(&removed.items, array_like_get(vm, this, start + i))
+        if !array_like_has(this, start + i) do continue
+        v := array_like_get(vm, this, start + i)
+        if vm.throwing do return nil
+        array_result_set(vm, removed, i, v)
         if vm.throwing do return nil
     }
+    arr_write(vm, removed, "length", f64(delc))
+    if vm.throwing do return nil
     if count < delc {
         for i := start; i < n - delc; i += 1 { arr_move(vm, this, i + delc, i + count); if vm.throwing do return nil }
         for i := n - 1; i >= n - delc + count; i -= 1 { arr_delete(vm, this, i); if vm.throwing do return nil }
@@ -1491,20 +1529,20 @@ arr_from :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // ── Array moderno (M59) ─────────────────────────────────────────────────────
 
 @(private = "file")
-arr_flatten_into :: proc(vm: ^Interp, src: Value, depth: int, out: ^Array) {
+arr_flatten_into :: proc(vm: ^Interp, src: Value, depth: int, out: Value, target: ^int) {
     n := array_like_len(vm, src)
     if vm.throwing do return
     for i := 0; i < n; i += 1 {
         if !array_like_has(src, i) do continue
         it := array_like_get(vm, src, i)
         if vm.throwing do return
-        if sub, ok := it.(^Array); ok && depth > 0 {
+        if sub := it; array_is_array(sub) && depth > 0 {
             if vm.call_depth >= vm.call_depth_limit { vm.thrown = mk_error(vm, "RangeError", "Flatten recursion exceeded"); vm.throwing = true; return }
             vm.call_depth += 1
-            arr_flatten_into(vm, sub, depth - 1, out)
+            arr_flatten_into(vm, sub, depth - 1, out, target)
             vm.call_depth -= 1
             if vm.throwing do return
-        } else { append(&out.items, it) }
+        } else { array_result_set(vm, out, target^, it); if vm.throwing do return; target^ += 1 }
     }
 }
 
@@ -1515,12 +1553,14 @@ arr_flat :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     depth := 1
     if arg(args, 0) != nil do depth = arr_integer(vm, args[0])
     if vm.throwing do return nil
-    out := new_array(vm)
+    out := array_species_create(vm, this, 0)
+    if vm.throwing do return nil
+    target := 0
     for i := 0; i < n; i += 1 {
         if !array_like_has(this, i) do continue
         it := array_like_get(vm, this, i)
         if vm.throwing do return nil
-        if sub, ok := it.(^Array); ok && depth > 0 { arr_flatten_into(vm, sub, depth - 1, out) } else { append(&out.items, it) }
+        if sub := it; array_is_array(sub) && depth > 0 { arr_flatten_into(vm, sub, depth - 1, out, &target) } else { array_result_set(vm, out, target, it); target += 1 }
         if vm.throwing do return nil
     }
     return out
@@ -1532,14 +1572,16 @@ arr_flat_map :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     fn, ok := arg(args, 0).(^Function)
     if !ok { throw_type_error(vm, "Callback is not a function"); return nil }
-    out := new_array(vm)
+    out := array_species_create(vm, this, 0)
+    if vm.throwing do return nil
+    target := 0
     for i := 0; i < n; i += 1 {
         if !array_like_has(this, i) do continue
         it := array_like_get(vm, this, i)
         if vm.throwing do return nil
         r := call_function(vm, fn, arg(args, 1), []Value{it, f64(i), this})
         if vm.throwing do return nil
-        if sub, ok := r.(^Array); ok { arr_flatten_into(vm, sub, 0, out) } else { append(&out.items, r) }
+        if sub := r; array_is_array(sub) { arr_flatten_into(vm, sub, 0, out, &target) } else { array_result_set(vm, out, target, r); target += 1 }
         if vm.throwing do return nil
     }
     return out
@@ -2890,6 +2932,10 @@ install_builtins :: proc(vm: ^Interp) {
     for k, fn in vm.array_methods do arr_proto.props[k] = fn
     arr_proto.props["constructor"] = arr_ctor
     arr_ctor.props["prototype"] = arr_proto
+    arr_ctor.getters = make(map[string]^Function)
+    arr_ctor.attrs = make(map[string]Prop_Attrs)
+    arr_ctor.attrs[vm.sym_species_key] = {.Configurable}
+    arr_ctor.getters[vm.sym_species_key] = mk_builtin_method(vm, array_species_get, "get [Symbol.species]", 0)
 
     // Boolean ficou de fora deste bloco: não tinha .prototype NEM métodos, então
     // `true.toString()` lançava e `Boolean.prototype.valueOf` era undefined. O helper
@@ -3186,6 +3232,8 @@ arr_write :: proc(vm: ^Interp, this: Value, key: string, v: Value) {
         set_index(vm, this, key, v)
         return
     case ^Object:
+        if a, wrapped := o.prim.(^Array); wrapped && key == "length" { arr_write(vm, a, key, v); return }
+        if a, wrapped := o.prim.(^Array); wrapped && key != "length" { set_index(vm, a, key, v); return }
         if o.set != nil { set_member(vm, o, key, v); return }
         for cur := o; cur != nil; cur = cur.proto {
             if setter, ok := cur.setters[key]; ok {
@@ -3216,6 +3264,7 @@ arr_delete :: proc(vm: ^Interp, this: Value, i: int) {
     key := strconv.write_int(buf[:], i64(i), 10)
     #partial switch o in this {
     case ^Object:
+        if a, wrapped := o.prim.(^Array); wrapped { arr_delete(vm, a, i); return }
         _, data := o.props[key]; _, getter := o.getters[key]; _, setter := o.setters[key]
         if (data || getter || setter) && .Configurable not_in prop_attrs(o, key) { throw_type_error(vm, "Cannot delete property"); return }
         oremove(o, key); delete_key(&o.getters, key); delete_key(&o.setters, key)
@@ -3288,4 +3337,54 @@ arr_live_iterator :: proc(vm: ^Interp, src: Value, kind: int) -> Value {
     it.props["_source"] = src
     it.props["_kind"] = f64(kind)
     return it
+}
+
+@(private = "file")
+array_species_get :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return this }
+
+@(private = "file")
+array_is_array :: proc(v: Value) -> bool {
+    #partial switch o in v {
+    case ^Array: return !o.is_arguments
+    case ^Object: return array_is_array(o.prim) if o.prim != nil else false
+    }
+    return false
+}
+
+// ArraySpeciesCreate: constructor/species reads occur only for actual arrays.
+@(private = "file")
+array_species_create :: proc(vm: ^Interp, original: Value, length: int) -> Value {
+    ctor: Value
+    if array_is_array(original) {
+        ctor = get_member(vm, original, "constructor")
+        if vm.throwing do return nil
+        if ctor != nil && !is_primitive(ctor) {
+            ctor = get_member(vm, ctor, vm.sym_species_key)
+            if vm.throwing do return nil
+            if _, null := ctor.(JS_Null); null do ctor = nil
+        }
+    }
+    if ctor == nil {
+        out := new_array(vm)
+        for i := 0; i < length; i += 1 do append(&out.items, nil)
+        return out
+    }
+    if fn, ok := ctor.(^Function); ok do return construct_object(vm, fn, []Value{f64(length)})
+    if o, ok := ctor.(^Object); ok && o.px_handler != nil do return proxy_construct(vm, o, []Value{f64(length)})
+    throw_type_error(vm, "Array species is not a constructor")
+    return nil
+}
+
+// CreateDataPropertyOrThrow defines own properties, bypassing inherited setters.
+@(private = "file")
+array_result_set :: proc(vm: ^Interp, out: Value, index: int, v: Value) {
+    if vm.throwing do return
+    if a, ok := out.(^Array); ok { set_index(vm, a, f64(index), v); return }
+    if o, ok := out.(^Object); ok {
+        if a, wrapped := o.prim.(^Array); wrapped { set_index(vm, a, f64(index), v); return }
+    }
+    desc := new_object(vm)
+    desc.props["value"] = v
+    desc.props["writable"] = true; desc.props["enumerable"] = true; desc.props["configurable"] = true
+    obj_define_property(vm, nil, []Value{out, f64(index), desc})
 }

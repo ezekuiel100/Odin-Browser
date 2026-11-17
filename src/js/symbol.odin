@@ -117,6 +117,16 @@ install_symbol :: proc(vm: ^Interp) {
     ctor.props["toPrimitive"]   = tp_sym
     vm.sym_toprimitive_key = key_string(vm, tp_sym) // ToPrimitive consulta esta chave 1º
 
+    species := new_symbol(vm, "Symbol.species")
+    ctor.props["species"] = species
+    vm.sym_species_key = symbol_key(vm, species)
+    spreadable := new_symbol(vm, "Symbol.isConcatSpreadable")
+    ctor.props["isConcatSpreadable"] = spreadable
+    vm.sym_concat_spreadable_key = symbol_key(vm, spreadable)
+    ctor.attrs = make(map[string]Prop_Attrs)
+    ctor.attrs["species"] = {}
+    ctor.attrs["isConcatSpreadable"] = {}
+
     // %SymbolPrototype% (M220). Symbol era o último primitivo SEM `.prototype` — a
     // mesma falta que o M127 consertou no Boolean, e pelo mesmo motivo: o padrão
     // `uncurryThis` de biblioteca lê o método NO PROTÓTIPO, não na instância.

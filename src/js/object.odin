@@ -250,6 +250,7 @@ own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string) {
         // só as que o autor pôs devem aparecer. ⚠️ isso esconde um `f.length = 5`
         // explícito; é o preço de não termos atributos de propriedade em Function.
         for k in x.props {
+            if a, explicit := x.attrs[k]; explicit && .Enumerable not_in a do continue
             if is_non_enumerable_key(k) do continue
             switch k {
             case "prototype", "name", "length", "caller", "arguments": continue
@@ -664,19 +665,15 @@ apply_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, source_desc: ^Obj
 // Object.defineProperty(obj, key, descriptor) — devolve obj.
 // package-visible: Reflect.defineProperty (proxy.odin) delega aqui.
 obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    // Alvo FUNÇÃO/construtor: libs fazem `Object.defineProperty(MyClass, k, ...)` e
-    // o core-js define símbolos bem-conhecidos em `Symbol` (que é ^Function) e relê
-    // o descritor. Sem isto o define no-opava → getOwnPropertyDescriptor devolvia
-    // undefined → "reading 'enumerable' of undefined". Função não tem `hidden`
-    // (enumerabilidade não é modelada nela) — grava value/get/set e pronto.
     if fn, fok := arg(args, 0).(^Function); fok {
         key := key_string(vm, arg(args, 1))
-        if desc, dok := arg(args, 2).(^Object); dok {
-            got := false
-            if g, ok := desc.props["get"].(^Function); ok { if fn.getters == nil do fn.getters = make(map[string]^Function); fn.getters[key] = g; got = true }
-            if s, ok := desc.props["set"].(^Function); ok { if fn.setters == nil do fn.setters = make(map[string]^Function); fn.setters[key] = s; got = true }
-            if v, has := desc.props["value"]; has && !got { if fn.props == nil do fn.props = make(map[string]Value); fn.props[key] = v }
-        }
+        desc, dok := arg(args, 2).(^Object)
+        if !dok { throw_type_error(vm, "Property descriptor must be an object"); return nil }
+        if fn.props == nil do fn.props = make(map[string]Value)
+        view := Object{props = fn.props, getters = fn.getters, setters = fn.setters, attrs = fn.attrs}
+        defer delete(view.korder)
+        apply_descriptor(vm, &view, key, desc)
+        fn.props = view.props; fn.getters = view.getters; fn.setters = view.setters; fn.attrs = view.attrs
         return fn
     }
     o, ok := arg(args, 0).(^Object)
@@ -704,24 +701,13 @@ obj_define_properties :: proc(vm: ^Interp, this: Value, args: []Value) -> Value 
 // Object.getOwnPropertyDescriptor(obj, key) — descritor ou undefined (nil).
 // package-visible: Reflect.getOwnPropertyDescriptor (proxy.odin) delega aqui.
 obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    // Alvo FUNÇÃO/construtor (Symbol, MyClass, ...): lê value/get/set das props/
-    // getters/setters estáticos. enumerable/configurable = true (aproximação:
-    // função não modela enumerabilidade). Espelha o defineProperty acima.
     if fn, fok := arg(args, 0).(^Function); fok {
         key := key_string(vm, arg(args, 1))
-        if fn.getters != nil { if g, ok := fn.getters[key]; ok {
-            d := new_object(vm); d.props["get"] = g if g != nil else nil; d.props["set"] = nil
-            if fn.setters != nil { if s, sok := fn.setters[key]; sok do d.props["set"] = s if s != nil else nil }
-            d.props["enumerable"] = true; d.props["configurable"] = true; return d
-        }}
-        if fn.setters != nil { if s, ok := fn.setters[key]; ok {
-            d := new_object(vm); d.props["get"] = nil; d.props["set"] = s if s != nil else nil
-            d.props["enumerable"] = true; d.props["configurable"] = true; return d
-        }}
-        if fn.props != nil { if v, ok := fn.props[key]; ok {
-            d := new_object(vm); d.props["value"] = v; d.props["writable"] = true
-            d.props["enumerable"] = true; d.props["configurable"] = true; return d
-        }}
+        _, data := fn.props[key]; _, getter := fn.getters[key]; _, setter := fn.setters[key]
+        if data || getter || setter {
+            view := Object{props = fn.props, getters = fn.getters, setters = fn.setters, attrs = fn.attrs}
+            return obj_get_own_property_descriptor(vm, nil, []Value{&view, arg(args, 1)})
+        }
         if key == "name" || key == "length" {
             d := new_object(vm)
             d.props["value"] = get_member(vm, fn, key)
@@ -870,11 +856,9 @@ obj_group_by :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // getters/setters de defineProperty; suficiente p/ o feature-detect do core-js).
 @(private = "file")
 obj_property_is_enumerable :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    o, ok := this.(^Object)
-    if !ok do return false
-    name := key_string(vm, arg(args, 0))
-    if _, has := o.props[name]; !has do return false
-    return .Enumerable in prop_attrs(o, name) // era `true` p/ toda prop própria
+    d := obj_get_own_property_descriptor(vm, nil, []Value{this, arg(args, 0)})
+    if desc, ok := d.(^Object); ok do return truthy(desc.props["enumerable"])
+    return false
 }
 
 // Object.prototype.valueOf(): devolve o próprio objeto.

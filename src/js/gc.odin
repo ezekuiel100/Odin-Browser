@@ -336,6 +336,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
     for f in vm.all_funcs {
         if g.seen[rawptr(f)] { vm.all_funcs[live_all_funcs] = f; live_all_funcs += 1; continue }
 
+        delete(f.attrs)
         delete(f.props)
         if f.bind_args != nil do delete(f.bind_args)
         if f.getters != nil do delete(f.getters)
