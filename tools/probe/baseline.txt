@@ -53,7 +53,6 @@ dom|rede/dados|Worker / SharedWorker
 lang|array|Array.fromAsync
 lang|array|holes: forEach pula
 lang|array|indexOf/lastIndexOf
-lang|array|length truncante
 lang|array|toSorted / toReversed
 lang|array|toSpliced()
 lang|array|with()

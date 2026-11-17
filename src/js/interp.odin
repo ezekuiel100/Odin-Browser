@@ -2290,6 +2290,10 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) {
         if o.set != nil {
             if o.set(vm, o, name, val) do return
         }
+        // subclasse de Array (M136): `this.length = 0` age no array embrulhado
+        if name == "length" && o.prim != nil {
+            if a, isarr := o.prim.(^Array); isarr { array_set_length(vm, a, val); return }
+        }
         // setter na cadeia, NÍVEL a NÍVEL (espelho do get_member): uma data
         // property num nível mais próximo sombreia setter herdado — a escrita
         // vira own em vez de invocar o set de um ancestral.
@@ -2322,11 +2326,40 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) {
         if name == "lastIndex" do o.last_index = as_int(val) // p/ loops de exec global
     case ^Array:
         // prop não-índice num array (m.index custom, marcações de libs); índices
-        // inteiros passam por set_index, "length" segue read-only (aproximação)
-        if name == "length" do return
+        // inteiros passam por set_index.
+        if name == "length" { array_set_length(vm, o, val); return }
         if o.props == nil do o.props = make(map[string]Value)
         o.props[name] = val
     }
+}
+
+// `arr.length = v` (ArraySetLength, spec 10.4.2.4): trunca ou estende. Antes a escrita
+// era IGNORADA — `buf.length = 0` (o idioma clássico de reuso de buffer) não limpava nada.
+// A spec coage DUAS vezes (ToUint32 e ToNumber, cada uma com seu valueOf) e exige que
+// concordem, senão RangeError: -1, 1.5, NaN e 2^32 são inválidos.
+// Aproximação: o motor não tem buracos, então estender preenche com undefined (o mesmo
+// que `arr[N] = x` já faz em set_index), e frozen/sealed ignoram a escrita (sloppy).
+// package-visible: Reflect.set/defineProperty podem reusar.
+array_set_length :: proc(vm: ^Interp, o: ^Array, val: Value) {
+    u := to_number(vm, val)
+    if vm.throwing do return
+    n := to_number(vm, val)
+    if vm.throwing do return
+    // ToUint32(u) == n  ⇔  n é inteiro em [0, 2^32) (u e n vêm da mesma coerção)
+    u32ok := u == u && math.trunc(u) == u && u >= 0 && u < 4294967296
+    if !u32ok || n != u {
+        vm.thrown = mk_error(vm, "RangeError", "Invalid array length"); vm.throwing = true
+        return
+    }
+    if o.frozen || o.sealed do return
+    new_len := int(n)
+    if new_len <= len(o.items) {
+        resize(&o.items, new_len)
+        return
+    }
+    // mesma guarda de set_index: `a.length = 4e9` alocaria GBs de undefined
+    if new_len > 100_000_000 do return
+    for len(o.items) < new_len do append(&o.items, nil)
 }
 
 // package-visible: proxy.odin (default get/Reflect.get) reusa.
