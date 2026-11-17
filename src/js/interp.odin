@@ -416,6 +416,8 @@ Interp :: struct {
     pump_depth:     int,   // profundidade de vm_pump_timers (await dentro de callback re-entra no pump)
     dead_timer_ids: map[int]bool, // ids cancelados por clearTimeout DURANTE um pump (o disparo pendente é pulado); limpo ao sair do pump raiz
     parse_recoveries: int, // recuperações silenciosas acumuladas (lexer+parser) — testes exigem 0 (check_parse_recoveries)
+    syntax_errors: int, // fontes REJEITADAS por SyntaxError (não executaram) — cada um tem nota em parse_notes
+                        // (índice = parse_recoveries + syntax_errors). Testes exigem 0 também.
     parse_notes: [8]Parse_Recovery, // detalhe das primeiras (diagnóstico)
     uncaught_log:   [dynamic]string, // mensagens das exceções que chegaram ao topo sem catch (clonadas;
                                      // teto UNCAUGHT_LOG_MAX p/ um setInterval que lança não crescer sem fim).
@@ -2639,7 +2641,13 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
                 if src, ok := val.(^Array); ok {
                     for j := i; j < len(src.items); j += 1 do append(&rest.items, src.items[j])
                 }
-                bind_one(vm, env, el.name, rest, declare, is_const)
+                if el.left != nil && el.left.kind == .Pattern {
+                    bind_pattern(vm, el.left, rest, env, declare, is_const) // [...[a, b]]
+                } else if el.left != nil {
+                    write_target(vm, el.left, rest, env) // [...o.x] = v (só expressão)
+                } else {
+                    bind_one(vm, env, el.name, rest, declare, is_const)
+                }
             }
             continue
         }
@@ -2675,7 +2683,15 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
 @(private = "file")
 for_of_run_body :: proc(vm: ^Interp, n: ^Node, env: ^Env, v: Value, my_label: string) -> (stop: bool) {
     iter_env := new_env(vm, env)
-    if n.stat {
+    if n.third != nil {
+        // alvo de ATRIBUIÇÃO sem declaração: `for (o.k in obj)` / `for ([a, b] of pares)`
+        if n.third.kind == .Pattern {
+            bind_pattern(vm, n.third, v, env, declare = false)
+        } else {
+            write_target(vm, n.third, v, env)
+        }
+        if vm.throwing do return true
+    } else if n.stat {
         // for (var x of/in ...): function-scoped — atribui à var JÁ ÍÇADA no escopo
         // de função (mesmo slot em todas as iterações; vaza p/ fora com o último
         // valor). env_assign sobe a cadeia até achar o binding hoisted.
@@ -4982,15 +4998,24 @@ vm_eval_source_global :: proc(vm: ^Interp, src: string) -> Value {
 vm_eval_source_in :: proc(vm: ^Interp, src: string, env: ^Env) -> Value {
     owned := strings.clone(src)
     append(&vm.owned_sources, owned)
-    toks, tok_strings, _ := tokenize(owned)
+    toks, tok_strings, _, lerr := tokenize(owned)
     defer delete(toks)
     for s in tok_strings do append(&vm.owned_strings, s)
     delete(tok_strings)
-    p := Parser{ toks = toks[:], src_url = vm.base_url }
+    p := Parser{ toks = toks[:], src_url = vm.base_url, src = owned, is_eval = true }
     prog := parse_program(&p)
     append(&vm.all_asts, prog)
     for s in p.owned_strings do append(&vm.owned_strings, s)
     delete(p.owned_strings)
+    // erro de sintaxe: eval/Function() LANÇA SyntaxError e não executa nada (antes
+    // rodava o que o parser tolerante conseguiu montar). Não entra em syntax_errors:
+    // é exceção capturável do próprio script (feature-detect por `try { eval(...) }`).
+    if msg, _, bad := pick_syntax_error(&p, lerr); bad {
+        vm.thrown = mk_error(vm, "SyntaxError", msg)
+        vm.throwing = true
+        delete(p.err_msg)
+        return nil
+    }
     return eval(vm, prog, env)
 }
 
@@ -5012,7 +5037,7 @@ vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil) -> Value {
     owned := strings.clone(src)
     append(&vm.owned_sources, owned)
 
-    toks, tok_strings, bad_chars := tokenize(owned)
+    toks, tok_strings, bad_chars, lerr := tokenize(owned, vm.current_module != nil)
     defer delete(toks)
     // strings decodificadas de escapes: a AST as referencia, então o vm assume
     // a posse (liberadas junto com owned_strings no vm_destroy)
@@ -5020,7 +5045,7 @@ vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil) -> Value {
     delete(tok_strings)
     // URL do que está sendo parseado: os nós de import()/import.meta guardam este
     // referrer, em vez de perguntar quem está correndo na HORA da chamada (M137).
-    p := Parser{ toks = toks[:], src_url = vm.current_module != nil ? vm.current_module.url : vm.base_url }
+    p := Parser{ toks = toks[:], src_url = vm.current_module != nil ? vm.current_module.url : vm.base_url, src = owned, is_module = vm.current_module != nil }
     when JSPROF { t_parse := time.tick_now() }
     prog := parse_program(&p)
     when JSPROF { g_prof.ms_parse += time.duration_milliseconds(time.tick_since(t_parse)) }
@@ -5032,18 +5057,24 @@ vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil) -> Value {
 
     // recuperações silenciosas (lexer + parser) — acumuladas no vm p/ o modo
     // estrito dos testes (check_parse_recoveries) e p/ diagnóstico de sites
-    if bad_chars > 0 {
-        if vm.parse_recoveries < len(vm.parse_notes) {
-            vm.parse_notes[vm.parse_recoveries] = Parse_Recovery{what = "caractere(s) desconhecido(s) ignorado(s) no lexer"}
+    // (o parser não recupera mais em silêncio: p.recoveries só conta o erro de
+    // sintaxe, que vai abaixo — por isso não soma aqui)
+    _ = bad_chars
+
+    // ERRO DE SINTAXE: o fonte inteiro é rejeitado, nada executa (spec: early error).
+    // Antes o parser trocava o trecho inválido por `0` e o script rodava
+    // miscompilado; agora lança SyntaxError como um navegador de verdade.
+    if msg, off, bad := pick_syntax_error(&p, lerr); bad {
+        report_syntax_error(vm, owned, msg, off, &p)
+        delete(p.err_msg)
+        if m := vm.current_module; m != nil {
+            m.evaluation = promise_new(vm)
+            m.state = .Failed
+            m.error = vm.thrown
+            promise_settle(vm, m.evaluation, PROMISE_REJECTED, vm.thrown)
         }
-        vm.parse_recoveries += 1
+        return nil
     }
-    for i in 0 ..< min(p.recoveries, len(p.rec_notes)) {
-        if vm.parse_recoveries + i < len(vm.parse_notes) {
-            vm.parse_notes[vm.parse_recoveries + i] = p.rec_notes[i]
-        }
-    }
-    vm.parse_recoveries += p.recoveries
 
     vm.steps = 0 // watchdog: nova tarefa síncrona
     vm.call_depth = 0
@@ -5073,6 +5104,35 @@ vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil) -> Value {
     return result
 }
 
+// Escolhe o erro de sintaxe a relatar: o do lexer ou o do parser, o que vier
+// PRIMEIRO no fonte (o V8 tokeniza sob demanda, então o 1º em ordem de fonte vence).
+pick_syntax_error :: proc(p: ^Parser, lerr: Lex_Error) -> (msg: string, off: int, bad: bool) {
+    if lerr.msg != "" && (!p.err || lerr.off <= p.err_off) do return lerr.msg, lerr.off, true
+    if p.err do return p.err_msg, p.err_off, true
+    return "", 0, false
+}
+
+// Lança o SyntaxError de um fonte rejeitado e guarda a nota de diagnóstico
+// (mensagem + linha:coluna + trecho) p/ o --diagnose e o modo estrito dos testes.
+report_syntax_error :: proc(vm: ^Interp, src, msg: string, off: int, p: ^Parser) {
+    line, col := src_line_col(src, off)
+    idx := vm.parse_recoveries + vm.syntax_errors
+    if idx < len(vm.parse_notes) {
+        lo := max(0, off - 40)
+        hi := min(len(src), off + 40)
+        snippet := fmt.tprintf("%d:%d: %s", line, col, src[lo:hi])
+        sn := strings.clone(snippet); append(&vm.owned_strings, sn)
+        mc := strings.clone(msg); append(&vm.owned_strings, mc)
+        vm.parse_notes[idx] = Parse_Recovery{pos = off, kind = .EOF, text = sn, what = mc}
+    }
+    vm.syntax_errors += 1
+    vm.thrown = mk_error(vm, "SyntaxError", msg)
+    vm.throwing = true
+    when ODIN_TEST {
+        fmt.eprintfln("[js] SyntaxError: %s (linha %d, coluna %d)", msg, line, col)
+    }
+}
+
 // Modo estrito dos TESTES (compilado só com `odin test`): código de teste é
 // sempre JS válido, então qualquer recuperação silenciosa = a engine miscompilou
 // sintaxe sem avisar — a classe de bug mais difícil de achar (auditoria
@@ -5083,14 +5143,16 @@ check_parse_recoveries :: proc(vm: ^Interp, src: string) {
     when !ODIN_TEST {
         return
     }
-    if vm.parse_recoveries == 0 do return
-    fmt.eprintfln("parse com %d recuperação(ões) silenciosa(s):", vm.parse_recoveries)
-    for i in 0 ..< min(vm.parse_recoveries, len(vm.parse_notes)) {
+    total := vm.parse_recoveries + vm.syntax_errors
+    if total == 0 do return
+    fmt.eprintfln("parse com %d erro(s) de sintaxe / recuperação(ões):", total)
+    for i in 0 ..< min(total, len(vm.parse_notes)) {
         n := vm.parse_notes[i]
         fmt.eprintfln("  [%d] %s — token #%d %v %q", i, n.what, n.pos, n.kind, n.text)
     }
     fmt.eprintfln("  fonte: %q", src[:min(len(src), 300)])
-    panic("teste parseou JS com recuperação silenciosa (sintaxe não suportada foi engolida)")
+    when #config(PARSEFAIL_LOG, false) { fmt.eprintln("[PARSEFAIL]"); return }
+    panic("teste parseou JS com erro de sintaxe (o fonte foi rejeitado com SyntaxError)")
 }
 
 // Execução transitória (cria vm, roda, destrói). Usada pelos testes do núcleo.

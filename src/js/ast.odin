@@ -151,6 +151,7 @@ free_ast :: proc(n: ^Node) {
     free_ast(n.right)
     free_ast(n.third)
     free_ast(n.callee)
+    free_ast(n.rest_pat) // rest desestruturado (`...[t]`): antes vazava
     for c in n.body do free_ast(c)
     delete(n.body)
     for pp in n.param_pats do free_ast(pp)

@@ -686,11 +686,14 @@ diag_write_json :: proc(path, url: string, root: ^Box, page_w: f32, vm: ^jspkg.I
         }
     }
     strings.write_string(&sb, "]")
-    fmt.sbprintf(&sb, ",\"js_parse_recoveries\":%d", vm != nil ? vm.parse_recoveries : 0)
+    // js_parse_recoveries: fontes com problema de PARSE (hoje = SyntaxError; a
+    // recuperação silenciosa não existe mais). js_syntax_errors: só os rejeitados.
+    fmt.sbprintf(&sb, ",\"js_parse_recoveries\":%d", vm != nil ? vm.parse_recoveries + vm.syntax_errors : 0)
+    fmt.sbprintf(&sb, ",\"js_syntax_errors\":%d", vm != nil ? vm.syntax_errors : 0)
 
     strings.write_string(&sb, ",\"js_parse_notes\":[")
     if vm != nil {
-        n_notes := min(vm.parse_recoveries, len(vm.parse_notes))
+        n_notes := min(vm.parse_recoveries + vm.syntax_errors, len(vm.parse_notes))
         for i in 0 ..< n_notes {
             if i > 0 do strings.write_string(&sb, ",")
             rn := vm.parse_notes[i]

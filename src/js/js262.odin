@@ -13,9 +13,8 @@ package js
 // Linha de saída (stdout, sempre exit 0 — quem julga é o .ps1):
 //   __262__ status=pass  rec=<n>
 //   __262__ status=throw name=<Nome> phase=runtime source=<index> rec=<n> msg=...
-// Recovery is diagnostic only. vm_exec has no genuine parse-error signal yet;
-// parse negatives must fail until that signal exists, even for SyntaxError thrown
-// by the test body. source distinguishes harness failures from test failures.
+// phase=parse: o fonte foi rejeitado pelo parser (SyntaxError antes de executar);
+// phase=runtime: lançou durante a execução. source distingue harness de teste.
 
 import "core:os"
 import "core:fmt"
@@ -39,14 +38,22 @@ run_js262 :: proc(sources: []string) -> Js262_Result {
     defer vm_free(vm)
 
     failed_source := -1
+    phase := "runtime"
     for src, i in sources {
+        before := vm.syntax_errors
         _ = vm_exec(vm, src)
-        if vm.throwing { failed_source = i; break }
+        if vm.throwing {
+            failed_source = i
+            // o fonte foi REJEITADO antes de executar (early error de verdade):
+            // é a fase `parse` do frontmatter `negative:`
+            if vm.syntax_errors > before do phase = "parse"
+            break
+        }
     }
 
-    // vm_exec currently exposes runtime throws only. Parser recovery is not
-    // evidence of a genuine SyntaxError and must never satisfy parse negatives.
-    res := Js262_Result{ recoveries = vm.parse_recoveries, phase = "runtime", source = failed_source }
+    // `rec` segue medindo recuperação SILENCIOSA (que não deve mais existir); um
+    // SyntaxError de verdade sai como phase=parse, nunca como recuperação.
+    res := Js262_Result{ recoveries = vm.parse_recoveries, phase = phase, source = failed_source }
     if vm.throwing {
         res.threw = true
         res.err_name, res.err_msg = describe_thrown(vm)
@@ -138,5 +145,52 @@ js262_main :: proc(paths: []string) -> int {
     } else {
         fmt.printfln("__262__ status=pass rec=%d", res.recoveries)
     }
+    return 0
+}
+
+// Modo CLI `--jsparse [m:|s:]arquivo ...` — SÓ PARSEIA (não executa) e imprime uma
+// linha por arquivo: `OK <arq>` ou `ERR <arq> <linha>:<col> <mensagem>`. Prefixo
+// `m:` = goal Module; `s:` = código strict (prefixa "use strict";). Serve para medir
+// o parser em lote: falso positivo em bundle real (deve ser 0) e acerto nos
+// negativos de sintaxe do Test262 — sem o custo nem o risco de executar.
+js_parse_main :: proc(paths: []string) -> int {
+    n_ok, n_err := 0, 0
+    for arg in paths {
+        path := arg
+        is_module, strict := false, false
+        if strings.has_prefix(path, "m:") { is_module = true; path = path[2:] }
+        if strings.has_prefix(path, "s:") { strict = true; path = path[2:] }
+        data, rerr := os.read_entire_file_from_path(path, context.allocator)
+        if rerr != nil {
+            fmt.printfln("IOERR %s", path)
+            continue
+        }
+        src := string(data)
+        if strict {
+            src = strings.concatenate({"\"use strict\";\n", src})
+            delete(data)
+        }
+        toks, owned, _, lerr := tokenize(src, is_module)
+        p := Parser{toks = toks[:], src = src, is_module = is_module}
+        prog := parse_program(&p)
+        if msg, off, bad := pick_syntax_error(&p, lerr); bad {
+            line, col := src_line_col(src, off)
+            fmt.printfln("ERR %s %d:%d %s", path, line, col, msg)
+            n_err += 1
+        } else {
+            fmt.printfln("OK %s", path)
+            n_ok += 1
+        }
+        delete(p.err_msg)
+        free_ast(prog)
+        for s in p.owned_strings do delete(s)
+        delete(p.owned_strings)
+        for s in owned do delete(s)
+        delete(owned)
+        delete(toks)
+        delete(src)
+        free_all(context.temp_allocator)
+    }
+    fmt.printfln("__jsparse__ ok=%d err=%d", n_ok, n_err)
     return 0
 }

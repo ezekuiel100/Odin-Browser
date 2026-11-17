@@ -145,12 +145,23 @@ test_numero_binario :: proc(t: ^testing.T) {
 
 @(test)
 test_export_default :: proc(t: ^testing.T) {
-    // `export default expr` avalia a expressão; o resto do programa segue
-    testing.expect_value(t, as_number(run(`var x = 5; export default x; x + 1`)), f64(6))
+    // `export default expr` avalia a expressão; o resto do MÓDULO segue. Em script
+    // clássico `export` é SyntaxError (antes era aceito como no-op).
+    vm := vm_create()
+    defer vm_free(vm)
+    vm_run(vm, "var box = {};")
+    vm_run_module(vm, `var x = 5; export default x; box.v = x + 1`)
+    testing.expect_value(t, as_number(vm_run(vm, "box.v")), f64(6))
+    _, rejected := early_error_of(`var x = 5; export default x; x + 1`)
+    testing.expect(t, rejected, "export em script clássico devia ser SyntaxError")
 }
 
 @(test)
 test_export_lista_noop :: proc(t: ^testing.T) {
-    // `export {a, b}` não quebra os statements seguintes
-    testing.expect_value(t, as_number(run(`var a = 1, b = 2; export {a, b}; a + b`)), f64(3))
+    // `export {a, b}` não quebra os statements seguintes (em MÓDULO)
+    vm := vm_create()
+    defer vm_free(vm)
+    vm_run(vm, "var box = {};")
+    vm_run_module(vm, `var a = 1, b = 2; export {a, b}; box.v = a + b`)
+    testing.expect_value(t, as_number(vm_run(vm, "box.v")), f64(3))
 }

@@ -70,7 +70,9 @@ S("do-while", "(function(){ var i = 0; do { i++ } while (i < 3); return i })()",
 S("with", "(function(){ var o = { a: 5 }; with (o) { return a } })()", 5);
 S("getter herdado por classe", "(function(){ class A { get x(){ return 1 } }; class B extends A {}; return new B().x })()", 1);
 S("regex literal com flags", "/a/gi.flags", "gi");
-S("dynamic import (sintaxe)", "typeof import", "undefined");
+// `typeof import` é SyntaxError na spec (import não é identificador): a forma
+// antiga só "passava" porque o parser engolia o erro. Testa a sintaxe de verdade.
+S("dynamic import (sintaxe)", "typeof function(){ return import('./x.js') }", "function");
 S("import.meta fora de modulo", "(function(){ try { eval('import.meta'); return 'ok' } catch (e) { return 'throw' } })()", "throw");
 S("using declaration (ES2026)", "(function(){ try { eval('{ using x = { [Symbol.dispose](){} }; }'); return 'ok' } catch (e) { return 'throw' } })()", "ok");
 S("decorators", "(function(){ try { eval('class A { @dec m(){} }'); return 'ok' } catch (e) { return 'throw' } })()", "ok");

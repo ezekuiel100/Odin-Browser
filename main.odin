@@ -165,6 +165,10 @@ main :: proc() {
     // Modo Test262: browser.exe --js262 f1.js [f2.js ...]
     // Executa os arquivos JS em ordem numa VM única (harness + corpo do teste) e
     // imprime uma linha de veredito. Curadoria/julgamento ficam no test262.ps1.
+    // Modo parse-only: browser.exe --jsparse [m:|s:]f1.js ... (ver js262.odin)
+    if len(args) >= 3 && args[1] == "--jsparse" {
+        os.exit(js.js_parse_main(args[2:]))
+    }
     if len(args) >= 3 && args[1] == "--js262" {
         os.exit(js.js262_main(args[2:]))
     }

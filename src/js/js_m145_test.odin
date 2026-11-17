@@ -82,7 +82,7 @@ m145_escape_malformado_nao_trava :: proc(t: ^testing.T) {
     // JS de um teste parseia com recuperação silenciosa, e aqui a recuperação é
     // justamente o que se quer exercitar. (Se o guarda sumir, este teste PENDURA
     // em vez de falhar — é o sintoma do bug que ele cobre.)
-    toks, owned, bad := tokenize("var ok = 1; \\uZZZZ; ok")
+    toks, owned, bad, _ := tokenize("var ok = 1; \\uZZZZ; ok")
     defer { delete(toks); for s in owned do delete(s); delete(owned) }
     testing.expect(t, bad > 0, "a barra malformada devia contar como caractere descartado")
     testing.expect(t, len(toks) > 0, "o lexer devia ter terminado e emitido tokens")

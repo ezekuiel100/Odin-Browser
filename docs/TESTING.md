@@ -75,4 +75,21 @@ o rehash/clear usava o alocador errado e o header (`len`) dessincronizava dos
 buckets. M246 moveu o dado para `Computed.svg_css` (dono = `free_styles`); o
 portão é `test_svg_css_dono_e_o_computed` (50 passadas + free_styles pai/filho).
 
-Test262: o runner executa variantes normal/estrita (respeitando raw, noStrict e onlyStrict), ignora fixtures e registra modos module/async/CanBlock como SKIP. Negativos exigem tipo, fase e origem no corpo do teste; recuperacoes nao aprovam nenhum teste. O protocolo atual do motor identifica apenas runtime: negativos parse/resolution falham ate existir suporte real de deteccao dessas fases. Os 170/299 antigos nao sao uma medicao atual. Regressoes do veredito: powershell -File tests/test262-runner.ps1.
+Test262: o runner executa variantes normal/estrita (respeitando raw, noStrict e onlyStrict), ignora fixtures e registra modos module/async/CanBlock como SKIP. Negativos exigem tipo, fase e origem no corpo do teste; recuperacoes nao aprovam nenhum teste. O motor identifica as fases runtime e parse (`phase=parse` = o fonte foi rejeitado com SyntaxError antes de executar); negativos de resolution seguem falhando. Os 170/299 antigos nao sao uma medicao atual. Regressoes do veredito: powershell -File tests/test262-runner.ps1.
+
+## Erros de sintaxe precoces (parser)
+
+`browser.exe --jsparse [m:|s:]arq.js ...` só PARSEIA (não executa) e imprime
+`OK <arq>` ou `ERR <arq> <linha>:<col> <mensagem>` por arquivo (`m:` = goal Module,
+`s:` = strict). É a ferramenta para medir o parser em lote, nas duas direções:
+
+- **falso positivo** (JS válido rejeitado): rode sobre bundles reais (React, Vue,
+  TypeScript, Babel, pdf.js, three.js...). Tem de dar **zero** — um SyntaxError
+  indevido mata o script INTEIRO da página.
+- **acerto**: os negativos `phase: parse` de `test/language` do Test262.
+
+O parser não recupera mais de sintaxe inválida: todo problema de parse rejeita o
+fonte com SyntaxError (mensagens no formato do V8). Em teste (`odin test`), um
+SyntaxError em JS que o teste julgava válido entra em pânico
+(`check_parse_recoveries`); com `-define:PARSEFAIL_LOG=true` ele só registra
+`[PARSEFAIL]`, para listar todos os casos numa rodada só.

@@ -48,8 +48,10 @@ test_escape_unicode_em_template :: proc(t: ^testing.T) {
 
 @(test)
 test_escape_malformado_literal :: proc(t: ^testing.T) {
-    // \u sem 4 dígitos hex: mantém comportamento antigo (emite literal, sem crash)
-    testing.expect_value(t, as_number(run("'\\uZZ'.length")), f64(3))
+    // \u sem 4 dígitos hex: SyntaxError (antes emitia o literal e seguia)
+    msg, rejected := early_error_of("'\\uZZ'.length")
+    testing.expect(t, rejected, "\\uZZ malformado devia rejeitar o fonte")
+    testing.expect_value(t, msg, "Invalid hexadecimal escape sequence")
 }
 
 // ── ASI: produções restritas ──────────────────────────────────────────────────
@@ -89,8 +91,10 @@ test_asi_postfix :: proc(t: ^testing.T) {
 
 @(test)
 test_asi_throw :: proc(t: ^testing.T) {
-    // `throw\nx` não pode engolir a linha seguinte (spec: SyntaxError; aqui: throw undefined)
-    testing.expect_value(t, as_number(run("var ran=0; try { throw\nran=1 } catch(e) {}\nran")), f64(0))
+    // `throw\nx` é SyntaxError (produção restrita) — antes virava `throw undefined`
+    msg, rejected := early_error_of("var ran=0; try { throw\nran=1 } catch(e) {}\nran")
+    testing.expect(t, rejected, "throw + quebra de linha devia ser SyntaxError")
+    testing.expect_value(t, msg, "Illegal newline after throw")
 }
 
 @(test)
