@@ -21,29 +21,66 @@ install_json :: proc(vm: ^Interp) {
 
 // ── stringify ───────────────────────────────────────────────────────────────
 
+// Estado de uma chamada de JSON.stringify (spec 25.5.2: ReplacerFunction,
+// PropertyList, gap e a pilha de ciclo).
+@(private = "file")
+Json_Out :: struct {
+    vm:        ^Interp,
+    sb:        strings.Builder,
+    seen:      map[rawptr]bool,
+    replacer:  ^Function,        // 2º arg função: chamado em TODA propriedade, holder como this
+    plist:     [dynamic]string,  // 2º arg array: só essas chaves, nessa ordem (sem repetição)
+    has_plist: bool,
+    indent:    string,
+}
+
 @(private) // visivel no pacote: fetch_api.odin reusa p/ Response.json()
 json_stringify_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    v := arg(args, 0)
-    if !json_serializable(v) do return nil // stringify(undefined) -> undefined
+    st := Json_Out{vm = vm}
+    strings.builder_init(&st.sb)
+    defer strings.builder_destroy(&st.sb)
+    defer delete(st.seen)
+    defer delete(st.plist)
+    // 2º arg (replacer): função, ou lista de chaves. Antes era IGNORADO por inteiro —
+    // `JSON.stringify(o, ['a'])` e `JSON.stringify(o, (k,v)=>…)` saíam iguais a sem ele.
+    #partial switch r in arg(args, 1) {
+    case ^Function:
+        st.replacer = r
+    case ^Array:
+        st.has_plist = true
+        for it in r.items {
+            k: string
+            #partial switch x in it {
+            case string: k = x
+            case f64:    k = own_str_raw(vm, key_string(vm, x)) // [1] lista a chave "1"
+            case:        continue // demais tipos são ignorados (spec)
+            }
+            dup := false
+            for e in st.plist do if e == k { dup = true; break }
+            if !dup do append(&st.plist, k)
+        }
+    }
     // 3º arg (space): número (0-10 espaços) ou string (até 10 chars) → pretty-print
-    indent := ""
     spaces := "          " // 10 espaços (máximo da spec)
     #partial switch sp in arg(args, 2) {
     case f64:
         n := as_int(sp)
         if n > 10 do n = 10
-        if n > 0 do indent = spaces[:n]
+        if n > 0 do st.indent = spaces[:n]
     case string:
-        indent = len(sp) > 10 ? sp[:10] : sp
+        st.indent = len(sp) > 10 ? sp[:10] : sp
     }
-    sb: strings.Builder
-    strings.builder_init(&sb)
-    defer strings.builder_destroy(&sb)
-    seen: map[rawptr]bool
-    defer delete(seen)
-    json_write(vm, &sb, v, &seen, indent, 0)
-    if vm.throwing do return nil // circular
-    return own_str(vm, strings.to_string(sb))
+    v := arg(args, 0)
+    // o replacer recebe o objeto-holder como `this`: no topo, a spec cria `{"": v}`
+    holder: Value = nil
+    if st.replacer != nil {
+        w := new_object(vm)
+        oput(w, "", v)
+        holder = w
+    }
+    if !json_prop(&st, holder, "", v, 0) do return nil // undefined/função no topo → undefined
+    if vm.throwing do return nil
+    return own_str(vm, strings.to_string(st.sb))
 }
 
 // quebra de linha + indentação de `depth` níveis (só quando há indent)
@@ -53,124 +90,171 @@ json_nl_indent :: proc(sb: ^strings.Builder, indent: string, depth: int) {
     for _ in 0 ..< depth do strings.write_string(sb, indent)
 }
 
+// A chave como valor JS para toJSON/replacer. Índice de array chega como f64 e só
+// vira string quando alguém vai de fato recebê-la (evita alocar por elemento).
 @(private = "file")
-json_serializable :: proc(v: Value) -> bool {
-    if v == nil do return false // undefined
-    if _, isf := v.(^Function); isf do return false
-    return true
+json_key_value :: proc(vm: ^Interp, key: Value) -> Value {
+    if s, ok := key.(string); ok do return s
+    return own_str(vm, key_string(vm, key))
 }
 
+// SerializeJSONProperty (spec 25.5.2.2): toJSON → replacer → escreve. Devolve false
+// quando o valor final não é serializável (undefined, função, símbolo) e NADA foi
+// escrito — o chamador decide: em objeto a chave some, em array vira null.
 @(private = "file")
-json_write :: proc(vm: ^Interp, sb: ^strings.Builder, v: Value, seen: ^map[rawptr]bool, indent := "", depth := 0) {
-    v := v
-    // toJSON: a spec consulta o hook ANTES de serializar. Sem isto,
-    // `JSON.stringify(new Date)` devolvia `{}` em vez da string ISO — e todo payload
-    // de API com data saía vazio (Date.prototype.toJSON já existia e funcionava).
-    // Aplicado UMA vez aqui: o switch abaixo serializa o resultado direto, então um
-    // toJSON que devolve `this` não recursiona (os FILHOS passam por json_write de
-    // novo, que é o comportamento certo — cada um consulta o seu próprio toJSON).
-    if !is_primitive(v) {
-        if fn, ok := get_member(vm, v, "toJSON").(^Function); ok {
-            v = call_function(vm, fn, v, nil)
-            if vm.throwing do return
-            if !json_serializable(v) {
-                // toJSON devolveu undefined/função. A spec OMITE a chave; aqui o
-                // chamador já escreveu o nome, então "null" é o mal menor.
-                strings.write_string(sb, "null")
-                return
-            }
+json_prop :: proc(st: ^Json_Out, holder: Value, key: Value, value: Value, depth: int) -> bool {
+    vm := st.vm
+    value := value
+    // toJSON: consultado em objeto E em BigInt (BigInt.prototype.toJSON de polyfill).
+    // Sem isto `JSON.stringify(new Date)` devolvia `{}`.
+    _, is_big := value.(^BigInt)
+    if !is_primitive(value) || is_big {
+        if fn, ok := get_member(vm, value, "toJSON").(^Function); ok {
+            value = call_function(vm, fn, value, []Value{json_key_value(vm, key)})
+            if vm.throwing do return false
         }
     }
-    switch x in v {
+    if st.replacer != nil {
+        value = call_function(vm, st.replacer, holder, []Value{json_key_value(vm, key), value})
+        if vm.throwing do return false
+    }
+    sb := &st.sb
+    switch x in value {
+    case:
+        return false // undefined
+    case ^Function, ^Symbol:
+        return false
     case f64:
         if x != x || abs(x) == math.inf_f64(1) {
             strings.write_string(sb, "null") // NaN/Infinity viram null (como no JS)
         } else {
-            to_text(sb, v)
+            to_text(sb, value)
         }
     case bool:
-        to_text(sb, v)
+        to_text(sb, value)
     case string:
         json_write_quoted(sb, x)
     case JS_Null:
         strings.write_string(sb, "null")
     case ^Object:
-        if rawptr(x) in seen^ {
-            vm.thrown = mk_error(vm, "TypeError", "Converting circular structure to JSON")
-            vm.throwing = true
-            return
+        // subclasse de Array (M136): IsArray é true → serializa como array
+        if a, isarr := x.prim.(^Array); isarr {
+            json_array(st, x, a, depth)
+        } else {
+            json_object(st, x, depth)
         }
-        seen^[rawptr(x)] = true
-        strings.write_byte(sb, '{')
-        first := true
-        keys: [dynamic]string // ordem de inserção (spec), não a do map do Odin
-        defer delete(keys)
-        own_enum_keys(x, &keys)
-        for k in keys {
-            pv, has := x.props[k]
-            if !has do continue // chave só-getter: sem valor de dado p/ serializar
-            if !json_serializable(pv) do continue // undefined/função somem
-            if !first do strings.write_byte(sb, ',')
-            first = false
-            if indent != "" do json_nl_indent(sb, indent, depth + 1)
-            json_write_quoted(sb, k)
-            strings.write_byte(sb, ':')
-            if indent != "" do strings.write_byte(sb, ' ')
-            json_write(vm, sb, pv, seen, indent, depth + 1)
-            if vm.throwing do return
-        }
-        if !first && indent != "" do json_nl_indent(sb, indent, depth)
-        strings.write_byte(sb, '}')
-        delete_key(seen, rawptr(x))
     case ^Array:
-        if rawptr(x) in seen^ {
-            vm.thrown = mk_error(vm, "TypeError", "Converting circular structure to JSON")
-            vm.throwing = true
-            return
-        }
-        seen^[rawptr(x)] = true
-        strings.write_byte(sb, '[')
-        for it, i in x.items {
-            if i > 0 do strings.write_byte(sb, ',')
-            if indent != "" do json_nl_indent(sb, indent, depth + 1)
-            if json_serializable(it) {
-                json_write(vm, sb, it, seen, indent, depth + 1)
-                if vm.throwing do return
-            } else {
-                strings.write_string(sb, "null") // undefined em array vira null
-            }
-        }
-        if len(x.items) > 0 && indent != "" do json_nl_indent(sb, indent, depth)
-        strings.write_byte(sb, ']')
-        delete_key(seen, rawptr(x))
-    case ^Function:
-        // não serializável (filtrado antes); nada a escrever
-    case ^Regex:
-        strings.write_string(sb, "{}") // JSON.stringify(regex) === "{}" no JS
-    case ^Collection:
-        strings.write_string(sb, "{}") // JSON.stringify(new Map()/Set()) === "{}" no JS
-    case ^Symbol:
-        strings.write_string(sb, "null") // símbolo não é serializável (vira undefined→null aqui)
+        json_array(st, x, x, depth)
+    case ^Regex, ^Collection:
+        strings.write_string(sb, "{}") // sem props próprias enumeráveis: `{}` no JS
     case ^BigInt:
         // JSON.stringify(1n) LANÇA TypeError no JS
         vm.thrown = mk_error(vm, "TypeError", "Do not know how to serialize a BigInt")
         vm.throwing = true
     }
+    return true
 }
 
 @(private = "file")
+json_enter :: proc(st: ^Json_Out, p: rawptr) -> bool {
+    if p in st.seen {
+        st.vm.thrown = mk_error(st.vm, "TypeError", "Converting circular structure to JSON")
+        st.vm.throwing = true
+        return false
+    }
+    st.seen[p] = true
+    return true
+}
+
+// SerializeJSONObject: valores lidos por Get (getters RODAM — antes chave de accessor
+// era pulada e `{get a(){return 1}}` virava `{}`), na ordem de own_enum_keys ou da
+// PropertyList.
+@(private = "file")
+json_object :: proc(st: ^Json_Out, x: ^Object, depth: int) {
+    vm := st.vm
+    if !json_enter(st, rawptr(x)) do return
+    defer delete_key(&st.seen, rawptr(x))
+    sb := &st.sb
+    strings.write_byte(sb, '{')
+    keys: [dynamic]string
+    defer delete(keys)
+    if st.has_plist {
+        for k in st.plist do append(&keys, k)
+    } else {
+        own_enum_keys(x, &keys)
+    }
+    first := true
+    for k in keys {
+        pv := get_member(vm, x, k)
+        if vm.throwing do return
+        // escreve o prefixo já; se o valor não for serializável, desfaz até a marca
+        mark := len(sb.buf)
+        if !first do strings.write_byte(sb, ',')
+        if st.indent != "" do json_nl_indent(sb, st.indent, depth + 1)
+        json_write_quoted(sb, k)
+        strings.write_byte(sb, ':')
+        if st.indent != "" do strings.write_byte(sb, ' ')
+        if !json_prop(st, x, k, pv, depth + 1) {
+            if vm.throwing do return
+            resize(&sb.buf, mark) // undefined/função/símbolo: a chave SOME
+            continue
+        }
+        if vm.throwing do return
+        first = false
+    }
+    if !first && st.indent != "" do json_nl_indent(sb, st.indent, depth)
+    strings.write_byte(sb, '}')
+}
+
+// SerializeJSONArray: comprimento lido UMA vez (spec); `holder` é o valor JS do
+// array (o próprio ^Array, ou a instância da subclasse) — é o `this` do replacer.
+@(private = "file")
+json_array :: proc(st: ^Json_Out, holder: Value, a: ^Array, depth: int) {
+    vm := st.vm
+    if !json_enter(st, rawptr(a)) do return
+    defer delete_key(&st.seen, rawptr(a))
+    sb := &st.sb
+    strings.write_byte(sb, '[')
+    n := len(a.items)
+    for i in 0 ..< n {
+        if i > 0 do strings.write_byte(sb, ',')
+        if st.indent != "" do json_nl_indent(sb, st.indent, depth + 1)
+        // o replacer pode encolher o array no meio: índice sumido lê undefined
+        it: Value = i < len(a.items) ? a.items[i] : nil
+        if !json_prop(st, holder, f64(i), it, depth + 1) {
+            if vm.throwing do return
+            strings.write_string(sb, "null") // undefined/função em array vira null
+        }
+        if vm.throwing do return
+    }
+    if n > 0 && st.indent != "" do json_nl_indent(sb, st.indent, depth)
+    strings.write_byte(sb, ']')
+}
+
+// QuoteJSONString: todo controle < 0x20 é escapado (antes só \n \r \t — os demais
+// saíam CRUS e o resultado era JSON INVÁLIDO, que o próprio JSON.parse rejeitava).
+// ⚠️ surrogate solto não chega aqui: o lexer já o troca por U+FFFD ao montar a
+// string, então o `\udXXX` da spec (well-formed stringify) não é reproduzível.
+@(private = "file")
 json_write_quoted :: proc(sb: ^strings.Builder, s: string) {
+    HEX := "0123456789abcdef"
     strings.write_byte(sb, '"')
     for i := 0; i < len(s); i += 1 {
         c := s[i]
         switch c {
         case '"':  strings.write_string(sb, "\\\"")
         case '\\': strings.write_string(sb, "\\\\")
+        case '\b': strings.write_string(sb, "\\b")
+        case '\f': strings.write_string(sb, "\\f")
         case '\n': strings.write_string(sb, "\\n")
         case '\r': strings.write_string(sb, "\\r")
         case '\t': strings.write_string(sb, "\\t")
+        case 0x00 ..< 0x20:
+            strings.write_string(sb, "\\u00")
+            strings.write_byte(sb, HEX[c >> 4])
+            strings.write_byte(sb, HEX[c & 0xF])
         case:
-            strings.write_byte(sb, c) // demais controles: mantidos crus (simplificação)
+            strings.write_byte(sb, c)
         }
     }
     strings.write_byte(sb, '"')

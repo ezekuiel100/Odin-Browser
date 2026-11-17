@@ -224,13 +224,11 @@ m220_assign_de_objeto_continua_igual :: proc(t: ^testing.T) {
 
 @(test)
 m220_ordem_de_chave_com_ACCESSOR_diverge_do_chrome :: proc(t: ^testing.T) {
-    // ⚠️ NÃO é regressão deste marco — medido nos DOIS binários. Este motor guarda
-    // getters/setters num mapa à parte, então eles são enumerados DEPOIS das
-    // propriedades de dado: `{a:1, get b(){}, c:3}` dá `a,c,b` aqui e `a,b,c` no
-    // Chrome. O teste trava o comportamento REAL para que a divergência apareça se
-    // alguém mexer na ordem — e para não ser redescoberta como "bug novo".
+    // Este teste travava a DIVERGÊNCIA antiga (`a,c,b`: accessors num mapa à parte,
+    // enumerados depois dos dados). Desde 17/11/2026 os accessors entram no korder
+    // (okey_accessor) e a ordem bate com o Chrome.
     src := `Object.keys({ a: 1, get b(){ return 2 }, c: 3 }).join(",")`
-    testing.expect_value(t, run_s(src), "a,c,b")
+    testing.expect_value(t, run_s(src), "a,b,c")
 }
 
 // DEGRADAÇÃO CONHECIDA: `Object.assign` com destino Map/Set (`^Collection`) segue

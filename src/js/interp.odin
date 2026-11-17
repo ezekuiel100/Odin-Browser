@@ -1957,14 +1957,32 @@ prop_writable :: proc(o: ^Object, key: string) -> bool {
 }
 
 oput :: proc(o: ^Object, k: string, v: Value) {
-    if _, exists := o.props[k]; !exists do append(&o.korder, k)
+    if !okey_alive(o, k) do append(&o.korder, k)
     o.props[k] = v
+}
+
+// A chave existe como prop própria — de DADO ou ACCESSOR. A ordem de inserção da
+// spec (OrdinaryOwnPropertyKeys) não distingue os dois, mas getters/setters de
+// literal e de defineProperty não entravam no korder: `{get b(){}, c:1, a:1}` saía
+// `c,a,b` em Object.keys/JSON/for-in (e em ordem de MAP do Odin, não-determinística,
+// quando havia mais de um accessor).
+okey_alive :: proc(o: ^Object, k: string) -> bool {
+    if _, e := o.props[k]; e do return true
+    if o.getters != nil { if _, e := o.getters[k]; e do return true }
+    if o.setters != nil { if _, e := o.setters[k]; e do return true }
+    return false
+}
+
+// Registra a chave de um accessor que está sendo CRIADO na ordem de inserção.
+// Chamar ANTES de gravar em getters/setters (redefinir mantém a posição).
+okey_accessor :: proc(o: ^Object, k: string) {
+    if !okey_alive(o, k) do append(&o.korder, k)
 }
 
 // Remove uma data-prop mantendo korder coerente (re-inserir depois de deletar
 // deve ir p/ o FIM da ordem, como na spec).
 oremove :: proc(o: ^Object, k: string) {
-    if _, exists := o.props[k]; exists {
+    if okey_alive(o, k) {
         for kk, i in o.korder do if kk == k { ordered_remove(&o.korder, i); break }
     }
     delete_key(&o.props, k)
@@ -1984,12 +2002,17 @@ is_index_key :: proc(k: string) -> bool {
 // índices inteiros em ordem numérica crescente, depois as demais strings na
 // ordem de inserção (korder), depois sobras de escritas nativas diretas.
 own_enum_keys :: proc(o: ^Object, out: ^[dynamic]string) {
+    own_string_keys(o, out, false)
+}
+
+// Mesma ordem, com `all` = inclui as NÃO-enumeráveis (Object.getOwnPropertyNames).
+own_string_keys :: proc(o: ^Object, out: ^[dynamic]string, all: bool) {
     // Proxy: enumera as chaves do ALVO (aproximação do trap ownKeys — devolve o
     // conjunto certo p/ Object.keys/for-in; os VALORES ainda passam pelo trap get
     // porque obj_values/for-in leem via get_member(proxy,k)). O efeito colateral
     // de rastreio do ownKeys do Vue é pulado — ok p/ a 1ª renderização.
     if o.px_handler != nil {
-        if t, ok := o.px_target.(^Object); ok do own_enum_keys(t, out)
+        if t, ok := o.px_target.(^Object); ok do own_string_keys(t, out, all)
         return
     }
     if o.get == storage_get { // localStorage/sessionStorage: só as chaves armazenadas, em ordem
@@ -1997,9 +2020,9 @@ own_enum_keys :: proc(o: ^Object, out: ^[dynamic]string) {
         for k in st.keys do append(out, k)
         return
     }
-    emit :: proc(o: ^Object, k: string, seen: ^map[string]bool, out: ^[dynamic]string) {
+    emit :: proc(o: ^Object, k: string, seen: ^map[string]bool, out: ^[dynamic]string, all: bool) {
         if is_non_enumerable_key(k) do return // símbolo ou campo privado #x
-        if o.attrs != nil && .Enumerable not_in prop_attrs(o, k) do return
+        if !all && o.attrs != nil && .Enumerable not_in prop_attrs(o, k) do return
         if seen[k] do return
         seen[k] = true
         append(out, k)
@@ -2010,6 +2033,15 @@ own_enum_keys :: proc(o: ^Object, out: ^[dynamic]string) {
     idx_keys: [dynamic]string
     defer delete(idx_keys)
     for k in o.props do if is_index_key(k) do append(&idx_keys, k)
+    // índice de accessor (`get 0(){}`) também ordena numericamente
+    if o.getters != nil do for k in o.getters do if is_index_key(k) {
+        if _, d := o.props[k]; !d do append(&idx_keys, k)
+    }
+    if o.setters != nil do for k in o.setters do if is_index_key(k) {
+        _, d := o.props[k]
+        _, g := o.getters[k]
+        if !d && !g do append(&idx_keys, k)
+    }
     // inteiro canônico menor = string mais curta, ou mesma largura e menor lexicográfico
     idx_less :: proc(a, b: string) -> bool {
         if len(a) != len(b) do return len(a) < len(b)
@@ -2020,14 +2052,15 @@ own_enum_keys :: proc(o: ^Object, out: ^[dynamic]string) {
             idx_keys[j], idx_keys[j-1] = idx_keys[j-1], idx_keys[j]
         }
     }
-    for k in idx_keys do emit(o, k, &seen, out)
-    // 2) ordem de inserção registrada (pula entradas obsoletas de deletes)
+    for k in idx_keys do emit(o, k, &seen, out, all)
+    // 2) ordem de inserção registrada (dados E accessors; pula entradas obsoletas de deletes)
     for k in o.korder {
-        if _, alive := o.props[k]; alive && !is_index_key(k) do emit(o, k, &seen, out)
+        if okey_alive(o, k) && !is_index_key(k) do emit(o, k, &seen, out, all)
     }
-    // 3) sobras (escritas nativas que não passaram por oput) + getters
-    for k in o.props do emit(o, k, &seen, out)
-    if o.getters != nil do for k in o.getters do emit(o, k, &seen, out)
+    // 3) sobras (escritas nativas que não passaram por oput/okey_accessor)
+    for k in o.props do emit(o, k, &seen, out, all)
+    if o.getters != nil do for k in o.getters do emit(o, k, &seen, out, all)
+    if o.setters != nil do for k in o.setters do emit(o, k, &seen, out, all)
 }
 
 // O construtor GLOBAL de um tipo, por nome ("String", "Number", …). `.constructor`
@@ -3337,6 +3370,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 if vnode.right != nil && vnode.right.kind == .Func && vnode.right.acc != 0 {
                     // accessor com chave computada
                     if fn, fok := eval(vm, vnode.right, env).(^Function); fok {
+                        okey_accessor(o, k)
                         if vnode.right.acc == 1 {
                             if o.getters == nil do o.getters = make(map[string]^Function)
                             o.getters[k] = fn
@@ -3353,6 +3387,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             if vnode.acc != 0 { // getter (1) / setter (2)
                 fn, _ := eval(vm, vnode, env).(^Function)
                 if fn == nil do continue
+                okey_accessor(o, key)
                 if vnode.acc == 1 {
                     if o.getters == nil do o.getters = make(map[string]^Function)
                     o.getters[key] = fn
@@ -3870,6 +3905,7 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         } else if !m.stat {
             fn := build_method(vm, m, cenv, super_fn, super_proto)
             key := class_member_key(vm, m, env) // fixa ou computada [expr]
+            if m.acc != 0 do okey_accessor(proto, key)
             switch m.acc {
             case 1: // getter de instância → getters do prototype (get_member sobe a cadeia)
                 if proto.getters == nil do proto.getters = make(map[string]^Function)

@@ -548,7 +548,7 @@ obj_get_own_property_symbols :: proc(vm: ^Interp, this: Value, args: []Value) ->
         seen[k] = true
         append(&out.items, sym)
     }
-    for k in o.korder do if _, alive := o.props[k]; alive do emit(vm, out, &seen, k)
+    for k in o.korder do if okey_alive(o, k) do emit(vm, out, &seen, k)
     for k in o.props do emit(vm, out, &seen, k) // escritas nativas que não passaram por oput
     if o.getters != nil do for k in o.getters do emit(vm, out, &seen, k)
     if o.setters != nil do for k in o.setters do emit(vm, out, &seen, k)
@@ -647,7 +647,10 @@ apply_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, source_desc: ^Obj
         if invalid { throw_type_error(vm, "Cannot redefine non-configurable property"); return }
     }
     if accessor {
-        if !oldacc { oremove(o, key); a -= {.Writable} }
+        // data → accessor mantém a POSIÇÃO na ordem de inserção: tira o valor sem
+        // passar por oremove (que tiraria a chave do korder também)
+        if !oldacc { delete_key(&o.props, key); a -= {.Writable} }
+        if !existed do okey_accessor(o, key) // accessor novo: entra no fim da ordem
         if o.getters == nil do o.getters = make(map[string]^Function)
         if o.setters == nil do o.setters = make(map[string]^Function)
         if hg || !oldacc do o.getters[key] = gf
@@ -763,8 +766,12 @@ obj_get_own_property_names :: proc(vm: ^Interp, this: Value, args: []Value) -> V
     defer delete(seen)
     #partial switch o in arg(args, 0) {
     case ^Object:
-        for k in o.props do if !is_non_enumerable_key(k) && !seen[k] { seen[k] = true; append(&out.items, k) }
-        if o.getters != nil do for k in o.getters do if !is_non_enumerable_key(k) && !seen[k] { seen[k] = true; append(&out.items, k) }
+        // ordem da spec (índices, inserção) — antes iterava o map do Odin, sem
+        // ordem nenhuma, e esquecia chave que só tem setter
+        keys: [dynamic]string
+        defer delete(keys)
+        own_string_keys(o, &keys, true)
+        for k in keys do if !seen[k] { seen[k] = true; append(&out.items, k) }
     case ^Function:
         // aqui as NÃO-enumeráveis contam (é o propósito desta função), então
         // `prototype`/`name`/`length` entram — ao contrário de Object.keys.

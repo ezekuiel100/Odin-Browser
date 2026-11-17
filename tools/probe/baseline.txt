@@ -16,6 +16,7 @@ dom|layout/estilo|CSSStyleSheet.insertRule
 dom|layout/estilo|document.styleSheets
 dom|layout/estilo|Element.animate (WAAPI)
 dom|layout/estilo|getBoundingClientRect
+dom|layout/estilo|getClientRects
 dom|layout/estilo|getComputedStyle valor resolvido
 dom|layout/estilo|new CSSStyleSheet + adoptedStyleSheets
 dom|layout/estilo|offsetWidth/offsetHeight/offsetTop
@@ -26,7 +27,6 @@ dom|navegacao/misc|devicePixelRatio
 dom|navegacao/misc|dialog.showModal
 dom|navegacao/misc|document.execCommand
 dom|navegacao/misc|document.fonts
-dom|navegacao/misc|document.write
 dom|navegacao/misc|DOMParser
 dom|navegacao/misc|focus/blur/activeElement
 dom|navegacao/misc|form.submit/reset + validity
@@ -52,11 +52,6 @@ dom|rede/dados|WebSocket
 dom|rede/dados|Worker / SharedWorker
 lang|array|Array.fromAsync
 lang|array|holes: forEach pula
-lang|array|indexOf/lastIndexOf
-lang|array|toSorted / toReversed
-lang|array|toSpliced()
-lang|array|with()
-lang|async|await resolve (ordem)
 lang|async|unhandledrejection detectavel
 lang|binario|ArrayBuffer.transfer/resize
 lang|binario|Atomics/SharedArrayBuffer
@@ -67,13 +62,9 @@ lang|colecoes|Map.groupBy
 lang|colecoes|Set operacoes (union/intersection)
 lang|date/intl/json|Date.parse RFC/locale
 lang|date/intl/json|Intl.ListFormat / Segmenter
-lang|date/intl/json|JSON escapa unicode/controle
-lang|date/intl/json|JSON.stringify replacer array
 lang|date/intl/json|Temporal
 lang|funcao|bind preserva instanceof
 lang|funcao|fn.name inferido de var
-lang|funcao|funcoes nativas: .length
-lang|funcao|funcoes nativas: .name
 lang|funcao|new sobre nativa nao-construtora
 lang|meta|globalThis
 lang|meta|Proxy apply
@@ -81,16 +72,11 @@ lang|meta|Proxy defineProperty/getPrototypeOf
 lang|meta|Proxy ownKeys + getOwnPropertyDescriptor
 lang|meta|Proxy revocable
 lang|meta|Reflect.get com receiver
-lang|meta|Symbol.species
 lang|number|Math.round(-0.5)
-lang|object|obj.__proto__ leitura
-lang|object|Object.create com descritores
-lang|object|Object.keys ordem com getter
 lang|regex|flag d (indices)
 lang|regex|replace com $<nome>
 lang|regex|Symbol.replace custom
-lang|sintaxe|__proto__ em literal
-lang|sintaxe|import.meta fora de modulo
+lang|sintaxe|decorators
 lang|sintaxe|using declaration (ES2026)
 lang|sintaxe|with
 lang|string|isWellFormed / toWellFormed
