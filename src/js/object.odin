@@ -14,47 +14,47 @@ install_object :: proc(vm: ^Interp) {
     // método presente em todo objeto sem exigir prototype montado (get_member
     // faz fallback em vm.object_methods)
     vm.object_methods = make(map[string]^Function)
-    vm.object_methods["hasOwnProperty"] = mk_native(vm, obj_has_own_property)
+    vm.object_methods["hasOwnProperty"] = mk_builtin_method(vm, obj_has_own_property, "hasOwnProperty", 1)
     // Restante do Object.prototype que libs acessam via `{}.metodo` ou uncurryThis
     // (core-js: `l={}.propertyIsEnumerable; l.call(...)` — sem isto, `reading 'call'`
     // de undefined matava o bundle → página em branco).
-    vm.object_methods["propertyIsEnumerable"] = mk_native(vm, obj_property_is_enumerable)
-    vm.object_methods["isPrototypeOf"]        = mk_native(vm, obj_is_prototype_of)
-    vm.object_methods["valueOf"]              = mk_native(vm, obj_value_of)
+    vm.object_methods["propertyIsEnumerable"] = mk_builtin_method(vm, obj_property_is_enumerable, "propertyIsEnumerable", 1)
+    vm.object_methods["isPrototypeOf"]        = mk_builtin_method(vm, obj_is_prototype_of, "isPrototypeOf", 1)
+    vm.object_methods["valueOf"]              = mk_builtin_method(vm, obj_value_of, "valueOf", 0)
 
     // `Object` é uma função (chamável: `new Object()`) que carrega os estáticos
     // nos seus props (get_member lê props de ^Function).
     ctor := mk_native(vm, obj_ctor)
     ctor.name = "Object"
     ctor.props = make(map[string]Value)
-    ctor.props["keys"]            = mk_native(vm, obj_keys)
-    ctor.props["values"]          = mk_native(vm, obj_values)
-    ctor.props["entries"]         = mk_native(vm, obj_entries)
-    ctor.props["assign"]          = mk_native(vm, obj_assign)
-    ctor.props["create"]          = mk_native(vm, obj_create)
-    ctor.props["freeze"]          = mk_native(vm, obj_freeze)
-    ctor.props["getPrototypeOf"]  = mk_native(vm, obj_get_prototype_of)
-    ctor.props["defineProperty"]  = mk_native(vm, obj_define_property)
-    ctor.props["defineProperties"] = mk_native(vm, obj_define_properties)
-    ctor.props["getOwnPropertyDescriptor"] = mk_native(vm, obj_get_own_property_descriptor)
-    ctor.props["getOwnPropertyNames"]      = mk_native(vm, obj_get_own_property_names)
-    ctor.props["fromEntries"]     = mk_native(vm, obj_from_entries)
-    ctor.props["setPrototypeOf"]  = mk_native(vm, obj_set_prototype_of)
-    ctor.props["is"]              = mk_native(vm, obj_is)
+    ctor.props["keys"]            = mk_builtin_method(vm, obj_keys, "keys", 1)
+    ctor.props["values"]          = mk_builtin_method(vm, obj_values, "values", 1)
+    ctor.props["entries"]         = mk_builtin_method(vm, obj_entries, "entries", 1)
+    ctor.props["assign"]          = mk_builtin_method(vm, obj_assign, "assign", 2)
+    ctor.props["create"]          = mk_builtin_method(vm, obj_create, "create", 2)
+    ctor.props["freeze"]          = mk_builtin_method(vm, obj_freeze, "freeze", 1)
+    ctor.props["getPrototypeOf"]  = mk_builtin_method(vm, obj_get_prototype_of, "getPrototypeOf", 1)
+    ctor.props["defineProperty"]  = mk_builtin_method(vm, obj_define_property, "defineProperty", 3)
+    ctor.props["defineProperties"] = mk_builtin_method(vm, obj_define_properties, "defineProperties", 2)
+    ctor.props["getOwnPropertyDescriptor"] = mk_builtin_method(vm, obj_get_own_property_descriptor, "getOwnPropertyDescriptor", 2)
+    ctor.props["getOwnPropertyNames"]      = mk_builtin_method(vm, obj_get_own_property_names, "getOwnPropertyNames", 1)
+    ctor.props["fromEntries"]     = mk_builtin_method(vm, obj_from_entries, "fromEntries", 1)
+    ctor.props["setPrototypeOf"]  = mk_builtin_method(vm, obj_set_prototype_of, "setPrototypeOf", 2)
+    ctor.props["is"]              = mk_builtin_method(vm, obj_is, "is", 2)
     // Família de integridade/extensibilidade. Desde o M164 são REAIS (antes seal e
     // preventExtensions eram no-op e isSealed era um apelido de isFrozen): o objeto
     // tem `non_extensible` e cada prop tem writable/enumerable/configurable.
-    ctor.props["isExtensible"]      = mk_native(vm, obj_is_extensible)
-    ctor.props["isFrozen"]          = mk_native(vm, obj_is_frozen)
-    ctor.props["isSealed"]          = mk_native(vm, obj_is_sealed)
-    ctor.props["preventExtensions"] = mk_native(vm, obj_prevent_extensions)
-    ctor.props["seal"]              = mk_native(vm, obj_seal)
-    ctor.props["getOwnPropertyDescriptors"] = mk_native(vm, obj_get_own_property_descriptors)
-    ctor.props["getOwnPropertySymbols"]     = mk_native(vm, obj_get_own_property_symbols)
+    ctor.props["isExtensible"]      = mk_builtin_method(vm, obj_is_extensible, "isExtensible", 1)
+    ctor.props["isFrozen"]          = mk_builtin_method(vm, obj_is_frozen, "isFrozen", 1)
+    ctor.props["isSealed"]          = mk_builtin_method(vm, obj_is_sealed, "isSealed", 1)
+    ctor.props["preventExtensions"] = mk_builtin_method(vm, obj_prevent_extensions, "preventExtensions", 1)
+    ctor.props["seal"]              = mk_builtin_method(vm, obj_seal, "seal", 1)
+    ctor.props["getOwnPropertyDescriptors"] = mk_builtin_method(vm, obj_get_own_property_descriptors, "getOwnPropertyDescriptors", 1)
+    ctor.props["getOwnPropertySymbols"]     = mk_builtin_method(vm, obj_get_own_property_symbols, "getOwnPropertySymbols", 1)
     // Object.hasOwn(o,k) (ES2022) — 3 sites do corpus. É hasOwnProperty com o
     // receptor como 1º argumento (a forma recomendada hoje).
-    ctor.props["hasOwn"]  = mk_native(vm, obj_has_own_static)
-    ctor.props["groupBy"] = mk_native(vm, obj_group_by) // ES2024
+    ctor.props["hasOwn"]  = mk_builtin_method(vm, obj_has_own_static, "hasOwn", 2)
+    ctor.props["groupBy"] = mk_builtin_method(vm, obj_group_by, "groupBy", 2) // ES2024
     // `Object.prototype`: objeto real. get_member(^Object) faz fallback em
     // vm.object_methods, então `Object.prototype.hasOwnProperty` resolve — React
     // faz `Object.prototype.hasOwnProperty.call(config, k)` em createElement.
@@ -602,39 +602,62 @@ obj_get_prototype_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 //   ao contrário de uma atribuição normal, que dá os três). Vão para `o.attrs`.
 //   Um atributo OMITIDO numa redefinição preserva o que já valia, como na spec.
 @(private = "file")
-apply_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: ^Object) {
-    // Prop já existente e NÃO-configurável: a spec manda TypeError. Ignoramos em
-    // silêncio (mesma política sloppy da escrita), o que preserva o invariante sem
-    // derrubar código que redefine defensivamente.
-    _, existed := o.props[key]
-    if existed && .Configurable not_in prop_attrs(o, key) do return
-    has_get, has_set := false, false
-    if g, ok := desc.props["get"]; ok {
-        if fn, fok := g.(^Function); fok {
-            if o.getters == nil do o.getters = make(map[string]^Function)
-            o.getters[key] = fn
-            has_get = true
+apply_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, source_desc: ^Object) {
+    desc := source_desc
+    normalized := new_object(vm)
+    fields := []string{"enumerable", "configurable", "value", "writable", "get", "set"}
+    for field in fields {
+        for cur := desc; cur != nil; cur = cur.proto {
+            _, data := cur.props[field]
+            _, getter := cur.getters[field]
+            _, setter := cur.setters[field]
+            if data || getter || setter { normalized.props[field] = get_member(vm, desc, field); break }
         }
+        if vm.throwing do return
     }
-    if s, ok := desc.props["set"]; ok {
-        if fn, fok := s.(^Function); fok {
-            if o.setters == nil do o.setters = make(map[string]^Function)
-            o.setters[key] = fn
-            has_set = true
-        }
+    desc = normalized
+    g, hg := desc.props["get"]
+    st, hs := desc.props["set"]
+    v, hv := desc.props["value"]
+    w, hw := desc.props["writable"]
+    e, he := desc.props["enumerable"]
+    c, hc := desc.props["configurable"]
+    gf, gok := g.(^Function)
+    sf, sok := st.(^Function)
+    accessor := hg || hs
+    if (accessor && (hv || hw)) || (hg && g != nil && !gok) || (hs && st != nil && !sok) {
+        throw_type_error(vm, "Invalid property descriptor"); return
     }
-    if has_get || has_set {
-        oremove(o, key) // accessor vence: sem data-prop residual
-    } else if v, has_value := desc.props["value"]; has_value {
-        oput(o, key, v)
-    }
-
-    // Numa prop NOVA os três atributos omitidos valem false (spec); numa
-    // redefinição, o que não veio no descritor fica como estava.
+    oldg, og := o.getters[key]
+    olds, os := o.setters[key]
+    oldv, ov := o.props[key]
+    existed := ov || og || os
+    oldacc := og || os
     a := prop_attrs(o, key) if existed else Prop_Attrs{}
-    if e, ok := desc.props["enumerable"];   ok do a = truthy(e) ? a + {.Enumerable}   : a - {.Enumerable}
-    if w, ok := desc.props["writable"];     ok do a = truthy(w) ? a + {.Writable}     : a - {.Writable}
-    if c, ok := desc.props["configurable"]; ok do a = truthy(c) ? a + {.Configurable} : a - {.Configurable}
+    if !existed && o.non_extensible { throw_type_error(vm, "Object is not extensible"); return }
+    if existed && .Configurable not_in a {
+        invalid := (hc && truthy(c)) || (he && truthy(e) != (.Enumerable in a))
+        if accessor || hv || hw do invalid = invalid || accessor != oldacc
+        if oldacc {
+            invalid = invalid || (hg && gf != oldg) || (hs && sf != olds)
+        } else if .Writable not_in a {
+            invalid = invalid || (hw && truthy(w)) || (hv && !truthy(obj_is(vm, nil, []Value{v, oldv})))
+        }
+        if invalid { throw_type_error(vm, "Cannot redefine non-configurable property"); return }
+    }
+    if accessor {
+        if !oldacc { oremove(o, key); a -= {.Writable} }
+        if o.getters == nil do o.getters = make(map[string]^Function)
+        if o.setters == nil do o.setters = make(map[string]^Function)
+        if hg || !oldacc do o.getters[key] = gf
+        if hs || !oldacc do o.setters[key] = sf
+    } else if hv || hw || !existed {
+        if oldacc { delete_key(&o.getters, key); delete_key(&o.setters, key); a -= {.Writable} }
+        if hv { oput(o, key, v) } else if !ov { oput(o, key, nil) }
+    }
+    if he do a = truthy(e) ? a + {.Enumerable} : a - {.Enumerable}
+    if hw do a = truthy(w) ? a + {.Writable} : a - {.Writable}
+    if hc do a = truthy(c) ? a + {.Configurable} : a - {.Configurable}
     set_prop_attrs(o, key, a)
 }
 
@@ -665,7 +688,7 @@ obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         return nil
     }
     key := key_string(vm, arg(args, 1))
-    if desc, dok := arg(args, 2).(^Object); dok do apply_descriptor(vm, o, key, desc)
+    if desc, dok := arg(args, 2).(^Object); dok { apply_descriptor(vm, o, key, desc) } else { throw_type_error(vm, "Property descriptor must be an object") }
     return o
 }
 
@@ -687,18 +710,24 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
     if fn, fok := arg(args, 0).(^Function); fok {
         key := key_string(vm, arg(args, 1))
         if fn.getters != nil { if g, ok := fn.getters[key]; ok {
-            d := new_object(vm); d.props["get"] = g; d.props["set"] = nil
-            if fn.setters != nil { if s, sok := fn.setters[key]; sok do d.props["set"] = s }
+            d := new_object(vm); d.props["get"] = g if g != nil else nil; d.props["set"] = nil
+            if fn.setters != nil { if s, sok := fn.setters[key]; sok do d.props["set"] = s if s != nil else nil }
             d.props["enumerable"] = true; d.props["configurable"] = true; return d
         }}
         if fn.setters != nil { if s, ok := fn.setters[key]; ok {
-            d := new_object(vm); d.props["get"] = nil; d.props["set"] = s
+            d := new_object(vm); d.props["get"] = nil; d.props["set"] = s if s != nil else nil
             d.props["enumerable"] = true; d.props["configurable"] = true; return d
         }}
         if fn.props != nil { if v, ok := fn.props[key]; ok {
             d := new_object(vm); d.props["value"] = v; d.props["writable"] = true
             d.props["enumerable"] = true; d.props["configurable"] = true; return d
         }}
+        if key == "name" || key == "length" {
+            d := new_object(vm)
+            d.props["value"] = get_member(vm, fn, key)
+            d.props["writable"] = false; d.props["enumerable"] = false; d.props["configurable"] = true
+            return d
+        }
         return nil
     }
     o, ok := arg(args, 0).(^Object)
@@ -710,9 +739,9 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
     if o.getters != nil {
         if g, gok := o.getters[key]; gok {
             d := new_object(vm)
-            d.props["get"] = g
+            d.props["get"] = g if g != nil else nil
             d.props["set"] = nil
-            if o.setters != nil { if s, sok := o.setters[key]; sok do d.props["set"] = s }
+            if o.setters != nil { if s, sok := o.setters[key]; sok do d.props["set"] = s if s != nil else nil }
             d.props["enumerable"] = enumerable
             d.props["configurable"] = configurable
             return d
@@ -722,7 +751,7 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
         if s, sok := o.setters[key]; sok {
             d := new_object(vm)
             d.props["get"] = nil
-            d.props["set"] = s
+            d.props["set"] = s if s != nil else nil
             d.props["enumerable"] = enumerable
             d.props["configurable"] = configurable
             return d
@@ -788,7 +817,7 @@ obj_has_own_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         if name == "length" || name == "name" do return true
         // bound fns (o.bind_target != nil) NÃO têm prototype própria — o core-js usa
         // exatamente `!boundFn.hasOwnProperty('prototype')` p/ detectar bind nativo.
-        if name == "prototype" && !o.is_arrow && o.native == nil && o.bind_target == nil do return true
+        if name == "prototype" && !o.is_arrow && !o.non_constructor && o.native == nil && o.bind_target == nil do return true
     case ^Array:
         // índices dentro do range, `length`, e props não-índice (a mais importante:
         // `raw` do array de um template TAGUEADO). O lit-html valida o template com

@@ -155,6 +155,8 @@ Function :: struct {
     closure:  ^Env,
     native:   Native_Fn,
     name:     string,
+    native_length: int,
+    non_constructor: bool,
     is_arrow: bool, // arrow não vincula `this` próprio (herda o léxico via closure)
     is_async: bool, // devolve Promise; throw vira rejeição (ver call_function)
     self_bind: bool, // function EXPRESSION nomeada: o nome só é visível dentro do
@@ -1620,7 +1622,8 @@ native_fn_bind :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     bf := new_function(vm)
     bf.bind_target = target
     bf.bind_this = args[0] if len(args) >= 1 else nil
-    bf.name = target.name
+    bf.name = own_str_raw(vm, fmt.tprintf("bound %s", target.name))
+    bf.non_constructor = target.non_constructor || target.is_arrow || target.is_async || target.is_generator
     if len(args) > 1 {
         bf.bind_args = make([dynamic]Value, 0, len(args) - 1)
         for i := 1; i < len(args); i += 1 do append(&bf.bind_args, args[i])
@@ -2211,7 +2214,7 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         case "apply": return vm.fn_apply_fn
         case "bind":  return vm.fn_bind_fn
         case "name":  return o.name
-        case "length": return f64(len(o.params))
+        case "length": return function_length(o)
         }
         // toda função (não-arrow) tem um `.prototype` (objeto) criado sob demanda —
         // é onde `Ctor.prototype.metodo = fn` grava e de onde `new Ctor()` herda.
@@ -2221,7 +2224,7 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         // bind nativo via `!boundFn.hasOwnProperty('prototype')` — se o auto-proto
         // aparecer, NATIVE_BIND=false e o core-js embrulha Map/Set e usa caminhos
         // uncurryThis alternativos (foi a raiz do bug do M97). Ver obj_has_own_property.
-        if name == "prototype" && !o.is_arrow && o.native == nil && o.bind_target == nil {
+        if name == "prototype" && !o.is_arrow && !o.non_constructor && o.native == nil && o.bind_target == nil {
             if o.props == nil do o.props = make(map[string]Value)
             proto := new_object(vm)
             proto.props["constructor"] = o
@@ -3704,6 +3707,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 @(private = "file")
 build_method :: proc(vm: ^Interp, m: ^Node, env: ^Env, super_fn: ^Function, super_proto: ^Object) -> ^Function {
     f := new_function(vm)
+    f.non_constructor = true
     f.params = m.params[:]
     f.param_pats = m.param_pats[:]
     f.param_defaults = m.param_defaults[:]
@@ -3796,6 +3800,7 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         if m.kind != .Func do continue // campos (.ClassField) tratados à parte
         if m.name == "constructor" {
             ctor = build_method(vm, m, cenv, super_fn, super_proto)
+            ctor.non_constructor = false
         } else if !m.stat {
             fn := build_method(vm, m, cenv, super_fn, super_proto)
             key := class_member_key(vm, m, env) // fixa ou computada [expr]
@@ -4029,6 +4034,9 @@ unwrap_prim :: proc(vm: ^Interp, fn: ^Function, this: Value) -> Value {
 // new_target != nil só via Reflect.construct(alvo, args, newTarget): o corpo que
 // roda é o do `fn`, mas o prototype da instância e o `new.target` vêm do newTarget.
 construct_object :: proc(vm: ^Interp, fn: ^Function, args: []Value, new_target: ^Function = nil) -> Value {
+    if fn.non_constructor || fn.is_arrow || fn.is_async || fn.is_generator {
+        throw_type_error(vm, "function is not a constructor"); return nil
+    }
     if fn.native != nil {
         // nativas (Error, TypeError, Proxy, ...) constroem e devolvem o objeto.
         // `fn.bound` tem de ficar visível TAMBÉM aqui: este caminho chama a
@@ -4587,6 +4595,7 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
 // Invoca uma função (nativa ou definida pelo usuário). Para user-defined:
 // escopo filho do CLOSURE (não do chamador), liga params + `this`, roda o corpo.
 call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) -> Value {
+    if fn == nil do return nil
     when JSPROF { g_prof.chamadas += 1; if fn.native != nil do g_prof.chamadas_nat += 1 }
     // async function (não-generator): roda como CORROTINA — cada await suspende.
     // O corpo é iniciado por run_generator_body; toda chamada JS, inclusive
@@ -5097,4 +5106,11 @@ program_needs_coroutine :: proc(n: ^Node) -> bool {
     if program_needs_coroutine(n.left) || program_needs_coroutine(n.right) || program_needs_coroutine(n.third) || program_needs_coroutine(n.callee) do return true
     for child in n.body do if program_needs_coroutine(child) do return true
     return false
+}
+
+function_length :: proc(f: ^Function) -> f64 {
+    if f.bind_target != nil do return max(0, function_length(f.bind_target) - f64(len(f.bind_args)))
+    if f.native != nil do return f64(f.native_length)
+    for d, i in f.param_defaults do if d != nil do return f64(i)
+    return f64(len(f.params))
 }

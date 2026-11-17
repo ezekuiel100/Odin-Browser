@@ -325,6 +325,8 @@ array_like_has :: proc(this: Value, i: int) -> bool {
         // silenciosa que o `geti` acima conserta para as coleções vivas.
         // ⚠️ o `get` hook segue de FORA de propósito (ver o parágrafo acima).
         for cur := t; cur != nil; cur = cur.proto {
+            if _, has := cur.getters[key]; has do return true
+            if _, has := cur.setters[key]; has do return true
             if cur.props == nil do continue
             if _, has := cur.props[key]; has do return true
         }
@@ -506,44 +508,70 @@ arr_concat :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 arr_find :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return nil
-    cb, cok := arg(args, 0).(^Function); if !cok do return nil
-    for it, i in a.items {
-        if truthy(call_function(vm, cb, nil, []Value{it, f64(i), a})) do return it
-        if vm.throwing do break
+    if is_nullish(this) { throw_type_error(vm, "Array method called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    cb, ok := arg(args, 0).(^Function)
+    if !ok { throw_type_error(vm, "callback is not a function"); return nil }
+    for i := 0; i < n; i += 1 {
+        it := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        r := call_function(vm, cb, arg(args, 1), []Value{it, f64(i), this})
+        if vm.throwing do return nil
+        if truthy(r) do return it
     }
     return nil
 }
 
 @(private = "file")
 arr_find_index :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return f64(-1)
-    cb, cok := arg(args, 0).(^Function); if !cok do return f64(-1)
-    for it, i in a.items {
-        if truthy(call_function(vm, cb, nil, []Value{it, f64(i), a})) do return f64(i)
-        if vm.throwing do break
+    if is_nullish(this) { throw_type_error(vm, "Array method called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    cb, ok := arg(args, 0).(^Function)
+    if !ok { throw_type_error(vm, "callback is not a function"); return nil }
+    for i := 0; i < n; i += 1 {
+        it := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        r := call_function(vm, cb, arg(args, 1), []Value{it, f64(i), this})
+        if vm.throwing do return nil
+        if truthy(r) do return f64(i)
     }
     return f64(-1)
 }
 
 @(private = "file")
 arr_some :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return false
-    cb, cok := arg(args, 0).(^Function); if !cok do return false
-    for it, i in a.items {
-        if truthy(call_function(vm, cb, nil, []Value{it, f64(i), a})) do return true
-        if vm.throwing do break
+    if is_nullish(this) { throw_type_error(vm, "Array method called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    cb, ok := arg(args, 0).(^Function)
+    if !ok { throw_type_error(vm, "callback is not a function"); return nil }
+    for i := 0; i < n; i += 1 {
+        if !array_like_has(this, i) do continue
+        it := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        r := call_function(vm, cb, arg(args, 1), []Value{it, f64(i), this})
+        if vm.throwing do return nil
+        if truthy(r) do return true
     }
     return false
 }
 
 @(private = "file")
 arr_every :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return true
-    cb, cok := arg(args, 0).(^Function); if !cok do return true
-    for it, i in a.items {
-        if !truthy(call_function(vm, cb, nil, []Value{it, f64(i), a})) do return false
-        if vm.throwing do break
+    if is_nullish(this) { throw_type_error(vm, "Array method called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    cb, ok := arg(args, 0).(^Function)
+    if !ok { throw_type_error(vm, "callback is not a function"); return nil }
+    for i := 0; i < n; i += 1 {
+        if !array_like_has(this, i) do continue
+        it := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        r := call_function(vm, cb, arg(args, 1), []Value{it, f64(i), this})
+        if vm.throwing do return nil
+        if !truthy(r) do return false
     }
     return true
 }
@@ -1414,23 +1442,33 @@ arr_at :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 arr_find_last :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return nil
-    fn, fok := arg(args, 0).(^Function); if !fok do return nil
-    for i := len(a.items) - 1; i >= 0; i -= 1 {
-        r := call_function(vm, fn, nil, []Value{a.items[i], f64(i), a})
+    if is_nullish(this) { throw_type_error(vm, "Array method called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    cb, ok := arg(args, 0).(^Function)
+    if !ok { throw_type_error(vm, "callback is not a function"); return nil }
+    for i := n - 1; i >= 0; i -= 1 {
+        it := array_like_get(vm, this, i)
         if vm.throwing do return nil
-        if truthy(r) do return a.items[i]
+        r := call_function(vm, cb, arg(args, 1), []Value{it, f64(i), this})
+        if vm.throwing do return nil
+        if truthy(r) do return it
     }
     return nil
 }
 
 @(private = "file")
 arr_find_last_index :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(^Array); if !ok do return f64(-1)
-    fn, fok := arg(args, 0).(^Function); if !fok do return f64(-1)
-    for i := len(a.items) - 1; i >= 0; i -= 1 {
-        r := call_function(vm, fn, nil, []Value{a.items[i], f64(i), a})
-        if vm.throwing do return f64(-1)
+    if is_nullish(this) { throw_type_error(vm, "Array method called on null or undefined"); return nil }
+    n := array_like_len(vm, this)
+    if vm.throwing do return nil
+    cb, ok := arg(args, 0).(^Function)
+    if !ok { throw_type_error(vm, "callback is not a function"); return nil }
+    for i := n - 1; i >= 0; i -= 1 {
+        it := array_like_get(vm, this, i)
+        if vm.throwing do return nil
+        r := call_function(vm, cb, arg(args, 1), []Value{it, f64(i), this})
+        if vm.throwing do return nil
         if truthy(r) do return f64(i)
     }
     return f64(-1)
@@ -2250,7 +2288,7 @@ install_errors :: proc(vm: ^Interp) {
     base := new_object(vm)
     base.props["name"] = "Error"
     base.props["message"] = ""
-    base.props["toString"] = mk_native(vm, err_to_string)
+    base.props["toString"] = mk_builtin_method(vm, err_to_string, "toString", 0)
     vm.error_protos["Error"] = base
 
     reg :: proc(vm: ^Interp, name: string, native: Native_Fn, base: ^Object) {
@@ -2510,66 +2548,66 @@ install_builtins :: proc(vm: ^Interp) {
     vm.array_methods = make(map[string]^Function)
     vm.string_methods = make(map[string]^Function)
 
-    vm.array_methods["push"]      = mk_native(vm, arr_push)
-    vm.array_methods["pop"]       = mk_native(vm, arr_pop)
-    vm.array_methods["indexOf"]   = mk_native(vm, arr_index_of)
-    vm.array_methods["includes"]  = mk_native(vm, arr_includes)
-    vm.array_methods["join"]      = mk_native(vm, arr_join)
-    vm.array_methods["toString"]  = mk_native(vm, arr_join) // Array.prototype.toString = join(",") (aprox. spec)
-    vm.array_methods["slice"]     = mk_native(vm, arr_slice)
-    vm.array_methods["forEach"]   = mk_native(vm, arr_for_each)
-    vm.array_methods["map"]       = mk_native(vm, arr_map)
-    vm.array_methods["filter"]    = mk_native(vm, arr_filter)
-    vm.array_methods["reverse"]   = mk_native(vm, arr_reverse)
-    vm.array_methods["sort"]      = mk_native(vm, arr_sort)
-    vm.array_methods["reduce"]    = mk_native(vm, arr_reduce)
-    vm.array_methods["reduceRight"] = mk_native(vm, arr_reduce_right)
-    vm.array_methods["concat"]    = mk_native(vm, arr_concat)
-    vm.array_methods["find"]      = mk_native(vm, arr_find)
-    vm.array_methods["findIndex"] = mk_native(vm, arr_find_index)
-    vm.array_methods["some"]      = mk_native(vm, arr_some)
-    vm.array_methods["every"]     = mk_native(vm, arr_every)
-    vm.array_methods["shift"]     = mk_native(vm, arr_shift)
-    vm.array_methods["unshift"]   = mk_native(vm, arr_unshift)
-    vm.array_methods["splice"]    = mk_native(vm, arr_splice)
-    vm.array_methods["flat"]          = mk_native(vm, arr_flat)
-    vm.array_methods["flatMap"]       = mk_native(vm, arr_flat_map)
-    vm.array_methods["fill"]          = mk_native(vm, arr_fill)
-    vm.array_methods["at"]            = mk_native(vm, arr_at)
-    vm.array_methods["findLast"]      = mk_native(vm, arr_find_last)
-    vm.array_methods["findLastIndex"] = mk_native(vm, arr_find_last_index)
-    vm.array_methods["copyWithin"]    = mk_native(vm, arr_copy_within)
+    vm.array_methods["push"]      = mk_builtin_method(vm, arr_push, "push", 1)
+    vm.array_methods["pop"]       = mk_builtin_method(vm, arr_pop, "pop", 0)
+    vm.array_methods["indexOf"]   = mk_builtin_method(vm, arr_index_of, "indexOf", 1)
+    vm.array_methods["includes"]  = mk_builtin_method(vm, arr_includes, "includes", 1)
+    vm.array_methods["join"]      = mk_builtin_method(vm, arr_join, "join", 1)
+    vm.array_methods["toString"]  = mk_builtin_method(vm, arr_join, "toString", 0) // Array.prototype.toString = join(",") (aprox. spec)
+    vm.array_methods["slice"]     = mk_builtin_method(vm, arr_slice, "slice", 2)
+    vm.array_methods["forEach"]   = mk_builtin_method(vm, arr_for_each, "forEach", 1)
+    vm.array_methods["map"]       = mk_builtin_method(vm, arr_map, "map", 1)
+    vm.array_methods["filter"]    = mk_builtin_method(vm, arr_filter, "filter", 1)
+    vm.array_methods["reverse"]   = mk_builtin_method(vm, arr_reverse, "reverse", 0)
+    vm.array_methods["sort"]      = mk_builtin_method(vm, arr_sort, "sort", 1)
+    vm.array_methods["reduce"]    = mk_builtin_method(vm, arr_reduce, "reduce", 1)
+    vm.array_methods["reduceRight"] = mk_builtin_method(vm, arr_reduce_right, "reduceRight", 1)
+    vm.array_methods["concat"]    = mk_builtin_method(vm, arr_concat, "concat", 1)
+    vm.array_methods["find"]      = mk_builtin_method(vm, arr_find, "find", 1)
+    vm.array_methods["findIndex"] = mk_builtin_method(vm, arr_find_index, "findIndex", 1)
+    vm.array_methods["some"]      = mk_builtin_method(vm, arr_some, "some", 1)
+    vm.array_methods["every"]     = mk_builtin_method(vm, arr_every, "every", 1)
+    vm.array_methods["shift"]     = mk_builtin_method(vm, arr_shift, "shift", 0)
+    vm.array_methods["unshift"]   = mk_builtin_method(vm, arr_unshift, "unshift", 1)
+    vm.array_methods["splice"]    = mk_builtin_method(vm, arr_splice, "splice", 2)
+    vm.array_methods["flat"]          = mk_builtin_method(vm, arr_flat, "flat", 0)
+    vm.array_methods["flatMap"]       = mk_builtin_method(vm, arr_flat_map, "flatMap", 1)
+    vm.array_methods["fill"]          = mk_builtin_method(vm, arr_fill, "fill", 1)
+    vm.array_methods["at"]            = mk_builtin_method(vm, arr_at, "at", 1)
+    vm.array_methods["findLast"]      = mk_builtin_method(vm, arr_find_last, "findLast", 1)
+    vm.array_methods["findLastIndex"] = mk_builtin_method(vm, arr_find_last_index, "findLastIndex", 1)
+    vm.array_methods["copyWithin"]    = mk_builtin_method(vm, arr_copy_within, "copyWithin", 2)
     // Change Array by Copy (ES2023) — ver o bloco acima do arr_splice
-    vm.array_methods["toReversed"]    = mk_native(vm, arr_to_reversed)
-    vm.array_methods["toSorted"]      = mk_native(vm, arr_to_sorted)
-    vm.array_methods["toSpliced"]     = mk_native(vm, arr_to_spliced)
-    vm.array_methods["with"]          = mk_native(vm, arr_with)
-    vm.array_methods["keys"]          = mk_native(vm, arr_keys_iter)
-    vm.array_methods["values"]        = mk_native(vm, arr_values_iter)
-    vm.array_methods["entries"]       = mk_native(vm, arr_entries_iter)
+    vm.array_methods["toReversed"]    = mk_builtin_method(vm, arr_to_reversed, "toReversed", 0)
+    vm.array_methods["toSorted"]      = mk_builtin_method(vm, arr_to_sorted, "toSorted", 1)
+    vm.array_methods["toSpliced"]     = mk_builtin_method(vm, arr_to_spliced, "toSpliced", 2)
+    vm.array_methods["with"]          = mk_builtin_method(vm, arr_with, "with", 2)
+    vm.array_methods["keys"]          = mk_builtin_method(vm, arr_keys_iter, "keys", 0)
+    vm.array_methods["values"]        = mk_builtin_method(vm, arr_values_iter, "values", 0)
+    vm.array_methods["entries"]       = mk_builtin_method(vm, arr_entries_iter, "entries", 0)
 
     // métodos de Number ((3.14).toFixed(2) etc.; get_member case f64)
     vm.number_methods = make(map[string]^Function)
     vm.number_methods["toFixed"]        = mk_native(vm, num_to_fixed)
-    vm.number_methods["toString"]       = mk_native(vm, num_to_string)
+    vm.number_methods["toString"]       = mk_builtin_method(vm, num_to_string, "toString", 0)
     vm.number_methods["toPrecision"]    = mk_native(vm, num_to_precision)
-    vm.number_methods["toLocaleString"] = mk_native(vm, num_to_string) // aproximação sem separadores
-    vm.number_methods["valueOf"]        = mk_native(vm, num_value_of)
+    vm.number_methods["toLocaleString"] = mk_builtin_method(vm, num_to_string, "toLocaleString", 0) // aproximação sem separadores
+    vm.number_methods["valueOf"]        = mk_builtin_method(vm, num_value_of, "valueOf", 0)
 
     vm.string_methods["charAt"]      = mk_native(vm, str_char_at)
     vm.string_methods["charCodeAt"]  = mk_native(vm, str_char_code_at)
-    vm.string_methods["indexOf"]     = mk_native(vm, str_index_of)
-    vm.string_methods["includes"]    = mk_native(vm, str_includes)
-    vm.string_methods["slice"]       = mk_native(vm, str_slice)
+    vm.string_methods["indexOf"]     = mk_builtin_method(vm, str_index_of, "indexOf", 1)
+    vm.string_methods["includes"]    = mk_builtin_method(vm, str_includes, "includes", 1)
+    vm.string_methods["slice"]       = mk_builtin_method(vm, str_slice, "slice", 2)
     vm.string_methods["substring"]   = mk_native(vm, str_substring)
     vm.string_methods["substr"]      = mk_native(vm, str_substr)
-    vm.string_methods["toString"]    = mk_native(vm, str_identity)
-    vm.string_methods["valueOf"]     = mk_native(vm, str_identity)
+    vm.string_methods["toString"]    = mk_builtin_method(vm, str_identity, "toString", 0)
+    vm.string_methods["valueOf"]     = mk_builtin_method(vm, str_identity, "valueOf", 0)
     vm.string_methods["toUpperCase"] = mk_native(vm, str_to_upper)
     vm.string_methods["toLowerCase"] = mk_native(vm, str_to_lower)
     vm.string_methods["trim"]        = mk_native(vm, str_trim)
     vm.string_methods["repeat"]      = mk_native(vm, str_repeat)
-    vm.string_methods["concat"]       = mk_native(vm, str_concat)
+    vm.string_methods["concat"]       = mk_builtin_method(vm, str_concat, "concat", 1)
     vm.string_methods["split"]        = mk_native(vm, str_split)
     vm.string_methods["replace"]      = mk_native(vm, str_replace)
     vm.string_methods["replaceAll"]   = mk_native(vm, str_replace_all)
@@ -2579,10 +2617,10 @@ install_builtins :: proc(vm: ^Interp) {
     vm.string_methods["padEnd"]       = mk_native(vm, str_pad_end)
     vm.string_methods["match"]        = mk_native(vm, str_match)
     vm.string_methods["search"]       = mk_native(vm, str_search)
-    vm.string_methods["lastIndexOf"]  = mk_native(vm, str_last_index_of)
+    vm.string_methods["lastIndexOf"]  = mk_builtin_method(vm, str_last_index_of, "lastIndexOf", 1)
     vm.string_methods["trimStart"]    = mk_native(vm, str_trim_start)
     vm.string_methods["trimEnd"]      = mk_native(vm, str_trim_end)
-    vm.string_methods["at"]           = mk_native(vm, str_at)
+    vm.string_methods["at"]           = mk_builtin_method(vm, str_at, "at", 1)
     vm.string_methods["matchAll"]      = mk_native(vm, str_match_all)
     vm.string_methods["codePointAt"]   = mk_native(vm, str_code_point_at) // ≠ charCodeAt desde o M167
     vm.string_methods["localeCompare"] = mk_native(vm, str_locale_compare)
@@ -2676,9 +2714,9 @@ install_builtins :: proc(vm: ^Interp) {
     arr_ctor := mk_native(vm, arr_construct) // Array(n) / Array(a,b,...) — NÃO é Array.from
     arr_ctor.name = "Array"
     arr_ctor.props = make(map[string]Value)
-    arr_ctor.props["from"]    = mk_native(vm, arr_from)
-    arr_ctor.props["isArray"] = mk_native(vm, arr_is_array)
-    arr_ctor.props["of"]      = mk_native(vm, arr_of)
+    arr_ctor.props["from"]    = mk_builtin_method(vm, arr_from, "from", 1)
+    arr_ctor.props["isArray"] = mk_builtin_method(vm, arr_is_array, "isArray", 1)
+    arr_ctor.props["of"]      = mk_builtin_method(vm, arr_of, "of", 0)
     arr_ctor.name = "Array"
     vm.array_ctor = arr_ctor // `[].constructor === Array` (get_member do ^Array)
     env_define(vm.global, "Array", arr_ctor)
@@ -2743,8 +2781,8 @@ install_builtins :: proc(vm: ^Interp) {
     // Reflect.construct(Boolean,[],function(){}))` para detectar Reflect.construct
     // nativo — falhando o detect, o bundle cai no caminho degradado (ver M127).
     vm.boolean_methods = make(map[string]^Function)
-    vm.boolean_methods["toString"] = mk_native(vm, boolean_to_string)
-    vm.boolean_methods["valueOf"]  = mk_native(vm, boolean_value_of)
+    vm.boolean_methods["toString"] = mk_builtin_method(vm, boolean_to_string, "toString", 0)
+    vm.boolean_methods["valueOf"]  = mk_builtin_method(vm, boolean_value_of, "valueOf", 0)
     bool_proto := new_object(vm)
     for k, fn in vm.boolean_methods do bool_proto.props[k] = fn
     bool_proto.props["constructor"] = bool_ctor
@@ -3005,4 +3043,12 @@ global_unescape :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         i += 1
     }
     return own_str(vm, strings.to_string(out))
+}
+
+mk_builtin_method :: proc(vm: ^Interp, fn: Native_Fn, name: string, arity: int) -> ^Function {
+    f := mk_native(vm, fn)
+    f.name = name
+    f.native_length = arity
+    f.non_constructor = true
+    return f
 }
