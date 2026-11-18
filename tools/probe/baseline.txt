@@ -71,12 +71,9 @@ lang|meta|Proxy defineProperty/getPrototypeOf
 lang|meta|Proxy ownKeys + getOwnPropertyDescriptor
 lang|meta|Proxy revocable
 lang|meta|Reflect.get com receiver
-lang|number|Math.round(-0.5)
 lang|regex|flag d (indices)
-lang|regex|replace com $<nome>
 lang|regex|Symbol.replace custom
 lang|sintaxe|decorators
 lang|sintaxe|using declaration (ES2026)
 lang|sintaxe|with
 lang|string|isWellFormed / toWellFormed
-lang|string|startsWith/endsWith com pos

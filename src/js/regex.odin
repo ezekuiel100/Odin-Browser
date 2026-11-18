@@ -1011,16 +1011,32 @@ regex_result_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> V
     arr.props = make(map[string]Value)
     arr.props["index"] = f64(str_rindex(s, m.groups[0])) // em RUNES (consistente com slice etc.)
     arr.props["input"] = own_str(vm, s)
-    if len(re.gnames) > 0 { // grupos nomeados: m.groups.nome
-        gobj := new_object(vm)
-        for name, gi in re.gnames {
-            v: Value = nil
-            if gi >= 0 && gi < len(arr.items) do v = arr.items[gi]
-            set_member(vm, gobj, own_str(vm, name).(string), v)
-        }
-        arr.props["groups"] = gobj
-    }
+    if len(re.gnames) > 0 do arr.props["groups"] = regex_groups_object(vm, re, s, m) // m.groups.nome
     return arr
+}
+
+// O objeto `groups` de um casamento (exec/match e o último argumento do callback do
+// replace): nome → texto capturado, undefined se o grupo não participou. Chaves na
+// ORDEM dos grupos no padrão — antes saíam na ordem do map do Odin (aleatória entre
+// execuções). Protótipo nulo, como na spec (`groups.toString` não existe).
+regex_groups_object :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> ^Object {
+    Pair :: struct { name: string, gi: int }
+    pairs := make([dynamic]Pair, 0, len(re.gnames), context.temp_allocator)
+    for name, gi in re.gnames do append(&pairs, Pair{name, gi})
+    for i := 1; i < len(pairs); i += 1 { // insertion sort: quase sempre 1–3 grupos
+        for j := i; j > 0 && pairs[j].gi < pairs[j-1].gi; j -= 1 do pairs[j], pairs[j-1] = pairs[j-1], pairs[j]
+    }
+    gobj := new_object(vm)
+    gobj.proto = nil
+    for p in pairs {
+        v: Value = nil
+        if 2 * p.gi + 1 < len(m.groups) {
+            gs, ge := m.groups[2 * p.gi], m.groups[2 * p.gi + 1]
+            if gs >= 0 do v = own_str(vm, s[gs:ge])
+        }
+        oput(gobj, own_str_raw(vm, p.name), v)
+    }
+    return gobj
 }
 
 // Converte um Value em string (nil/undefined -> ""), sem alocar quando já é string.

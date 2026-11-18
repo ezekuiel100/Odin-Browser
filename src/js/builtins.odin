@@ -895,6 +895,13 @@ to_js_string :: proc(vm: ^Interp, v: Value) -> string {
             val = r // toString devolveu não-string: serializa o resultado
         }
     }
+    // ToString(Symbol) LANÇA (spec 7.1.17) — `"a".startsWith(Symbol())` não pode
+    // virar a busca por "Symbol()". (String(sym) é o caso à parte que descreve o
+    // símbolo, e não passa por aqui.)
+    if _, issym := val.(^Symbol); issym {
+        throw_type_error(vm, "Cannot convert a Symbol value to a string")
+        return ""
+    }
     sb: strings.Builder
     strings.builder_init(&sb)
     to_text(&sb, val)
@@ -1077,6 +1084,18 @@ write_replacement :: proc(sb: ^strings.Builder, repl: string, s: string, m: Re_M
                     gs2, ge2 := m.groups[2 * idx], m.groups[2 * idx + 1]
                     if gs2 >= 0 do strings.write_string(sb, s[gs2:ge2])
                 }
+            case next == '<' && len(re.gnames) > 0:
+                // $<nome>: grupo nomeado (spec GetSubstitution). Sem `>` de fechamento
+                // fica literal; nome inexistente ou grupo que não casou vira "".
+                // Sem grupos nomeados no padrão, `$<` é sempre literal (cai no default).
+                close := strings.index_byte(repl[i + 2:], '>')
+                if close < 0 { strings.write_string(sb, "$<"); i += 2; break }
+                name := repl[i + 2:][:close]
+                if gi, found := re.gnames[name]; found && 2 * gi + 1 < len(m.groups) {
+                    gs2, ge2 := m.groups[2 * gi], m.groups[2 * gi + 1]
+                    if gs2 >= 0 do strings.write_string(sb, s[gs2:ge2])
+                }
+                i += 2 + close + 1
             case:
                 strings.write_byte(sb, '$'); i += 1
             }
@@ -1098,6 +1117,8 @@ write_replacer_result :: proc(vm: ^Interp, sb: ^strings.Builder, fn: ^Function, 
     }
     append(&fargs, f64(str_rindex(s, gs))) // offset em runes, como os índices do JS
     append(&fargs, Value(s))
+    // com grupos nomeados, o callback recebe o objeto `groups` por último (spec)
+    if len(re.gnames) > 0 do append(&fargs, regex_groups_object(vm, re, s, m))
     result := call_function(vm, fn, nil, fargs[:])
     to_text(sb, result)
 }
@@ -1223,16 +1244,56 @@ str_replace_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 str_starts_with :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return false
-    p, pok := arg(args, 0).(string)
-    return pok && strings.has_prefix(s, p)
+    s, sub, ok := str_search_args(vm, this, args, "startsWith")
+    if !ok do return nil
+    n := str_rlen(s)
+    pos := 0
+    if len(args) >= 2 && args[1] != nil {
+        pv := to_number(vm, args[1]); if vm.throwing do return nil
+        pos = clamp_index(pv, n)
+    }
+    return strings.has_prefix(s[str_rbyte(s, pos):], sub)
 }
 
+// endsWith(sub, endPosition): a busca termina em endPosition (padrão: o fim).
+// Antes as duas ignoravam a posição e exigiam que o argumento já fosse string.
 @(private = "file")
 str_ends_with :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return false
-    p, pok := arg(args, 0).(string)
-    return pok && strings.has_suffix(s, p)
+    s, sub, ok := str_search_args(vm, this, args, "endsWith")
+    if !ok do return nil
+    n := str_rlen(s)
+    end := n
+    if len(args) >= 2 && args[1] != nil {
+        pv := to_number(vm, args[1]); if vm.throwing do return nil
+        end = clamp_index(pv, n)
+    }
+    return strings.has_suffix(s[:str_rbyte(s, end)], sub)
+}
+
+// Comum a startsWith/endsWith: `this` string e ToString do 1º argumento, que NÃO
+// pode ser RegExp (spec: TypeError — evita que `s.startsWith(/a/)` vire "/a/").
+@(private = "file")
+str_search_args :: proc(vm: ^Interp, this: Value, args: []Value, method: string) -> (string, string, bool) {
+    s, ok := this.(string)
+    if !ok {
+        if is_nullish(this) { throw_type_error(vm, fmt.tprintf("String.prototype.%s called on null or undefined", method)); return "", "", false }
+        s = to_js_string(vm, this); if vm.throwing do return "", "", false
+    }
+    if _, isre := arg(args, 0).(^Regex); isre {
+        throw_type_error(vm, fmt.tprintf("First argument to String.prototype.%s must not be a regular expression", method))
+        return "", "", false
+    }
+    sub := to_js_string(vm, arg(args, 0)); if vm.throwing do return "", "", false
+    return s, sub, true
+}
+
+// ToIntegerOrInfinity(v) limitado a [0, n] — sem passar NaN/±Infinity por `int()`,
+// que em Odin é comportamento indefinido.
+@(private = "file")
+clamp_index :: proc(v: f64, n: int) -> int {
+    if v != v || v <= 0 do return 0
+    if v >= f64(n) do return n
+    return int(v)
 }
 
 // padStart/padEnd (por bytes; pad padrão = espaço).
@@ -2228,10 +2289,17 @@ global_atob :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 @(private = "file") math_ceil   :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return math.ceil(as_number(arg(a, 0))) }
 // JS arredonda meio-caminho para CIMA (+inf): round(-2.5) = -2 (math.round
 // arredonda para longe do zero, daria -3).
+// Math.round: arredonda para +∞ no empate. Dois desvios da versão `floor(x+0.5)`:
+// (1) em [-0.5, 0) o resultado é -0, não +0 (`1/Math.round(-0.5)` é -Infinity);
+// (2) `x+0.5` arredonda em f64 — 0.49999999999999994+0.5 dá 1, e o certo é 0.
 @(private = "file") math_round  :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
-    x := as_number(arg(a, 0))
-    if x != x || math.trunc(x) == x do return x // NaN/inteiro/±inf: intactos
-    return math.floor(x + 0.5)
+    x := to_number(vm, arg(a, 0)) // ToNumber com valueOf
+    if vm.throwing do return nil
+    if x != x || math.trunc(x) == x do return x // NaN/inteiro/±inf/±0: intactos
+    if x < 0 && x >= -0.5 do return math.copy_sign(f64(0), -1)
+    r := math.floor(x)
+    if x - r >= 0.5 do r += 1
+    return r
 }
 @(private = "file") math_trunc  :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return math.trunc(as_number(arg(a, 0))) }
 @(private = "file") math_abs_   :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return abs(as_number(arg(a, 0))) }
