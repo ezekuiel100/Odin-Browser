@@ -11,8 +11,12 @@
 #   tests\test262\harness\*.js        (assert.js, sta.js, propertyHelper.js, ...)
 #   tests\test262\test\<area>\*.js    (espelha o caminho do repo)
 
+#       .\tools\fetch-test262.ps1 -Only built-ins/Date/parse   (so essas pastas, sem
+#                                   rebaixar o harness -- poupa a cota da API do GitHub)
+
 param(
-    [int]$PerDir = 25
+    [int]$PerDir = 25,
+    [string[]]$Only = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,6 +63,14 @@ $areas = @(
     "built-ins/Math/max",
     "built-ins/Date/prototype/setFullYear",
     "built-ins/Date/prototype/getTime",
+    "built-ins/Date/parse",
+    "built-ins/Date/UTC",
+    "built-ins/Date/prototype/toString",
+    "built-ins/Date/prototype/toDateString",
+    "built-ins/Date/prototype/toTimeString",
+    "built-ins/Date/prototype/toUTCString",
+    "built-ins/Date/prototype/toISOString",
+    "built-ins/Date/prototype/toJSON",
     "built-ins/TypedArray/prototype/set",
     "built-ins/TypedArrayConstructors/ctors/buffer-arg",
     "language/statements/for-of",
@@ -125,20 +137,25 @@ function Get-YamlList($fm, $key) {
 
 New-Item -ItemType Directory -Force -Path $outRoot | Out-Null
 
+if ($Only.Count -gt 0) { $areas = $Only }
+
 # --- 1) harness completo (todos os .js de harness/) ---
-Write-Host "`n=== harness ===" -ForegroundColor Cyan
-$harnessDir = Join-Path $outRoot "harness"
-New-Item -ItemType Directory -Force -Path $harnessDir | Out-Null
-$hcount = 0
-foreach ($f in (List-Dir "harness")) {
-    if ($f.type -ne 'file' -or $f.name -notmatch '\.js$') { continue }
-    $c = Download-Raw "harness/$($f.name)"
-    if ($c) {
-        [System.IO.File]::WriteAllText((Join-Path $harnessDir $f.name), $c)
-        $hcount++
+# Com -Only o harness ja baixado e reaproveitado.
+if ($Only.Count -eq 0) {
+    Write-Host "`n=== harness ===" -ForegroundColor Cyan
+    $harnessDir = Join-Path $outRoot "harness"
+    New-Item -ItemType Directory -Force -Path $harnessDir | Out-Null
+    $hcount = 0
+    foreach ($f in (List-Dir "harness")) {
+        if ($f.type -ne 'file' -or $f.name -notmatch '\.js$') { continue }
+        $c = Download-Raw "harness/$($f.name)"
+        if ($c) {
+            [System.IO.File]::WriteAllText((Join-Path $harnessDir $f.name), $c)
+            $hcount++
+        }
     }
+    Write-Host "  $hcount arquivos de harness" -ForegroundColor Green
 }
-Write-Host "  $hcount arquivos de harness" -ForegroundColor Green
 
 # --- 2) testes curados ---
 $totalKept = 0; $totalSkip = 0

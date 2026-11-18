@@ -60,7 +60,6 @@ lang|binario|WebAssembly
 lang|colecoes|captureStackTrace
 lang|colecoes|Map.groupBy
 lang|colecoes|Set operacoes (union/intersection)
-lang|date/intl/json|Date.parse RFC/locale
 lang|date/intl/json|Intl.ListFormat / Segmenter
 lang|date/intl/json|Temporal
 lang|funcao|bind preserva instanceof
