@@ -1769,27 +1769,52 @@ global_is_finite :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // Number(x), String(x)
 @(private = "file")
 global_number_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return to_number(vm, arg(args, 0)) // ToNumber da spec: Number(new Date) = timestamp
+    is_new := vm.native_new
+    n: f64 = 0 // Number() sem argumento é 0, não NaN
+    if len(args) > 0 {
+        n = to_number(vm, args[0]) // ToNumber da spec: Number(new Date) = timestamp
+        if vm.throwing do return nil
+    }
+    if is_new do return make_wrapper(vm, n) // new Number(5): objeto, typeof "object"
+    return n
 }
 
 // Boolean(x): ToBoolean. Estava FALTANDO como global (`typeof Boolean` == undefined),
 // o que quebrava o idioma onipresente `arr.filter(Boolean)` p/ remover falsy —
 // 7 sites no gap-report caíam em "Boolean is not a function".
 global_boolean_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return truthy(arg(args, 0))
+    b := truthy(arg(args, 0))
+    // new Boolean(false) é um OBJETO — e portanto truthy (`if (new Boolean(false))` entra)
+    if vm.native_new do return make_wrapper(vm, b)
+    return b
 }
 
-// Boolean.prototype.toString / .valueOf. `this` é o próprio booleano: não temos
-// wrapper-object para Boolean (`new Boolean(x)` devolve o primitivo), então o
-// `.call(algumBooleano)` do padrão uncurryThis chega aqui com this: bool.
+// Boolean.prototype.toString / .valueOf: thisBooleanValue (spec) — o booleano, ou o
+// de dentro do wrapper (que unwrap_prim já entrega como `this: bool`); qualquer
+// outra coisa é TypeError. Antes devolvia truthy(this), então
+// `Boolean.prototype.valueOf.call({})` dava true em vez de lançar.
+@(private = "file")
+boolean_this :: proc(vm: ^Interp, this: Value) -> (bool, bool) {
+    if b, ok := this.(bool); ok do return b, true
+    if p, ok := wrapper_value(this); ok {
+        if b, bok := p.(bool); bok do return b, true
+    }
+    throw_type_error(vm, "Boolean.prototype method called on incompatible receiver")
+    return false, false
+}
+
 @(private = "file")
 boolean_to_string :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return truthy(this) ? "true" : "false"
+    b, ok := boolean_this(vm, this)
+    if !ok do return nil
+    return b ? "true" : "false"
 }
 
 @(private = "file")
 boolean_value_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return truthy(this)
+    b, ok := boolean_this(vm, this)
+    if !ok do return nil
+    return b
 }
 
 // String.raw(strings, ...vals): tag que intercala os chunks com os valores.
@@ -1852,14 +1877,26 @@ string_from_code_point :: proc(vm: ^Interp, this: Value, args: []Value) -> Value
 
 @(private = "file")
 global_string_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    v := arg(args, 0)
-    if v == nil do return own_str(vm, "undefined")
-    if _, isNull := v.(JS_Null); isNull do return own_str(vm, "null")
-    sb: strings.Builder
-    strings.builder_init(&sb); defer strings.builder_destroy(&sb)
-    write_text_spec(&sb, vm, v) // String([1,2]) === "1,2", não o texto de debug
-    if vm.throwing do return nil
-    return own_str(vm, strings.to_string(sb))
+    is_new := vm.native_new
+    s: Value
+    if len(args) == 0 {
+        s = own_str(vm, "") // String() sem argumento é "", não "undefined"
+    } else {
+        v := args[0]
+        if v == nil {
+            s = own_str(vm, "undefined")
+        } else if _, isNull := v.(JS_Null); isNull {
+            s = own_str(vm, "null")
+        } else {
+            sb: strings.Builder
+            strings.builder_init(&sb); defer strings.builder_destroy(&sb)
+            write_text_spec(&sb, vm, v) // String([1,2]) === "1,2", não o texto de debug
+            if vm.throwing do return nil
+            s = own_str(vm, strings.to_string(sb))
+        }
+    }
+    if is_new do return make_wrapper(vm, s) // new String("a"): objeto, typeof "object"
+    return s
 }
 
 // (Date virou objeto completo em date.odin — M59)
@@ -2922,11 +2959,20 @@ install_builtins :: proc(vm: ^Interp) {
     for k, fn in vm.number_methods do num_proto.props[k] = fn
     num_proto.props["constructor"] = num_ctor
     num_ctor.props["prototype"] = num_proto
+    vm.number_proto = num_proto // [[Prototype]] de new Number(x) / Object(1)
+    // spec: Number.prototype É um Number object ([[NumberData]] +0), String.prototype
+    // um String exótico de "" e Boolean.prototype um Boolean false —
+    // `Boolean.prototype.toString()` é "false", não TypeError
+    num_proto.prim = f64(0)
+    num_ctor.native_length = 1
 
     str_proto := new_object(vm)
     for k, fn in vm.string_methods do str_proto.props[k] = fn
     str_proto.props["constructor"] = str_ctor
     str_ctor.props["prototype"] = str_proto
+    vm.string_proto = str_proto // [[Prototype]] de new String(x) / Object("a")
+    str_proto.prim = ""
+    str_ctor.native_length = 1
 
     arr_proto := new_object(vm)
     for k, fn in vm.array_methods do arr_proto.props[k] = fn
@@ -2950,6 +2996,9 @@ install_builtins :: proc(vm: ^Interp) {
     bool_proto.props["constructor"] = bool_ctor
     bool_ctor.props = make(map[string]Value)
     bool_ctor.props["prototype"] = bool_proto
+    vm.boolean_proto = bool_proto // [[Prototype]] de new Boolean(x) / Object(true)
+    bool_proto.prim = false
+    bool_ctor.native_length = 1
 
     install_date(vm) // Date completo (date.odin)
 

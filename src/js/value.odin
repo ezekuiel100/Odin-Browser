@@ -72,6 +72,15 @@ str_to_number :: proc(s: string) -> f64 {
         body = body[1:]
     }
     if body == "Infinity" do return math.inf_f64(-1) if neg else math.inf_f64(1)
+    // StrDecimalLiteral só tem dígitos, `.`, expoente e sinal. O parse_f64 do Odin é
+    // mais largo (aceita "inf"/"INFINITY"/"nan" em qualquer caixa, e `_` entre
+    // dígitos), então `Number("INFINITY")` dava Infinity em vez de NaN.
+    for c in transmute([]u8)body {
+        switch c {
+        case '0' ..= '9', '.', 'e', 'E', '+', '-':
+        case: return math.nan_f64()
+        }
+    }
     n, ok := strconv.parse_f64(t)
     return n if ok else math.nan_f64()
 }

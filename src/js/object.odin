@@ -206,19 +206,32 @@ obj_proto_to_string :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         // [[Class]] interno: Math/JSON/arguments guardam a tag já pronta
         // ("[object Math]") em #class (não-enumerável, padrão do #t do Date).
         if cls, ok := v.props["#class"].(string); ok do return own_str(vm, cls)
+        // wrapper de primitivo: o builtinTag vem do slot interno
+        if p, ok := wrapper_value(v); ok {
+            #partial switch _ in p {
+            case string: return own_str(vm, "[object String]")
+            case f64:    return own_str(vm, "[object Number]")
+            case bool:   return own_str(vm, "[object Boolean]")
+            }
+        }
+        if _, isdate := v.props["#t"].(f64); isdate do return own_str(vm, "[object Date]")
         return own_str(vm, "[object Object]")
     }
     return own_str(vm, "[object Undefined]") // nil = undefined
 }
 
-// Object() / new Object(x): sem arg ou nulo => objeto vazio; com objeto/array
-// existente => devolve o próprio (identidade, como no JS).
+// Object() / new Object(x): sem arg ou nulo => objeto vazio; com objeto existente
+// => devolve o próprio (identidade, como no JS); primitivo => ToObject, o WRAPPER
+// (`Object("a") instanceof String`). Antes o primitivo virava `{}` — e
+// `Object(x) === x`, o idioma de "x é objeto?", dava a resposta certa por acaso.
 @(private = "file")
 obj_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     a := arg(args, 0)
     #partial switch _ in a {
-    case ^Object, ^Array, ^Function:
+    case ^Object, ^Array, ^Function, ^Regex, ^Collection:
         return a
+    case string, f64, bool:
+        return make_wrapper(vm, a)
     }
     return new_object(vm)
 }

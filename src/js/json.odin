@@ -118,6 +118,19 @@ json_prop :: proc(st: ^Json_Out, holder: Value, key: Value, value: Value, depth:
         value = call_function(vm, st.replacer, holder, []Value{json_key_value(vm, key), value})
         if vm.throwing do return false
     }
+    // wrappers viram o primitivo (spec: ToNumber/ToString/[[BooleanData]]) —
+    // `JSON.stringify(new String("a"))` é `"a"`, não `{}`
+    if p, isw := wrapper_value(value); isw {
+        #partial switch _ in p {
+        case f64:
+            value = to_number(vm, value)
+        case string:
+            value = to_primitive(vm, value, false, "string")
+        case bool:
+            value = p
+        }
+        if vm.throwing do return false
+    }
     sb := &st.sb
     switch x in value {
     case:

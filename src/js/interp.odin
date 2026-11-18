@@ -287,6 +287,14 @@ Interp :: struct {
                                           // (Object.getPrototypeOf(fn) quando não é classe derivada)
     global_this:    Value,                // `this` de chamada sem receptor (= window; nil sem DOM)
     date_proto:     ^Object,              // prototype compartilhado dos Date (date.odin)
+    // String/Number/Boolean.prototype: [[Prototype]] dos objetos WRAPPER
+    // (`new String("a")`, `Object(1)`) — ver make_wrapper.
+    string_proto, number_proto, boolean_proto: ^Object,
+    // true só durante a chamada DIRETA de uma nativa por construct_object (`new X()`):
+    // é como String/Number/Boolean distinguem `new String(x)` (wrapper) de `String(x)`
+    // (primitivo). call_function o zera ao despachar qualquer nativa, então não vaza
+    // para chamadas aninhadas.
+    native_new:     bool,
     error_protos:   map[string]^Object,   // Error/TypeError/... → prototype (instanceof)
     object_methods: map[string]^Function, // métodos de todo objeto (hasOwnProperty, ...)
     collection_methods: map[string]^Function, // métodos de Map/Set/WeakMap/WeakSet (set, get, has, ...)
@@ -2029,6 +2037,16 @@ own_string_keys :: proc(o: ^Object, out: ^[dynamic]string, all: bool) {
     }
     seen: map[string]bool
     defer delete(seen)
+    // 0) String wrapper: os índices da string vêm antes de tudo (e "length", que não
+    //    é enumerável, só na lista completa) — spec 10.4.3.3
+    if s, isstr := o.prim.(string); isstr {
+        for i in 0 ..< str_rlen(s) {
+            k := fmt.tprintf("%d", i)
+            seen[k] = true
+            append(out, k)
+        }
+        if all { seen["length"] = true; append(out, "length") }
+    }
     // 1) chaves-índice, crescente (insertion sort: quase sempre pouquíssimas)
     idx_keys: [dynamic]string
     defer delete(idx_keys)
@@ -2133,7 +2151,18 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         // subclasse de builtin (M136): o que a cadeia da subclasse não define cai no
         // builtin embrulhado — é de lá que vêm `size`, `length` e os métodos.
         if o.prim != nil {
-            if v := get_member(vm, o.prim, name); v != nil do return v
+            #partial switch p in o.prim {
+            case string:
+                // String wrapper: `length` e os índices são props PRÓPRIAS
+                // (`new String("ab")[1]`). Métodos NÃO vêm do primitivo — só da
+                // cadeia (String.prototype); senão `delete String.prototype.x` não teria efeito.
+                if name == "length" do return f64(str_rlen(p))
+                if is_index_key(name) do return get_index(vm, p, as_number(name))
+            case f64, bool:
+                // Number/Boolean wrapper: nada próprio — tudo já veio da cadeia acima
+            case:
+                if v := get_member(vm, o.prim, name); v != nil do return v
+            }
         }
         // sonda: prop pedida de um wrapper de nó DOM que NINGUÉM serve
         when #config(MEMBERPROBE, false) {
@@ -4114,6 +4143,10 @@ super_construct :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) 
         }
     case ^Collection, ^Array, ^Regex:
         o.prim = ret
+    case string, f64, bool:
+        // `class X extends String { constructor(){ super("ab") } }`: a nativa chamada
+        // sem `new` devolve o primitivo; a instância vira o wrapper dele
+        if fn.native != nil do o.prim = ret
     }
     return ret
 }
@@ -4129,8 +4162,43 @@ unwrap_prim :: proc(vm: ^Interp, fn: ^Function, this: Value) -> Value {
     #partial switch _ in o.prim {
     case ^Collection: for _, m in vm.collection_methods do if m == fn do return o.prim
     case ^Array:      return this
+    // wrapper de primitivo (`new String("a").toUpperCase()`, valueOf no ToPrimitive):
+    // os métodos nativos leem `this.(string)`/`.(f64)`/`.(bool)` — é o valor
+    // embrulhado ([[StringData]]/[[NumberData]]/[[BooleanData]]) que eles querem.
+    // Só wrappers chegam aqui (o.prim != nil), então o laço não pesa no caminho comum.
+    case string: for _, m in vm.string_methods do if m == fn do return o.prim
+    case f64:    for _, m in vm.number_methods do if m == fn do return o.prim
+    case bool:   for _, m in vm.boolean_methods do if m == fn do return o.prim
     }
     return this
+}
+
+// ToObject de um primitivo string/número/booleano: o objeto WRAPPER, com o
+// primitivo no slot `prim` e o X.prototype certo. O que o wrapper herda do
+// primitivo (`length`, índices, métodos) vem pelo fallback de `prim` do get_member.
+// Outros valores voltam como estão (objeto já é objeto; null/undefined são do chamador).
+make_wrapper :: proc(vm: ^Interp, v: Value) -> Value {
+    proto: ^Object
+    #partial switch _ in v {
+    case string: proto = vm.string_proto
+    case f64:    proto = vm.number_proto
+    case bool:   proto = vm.boolean_proto
+    case:        return v
+    }
+    o := new_object(vm)
+    o.proto = proto
+    o.prim = v
+    return o
+}
+
+// O primitivo dentro de um wrapper (ok=false se `v` não é um).
+wrapper_value :: proc(v: Value) -> (Value, bool) {
+    o, ok := v.(^Object)
+    if !ok || o.prim == nil do return nil, false
+    #partial switch _ in o.prim {
+    case string, f64, bool: return o.prim, true
+    }
+    return nil, false
 }
 
 // new_target != nil só via Reflect.construct(alvo, args, newTarget): o corpo que
@@ -4148,7 +4216,10 @@ construct_object :: proc(vm: ^Interp, fn: ^Function, args: []Value, new_target: 
         // funciona só quando chamada sem `new` — assimetria silenciosa.
         saved_bound := vm.native_bound
         vm.native_bound = fn.bound
+        saved_new := vm.native_new
+        vm.native_new = true
         ret := fn.native(vm, nil, args)
+        vm.native_new = saved_new
         vm.native_bound = saved_bound
         // `Reflect.construct(Error, [msg], MinhaErro)` tem que sair com o prototype
         // da subclasse — senão o instanceof mente.
@@ -4742,7 +4813,10 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
         // expõe fn.bound à nativa via vm.native_bound (save/restore = reentrante)
         saved := vm.native_bound
         vm.native_bound = fn.bound
+        saved_new := vm.native_new
+        vm.native_new = false // chamada comum: nunca é `new` (ver Interp.native_new)
         ret := fn.native(vm, unwrap_prim(vm, fn, this), args)
+        vm.native_new = saved_new
         vm.native_bound = saved
         return ret
     }
