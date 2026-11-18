@@ -2120,6 +2120,23 @@ array_index_name :: proc(name: string) -> (idx: int, ok: bool) {
     return n, true
 }
 
+// Membro de um primitivo pela cadeia do seu prototype (String/Number/Boolean.prototype
+// → Object.prototype). Getter roda com this = o primitivo. found=false quando
+// nada na cadeia tem a chave (o chamador cai nos mapas de dispatch).
+@(private = "file")
+prim_proto_lookup :: proc(vm: ^Interp, proto: ^Object, this: Value, name: string) -> (Value, bool) {
+    for cur := proto; cur != nil; cur = cur.proto {
+        if cur.getters != nil {
+            if g, has := cur.getters[name]; has {
+                if g == nil do return nil, true
+                return call_function(vm, g, this, nil), true
+            }
+        }
+        if v, has := cur.props[name]; has do return v, true
+    }
+    return nil, false
+}
+
 // Visível no pacote (object.odin invoca getters ao ler values/entries/assign).
 get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
     when JSPROF { g_prof.get_member += 1 }
@@ -2238,12 +2255,20 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         return nil
     case string:
         if name == "length" do return f64(str_rlen(o)) // CODE POINTS ('café'.length = 4)
+        // Nativo PRIMEIRO, depois a cadeia String.prototype → Object.prototype: o que
+        // um polyfill ADICIONA (`String.prototype.x = ...`) vale para o primitivo.
+        // ⚠️ DEGRADAÇÃO ANOTADA: SOBRESCREVER um método nativo não alcança o
+        // primitivo. Proposital — com a cadeia na frente o g1.globo.com caiu de
+        // ~1500 para ~300 caixas: o polyfill que a página instala por cima do
+        // nativo depende de peças que o motor ainda não tem (Symbol.replace...).
         if fn, ok := vm.string_methods[name]; ok do return fn
+        if v, found := prim_proto_lookup(vm, vm.string_proto, o, name); found do return v
         if name == "constructor" do return global_ctor(vm, "String")
         return nil
     case f64:
         // (3.14).toFixed(2), (255).toString(16), ... — this = o próprio número
-        if fn, ok := vm.number_methods[name]; ok do return fn
+        if fn, ok := vm.number_methods[name]; ok do return fn // nativo primeiro (ver string)
+        if v, found := prim_proto_lookup(vm, vm.number_proto, o, name); found do return v
         if name == "constructor" do return global_ctor(vm, "Number")
         return nil
     case bool:
@@ -2252,7 +2277,8 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         // `Boolean.prototype.valueOf.call(...)` no feature-detect de Reflect.construct
         // (helper _createSuper do Babel) — sem isto o detect falha e o bundle cai
         // no caminho degradado. Ver install_boolean_proto.
-        if fn, ok := vm.boolean_methods[name]; ok do return fn
+        if fn, ok := vm.boolean_methods[name]; ok do return fn // nativo primeiro (ver string)
+        if v, found := prim_proto_lookup(vm, vm.boolean_proto, o, name); found do return v
         if name == "constructor" do return global_ctor(vm, "Boolean")
         if fn, ok := vm.object_methods[name]; ok do return fn
         return nil
@@ -5023,6 +5049,7 @@ vm_init :: proc(vm: ^Interp) {
     install_builtins(vm) // Array/String methods, Math, parseInt, ... (builtins.odin)
     install_promise(vm)  // Promise/then/catch (promise.odin)
     install_fetch(vm)    // fetch() assíncrono (fetch.odin)
+    finalize_builtin_metadata(vm) // name/length/atributos da spec nos builtins (builtin_meta.odin)
 }
 
 // ── VM persistente ───────────────────────────────────────────────────────────

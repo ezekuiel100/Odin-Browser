@@ -61,15 +61,11 @@ m164_membro_de_classe_e_nao_enumeravel :: proc(t: ^testing.T) {
 }
 
 @(test)
-m164_prototypes_NATIVOS_ainda_enumeram :: proc(t: ^testing.T) {
-    // ⚠️ DEGRADAÇÃO QUE PERMANECE: os métodos dos prototypes NATIVOS (Date, Array,
-    // ...) seguem enumeráveis — `Object.keys(Date.prototype)` devolve 43 aqui e 0
-    // no navegador. Não é regressão do M164 (medido igual no binário anterior);
-    // marcá-los exigiria varrer a instalação de cada builtin. O impacto prático é
-    // pequeno porque o nosso `for-in` NÃO sobe a cadeia de protótipos — este teste
-    // fixa as duas coisas para que a diferença não seja descoberta por acidente.
-    testing.expectf(t, as_number(run(`Object.keys(Object.getPrototypeOf(new Date())).length`)) > 0,
-        "Date.prototype ainda enumera (degradação anotada)")
+m164_prototypes_NATIVOS_nao_enumeram :: proc(t: ^testing.T) {
+    // Os métodos dos prototypes NATIVOS eram enumeráveis (`Object.keys(Date.prototype)`
+    // dava 43). A passada finalize_builtin_metadata (builtin_meta.odin) os marca
+    // não-enumeráveis, como no navegador.
+    testing.expect_value(t, as_number(run(`Object.keys(Object.getPrototypeOf(new Date())).length`)), f64(0))
     testing.expect_value(t, run(`
         var o = new Date(); var s = [];
         for (var k in o) s.push(k);

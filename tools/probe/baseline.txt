@@ -64,7 +64,6 @@ lang|date/intl/json|Intl.ListFormat / Segmenter
 lang|date/intl/json|Temporal
 lang|funcao|bind preserva instanceof
 lang|funcao|fn.name inferido de var
-lang|funcao|new sobre nativa nao-construtora
 lang|meta|globalThis
 lang|meta|Proxy apply
 lang|meta|Proxy defineProperty/getPrototypeOf
