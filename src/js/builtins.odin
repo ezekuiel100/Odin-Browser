@@ -3349,8 +3349,15 @@ arr_write :: proc(vm: ^Interp, this: Value, key: string, v: Value) {
     if vm.throwing do return
     #partial switch o in this {
     case ^Array:
+        // Set(O, P, V, true) da spec: os métodos mutadores LANÇAM em qualquer modo
+        // quando o [[Set]] falha (`Object.freeze([]).push(1)` é TypeError mesmo em
+        // sloppy). Antes o caminho do ^Array ignorava o false e o length mudava.
         if key == "length" {
             n := as_int(v)
+            if (o.frozen || o.sealed) && n != len(o.items) {
+                throw_type_error(vm, "Cannot assign to read only property 'length' of object")
+                return
+            }
             if n < len(o.items) {
                 resize(&o.items, n)
                 arr_holes_trim(o)
@@ -3360,7 +3367,9 @@ arr_write :: proc(vm: ^Interp, this: Value, key: string, v: Value) {
             }
             return
         }
-        set_index(vm, this, key, v)
+        if !set_index(vm, this, key, v) && !vm.throwing {
+            throw_type_error(vm, fmt.tprintf("Cannot assign to read only property '%s' of object", key))
+        }
         return
     case ^Object:
         if a, wrapped := o.prim.(^Array); wrapped && key == "length" { arr_write(vm, a, key, v); return }

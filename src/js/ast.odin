@@ -84,6 +84,9 @@ Node :: struct {
     kind:   Node_Kind,
     strict: bool,           // Func (não-arrow): o corpo é strict — `arguments` NÃO é mapeado
                             // aos params e `arguments.callee` lança (ver setup_call_scope)
+                            // Assign/Update/Delete/Pattern/ForOf: escrito em código strict —
+                            // escrita rejeitada vira TypeError e nome não declarado ReferenceError.
+                            // Call: `eval(...)` direto em código strict. Program: o fonte é strict.
     num:    f64,            // Num
     str:    string,         // Str
     bval:   bool,           // Bool; Func: é arrow; Yield: é yield*

@@ -1346,7 +1346,7 @@ env_define_const :: proc(e: ^Env, name: string, v: Value) {
 // Atribui a um binding EXISTENTE, subindo a cadeia. Lança TypeError se o binding
 // encontrado for `const` — antes a reatribuição passava calada, e um bug que o
 // browser real rejeita corrompia estado aqui em silêncio.
-env_assign :: proc(vm: ^Interp, e: ^Env, name: string, v: Value) {
+env_assign :: proc(vm: ^Interp, e: ^Env, name: string, v: Value, strict := false) {
     cur := e
     root := e
     for cur != nil {
@@ -1361,6 +1361,15 @@ env_assign :: proc(vm: ^Interp, e: ^Env, name: string, v: Value) {
         }
         root = cur
         cur = cur.parent
+    }
+    // strict: atribuir a referência IRRESOLÚVEL é ReferenceError (spec PutValue).
+    // Prop da janela (`window.x = 1; x = 2`) resolve — só o nome que não existe
+    // em lugar nenhum lança.
+    if strict {
+        if _, ok := lookup_ident(vm, e, name); !ok {
+            throw_reference_error(vm, fmt.tprintf("%s is not defined", name))
+            return
+        }
     }
     // não declarada em lugar nenhum: GLOBAL implícito (sloppy mode) — a raiz
     // da cadeia é o escopo global; gravar no env atual criaria um local que
@@ -2492,58 +2501,96 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
 }
 
 // Visível no pacote: object.odin (Object.assign) também usa.
-set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) {
+//
+// Devolve o resultado do [[Set]] da spec: false = a escrita foi REJEITADA
+// (writable:false, accessor só com getter, prop nova em objeto não-extensível,
+// prop em primitivo). Sloppy ignora o false; código strict o transforma em
+// TypeError (strict_write_failed). ⚠️ Limitação do MOTOR (Map/RegExp/host que não
+// guardam a prop) devolve TRUE: lançar ali seria erro que o navegador não dá.
+set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
     if is_nullish(obj) { // null.x = v → TypeError (spec)
         throw_type_error(vm, fmt.tprintf("Cannot set properties of %s (setting '%s')",
             obj == nil ? "undefined" : "null", name))
-        return
+        return true // já lançou: o chamador não deve lançar de novo
     }
     #partial switch o in obj {
     case ^Object:
         if o.set != nil {
-            if o.set(vm, o, name, val) do return
+            if o.set(vm, o, name, val) do return true
         }
         // subclasse de Array (M136): `this.length = 0` age no array embrulhado
         if name == "length" && o.prim != nil {
-            if a, isarr := o.prim.(^Array); isarr { array_set_length(vm, a, val); return }
+            if a, isarr := o.prim.(^Array); isarr do return array_set_length(vm, a, val)
         }
         // setter na cadeia, NÍVEL a NÍVEL (espelho do get_member): uma data
         // property num nível mais próximo sombreia setter herdado — a escrita
         // vira own em vez de invocar o set de um ancestral.
         for cur := o; cur != nil; cur = cur.proto {
             if cur.setters != nil {
-                if s, ok := cur.setters[name]; ok { call_function(vm, s, o, []Value{val}); return }
+                if s, ok := cur.setters[name]; ok { call_function(vm, s, o, []Value{val}); return true }
             }
-            if _, ok := cur.props[name]; ok do break
+            // accessor SÓ com getter (próprio ou herdado): a escrita falha — não
+            // vira data property própria por cima do getter
+            if cur.getters != nil {
+                if _, ok := cur.getters[name]; ok do return false
+            }
+            if _, ok := cur.props[name]; ok {
+                // data property HERDADA writable:false também barra a escrita
+                // (spec OrdinarySet: "override mistake" de proto congelado)
+                if cur != o && .Writable not_in prop_attrs(cur, name) do return false
+                break
+            }
         }
-        // writable:false (ou prop nova em objeto não-extensível) — em sloppy mode a
-        // escrita é IGNORADA em silêncio, que é o modo em que rodamos.
-        if !prop_writable(o, name) do return
+        // writable:false (ou prop nova em objeto não-extensível)
+        if !prop_writable(o, name) do return false
         oput(o, name, val)
+        return true
     case ^Function:
         if a, explicit := o.attrs[name]; explicit {
             if _, accessor := o.getters[name]; accessor {
-                if setter, ok := o.setters[name]; ok && setter != nil do call_function(vm, setter, o, []Value{val})
-                return
+                if setter, ok := o.setters[name]; ok && setter != nil {
+                    call_function(vm, setter, o, []Value{val})
+                    return true
+                }
+                return false
             }
-            if .Writable not_in a do return
+            if .Writable not_in a do return false
         }
         // setter static de classe (static set x(v){}) — invoca com this = a classe
         if o.setters != nil {
-            if s, ok := o.setters[name]; ok { call_function(vm, s, o, []Value{val}); return }
+            if s, ok := o.setters[name]; ok { call_function(vm, s, o, []Value{val}); return true }
         }
         // escrever propriedade estática numa função (ex.: Ctor.prop = x)
         if o.props == nil do o.props = make(map[string]Value)
         o.props[name] = val
+        return true
     case ^Regex:
         if name == "lastIndex" do o.last_index = as_int(val) // p/ loops de exec global
+        return true // demais props: o ^Regex não as guarda (limitação, não rejeição)
     case ^Array:
         // prop não-índice num array (m.index custom, marcações de libs); índices
         // inteiros passam por set_index.
-        if name == "length" { array_set_length(vm, o, val); return }
+        if name == "length" do return array_set_length(vm, o, val)
+        if o.frozen do return false
         if o.props == nil do o.props = make(map[string]Value)
         o.props[name] = val
+        return true
+    case f64, bool, string, ^Symbol, ^BigInt:
+        return false // primitivo não guarda prop: `"s".x = 1` é ignorado / TypeError strict
     }
+    return true // ^Collection etc.: limitação do motor, não rejeição
+}
+
+// [[Set]] devolveu false num alvo de código STRICT: TypeError (spec PutValue).
+// Em sloppy a mesma escrita é ignorada em silêncio. Mensagens no formato do V8.
+@(private = "file")
+strict_write_failed :: proc(vm: ^Interp, obj: Value, key: string) {
+    if vm.throwing do return
+    if is_primitive(obj) {
+        throw_type_error(vm, fmt.tprintf("Cannot create property '%s' on %s", key, value_kind_name(obj)))
+        return
+    }
+    throw_type_error(vm, fmt.tprintf("Cannot assign to read only property '%s' of object", key))
 }
 
 // `arr.length = v` (ArraySetLength, spec 10.4.2.4): trunca ou estende. Antes a escrita
@@ -2552,28 +2599,29 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) {
 // concordem, senão RangeError: -1, 1.5, NaN e 2^32 são inválidos.
 // Estender cria BURACOS (arr_mark_holes); frozen/sealed ignoram a escrita (sloppy).
 // package-visible: Reflect.set/defineProperty podem reusar.
-array_set_length :: proc(vm: ^Interp, o: ^Array, val: Value) {
+array_set_length :: proc(vm: ^Interp, o: ^Array, val: Value) -> bool {
     u := to_number(vm, val)
-    if vm.throwing do return
+    if vm.throwing do return true
     n := to_number(vm, val)
-    if vm.throwing do return
+    if vm.throwing do return true
     // ToUint32(u) == n  ⇔  n é inteiro em [0, 2^32) (u e n vêm da mesma coerção)
     u32ok := u == u && math.trunc(u) == u && u >= 0 && u < 4294967296
     if !u32ok || n != u {
         vm.thrown = mk_error(vm, "RangeError", "Invalid array length"); vm.throwing = true
-        return
+        return true
     }
-    if o.frozen || o.sealed do return
     new_len := int(n)
+    if o.frozen || o.sealed do return new_len == len(o.items) // mudar o length: rejeitado
     if new_len <= len(o.items) {
         resize(&o.items, new_len)
         arr_holes_trim(o)
-        return
+        return true
     }
     // mesma guarda de set_index: `a.length = 4e9` alocaria GBs de undefined
-    if new_len > 100_000_000 do return
+    if new_len > 100_000_000 do return true
     arr_mark_holes(o, len(o.items), new_len)
     for len(o.items) < new_len do append(&o.items, nil)
+    return true
 }
 
 // package-visible: proxy.odin (default get/Reflect.get) reusa.
@@ -2626,35 +2674,36 @@ get_index :: proc(vm: ^Interp, obj: Value, key: Value) -> Value {
 }
 
 // package-visible: proxy.odin (default set/Reflect.set) reusa.
-set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) {
+// Devolve o [[Set]] da spec, como set_member.
+set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) -> bool {
     #partial switch o in obj {
     case ^Array:
         n := as_number(key)
         if n != n || math.trunc(n) != n { // chave não-inteira num Array → props
-            set_member(vm, obj, key_string(vm, key), val)
-            return
+            return set_member(vm, obj, key_string(vm, key), val)
         }
         idx := int(n)
-        if idx < 0 || idx > 100_000_000 do return // guarda: arr[1e12]=x alocaria GBs preenchendo buracos
-        if o.frozen do return // Object.freeze([...]): item não muda
+        if idx < 0 || idx > 100_000_000 do return true // guarda (limitação): arr[1e12]=x alocaria GBs
+        if o.frozen do return false // Object.freeze([...]): item não muda
         // seal/preventExtensions: os itens EXISTENTES seguem graváveis, o array é que
         // não cresce mais.
-        if idx >= len(o.items) && (o.sealed || o.frozen) do return
+        if idx >= len(o.items) && (o.sealed || o.frozen) do return false
         if idx > len(o.items) do arr_mark_holes(o, len(o.items), idx) // a[9]=x: 0..8 são buracos
         for len(o.items) <= idx do append(&o.items, nil)
         o.items[idx] = val
         if val == nil do arr_fill_slot(o, idx) // a[i]=undefined: existe, não é buraco
         // `arguments[i] = v` mapeado: o parâmetro i é o MESMO binding
         if o.args != nil && args_mapped(o.args, idx) do o.args.env.vars[o.args.params[idx]] = val
+        return true
     case ^Object:
         // subclasse de Array (M136): índice numérico escreve no array embrulhado.
         if o.prim != nil {
             if n := as_number(key); n == n && math.trunc(n) == n {
-                if _, isarr := o.prim.(^Array); isarr { set_index(vm, o.prim, key, val); return }
+                if _, isarr := o.prim.(^Array); isarr do return set_index(vm, o.prim, key, val)
             }
         }
         // via set_member: honra setters (accessor/defineProperty) e freeze.
-        set_member(vm, o, key_string(vm, key), val)
+        return set_member(vm, o, key_string(vm, key), val)
     case ^Function:
         // `fn[k] = v` (chave computada) numa função. FALTAVA — só `fn.x = v`
         // (nomeado) passava por set_member; o computado caía aqui e era IGNORADO
@@ -2663,8 +2712,12 @@ set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) {
         // jQuery.ready/etc. nunca eram setados → `jQuery.ready.promise=` lançava →
         // init do jQuery abortava → `$`/`jQuery` nunca eram definidos. set_member já
         // trata ^Function (grava em fn.props / invoca setters static).
-        set_member(vm, o, key_string(vm, key), val)
+        return set_member(vm, o, key_string(vm, key), val)
+    case nil, JS_Null, f64, bool, string, ^Symbol, ^BigInt:
+        // `null[k] = v` lança como `null.x = v`; primitivo devolve false (set_member)
+        return set_member(vm, obj, key_string(vm, key), val)
     }
+    return true // ^Regex/^Collection: o motor não guarda a prop (limitação)
 }
 
 // Lê/escreve um alvo cuja base/chave JÁ foram avaliadas (obj/key) — o .Assign
@@ -2683,15 +2736,17 @@ ref_read :: proc(vm: ^Interp, t: ^Node, env: ^Env, obj: Value, key: Value) -> Va
     return nil
 }
 
+// `strict`: o nó de escrita é de código strict — rejeição vira TypeError e nome
+// não declarado, ReferenceError.
 @(private = "file")
-ref_write :: proc(vm: ^Interp, t: ^Node, env: ^Env, obj: Value, key: Value, val: Value) {
+ref_write :: proc(vm: ^Interp, t: ^Node, env: ^Env, obj: Value, key: Value, val: Value, strict := false) {
     #partial switch t.kind {
     case .Ident:
-        env_assign(vm, env, t.name, val)
+        env_assign(vm, env, t.name, val, strict)
     case .Member:
-        set_member(vm, obj, t.name, val)
+        if !set_member(vm, obj, t.name, val) && strict do strict_write_failed(vm, obj, t.name)
     case .Index:
-        set_index(vm, obj, key, val)
+        if !set_index(vm, obj, key, val) && strict do strict_write_failed(vm, obj, key_string(vm, key))
     }
 }
 
@@ -2714,15 +2769,19 @@ read_target :: proc(vm: ^Interp, t: ^Node, env: ^Env) -> Value {
 }
 
 @(private = "file")
-write_target :: proc(vm: ^Interp, t: ^Node, val: Value, env: ^Env) {
+write_target :: proc(vm: ^Interp, t: ^Node, val: Value, env: ^Env, strict := false) {
     #partial switch t.kind {
     case .Ident:
-        env_assign(vm, env, t.name, val)
+        env_assign(vm, env, t.name, val, strict)
     case .Member:
-        set_member(vm, eval(vm, t.left, env), t.name, val)
+        obj := eval(vm, t.left, env)
+        if vm.throwing do return
+        if !set_member(vm, obj, t.name, val) && strict do strict_write_failed(vm, obj, t.name)
     case .Index:
         obj := eval(vm, t.left, env)
-        set_index(vm, obj, eval(vm, t.right, env), val)
+        key := eval(vm, t.right, env)
+        if vm.throwing do return
+        if !set_index(vm, obj, key, val) && strict do strict_write_failed(vm, obj, key_string(vm, key))
     }
 }
 
@@ -2851,6 +2910,7 @@ value_kind_name :: proc(v: Value) -> string {
     case JS_Null: return "null"
     case f64:     return "number"
     case bool:    return "boolean"
+    case string:  return "string"
     case ^Symbol: return "symbol"
     case ^BigInt: return "bigint"
     }
@@ -2881,14 +2941,14 @@ eval_target_ref :: proc(vm: ^Interp, t: ^Node, env: ^Env) -> (ref: Target_Ref) {
 }
 
 @(private = "file")
-put_target_ref :: proc(vm: ^Interp, ref: Target_Ref, val: Value, env: ^Env) {
+put_target_ref :: proc(vm: ^Interp, ref: Target_Ref, val: Value, env: ^Env, strict := false) {
     #partial switch ref.node.kind {
     case .Ident:
-        env_assign(vm, env, ref.node.name, val)
+        env_assign(vm, env, ref.node.name, val, strict)
     case .Member:
-        set_member(vm, ref.obj, ref.node.name, val)
+        if !set_member(vm, ref.obj, ref.node.name, val) && strict do strict_write_failed(vm, ref.obj, ref.node.name)
     case .Index:
-        set_index(vm, ref.obj, ref.key, val)
+        if !set_index(vm, ref.obj, ref.key, val) && strict do strict_write_failed(vm, ref.obj, key_string(vm, ref.key))
     }
 }
 
@@ -2936,12 +2996,13 @@ pattern_iter_close :: proc(vm: ^Interp, iter: Value) {
 // `is_const`: a declaração é `const` (`const {a,b} = o`) — cada nome ligado vira
 // binding imutável, como um `const a` simples.
 bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := true, is_const := false) {
-    bind_one :: proc(vm: ^Interp, env: ^Env, name: string, v: Value, declare: bool, is_const: bool) {
+    // `strict` (do nó .Pattern) só pesa na ATRIBUIÇÃO: nome não declarado lança.
+    bind_one :: proc(vm: ^Interp, env: ^Env, name: string, v: Value, declare: bool, is_const: bool, strict: bool) {
         if declare {
             if is_const do env_define_const(env, name, v)
             else do env_define(env, name, v)
         } else {
-            env_assign(vm, env, name, v)
+            env_assign(vm, env, name, v, strict)
         }
     }
     val := val
@@ -3007,7 +3068,7 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
                         if !pattern_has_key(pat, k) && !computed_consumed[k] do oput(rest, k, get_member(vm, src, k))
                     }
                 }
-                bind_one(vm, env, el.name, rest, declare, is_const)
+                bind_one(vm, env, el.name, rest, declare, is_const, pat.strict)
             } else {
                 // array: itens a partir do índice atual
                 rest_ref: Target_Ref
@@ -3029,9 +3090,9 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
                 if el.left != nil && el.left.kind == .Pattern {
                     bind_pattern(vm, el.left, rest, env, declare, is_const) // [...[a, b]]
                 } else if el.left != nil {
-                    put_target_ref(vm, rest_ref, rest, env) // [...o.x] = v (só expressão)
+                    put_target_ref(vm, rest_ref, rest, env, pat.strict) // [...o.x] = v (só expressão)
                 } else {
-                    bind_one(vm, env, el.name, rest, declare, is_const)
+                    bind_one(vm, env, el.name, rest, declare, is_const, pat.strict)
                 }
             }
             continue
@@ -3064,10 +3125,10 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
             if el.left.kind == .Pattern {
                 bind_pattern(vm, el.left, v, env, declare, is_const) // aninhado
             } else {
-                put_target_ref(vm, ref, v, env)
+                put_target_ref(vm, ref, v, env, pat.strict)
             }
         } else if el.name != "" {
-            bind_one(vm, env, el.name, v, declare, is_const)
+            bind_one(vm, env, el.name, v, declare, is_const, pat.strict)
         }
         // el.name=="" && el.left==nil => buraco de array: ignora
     }
@@ -3084,7 +3145,7 @@ for_of_run_body :: proc(vm: ^Interp, n: ^Node, env: ^Env, v: Value, my_label: st
         if n.third.kind == .Pattern {
             bind_pattern(vm, n.third, v, env, declare = false)
         } else {
-            write_target(vm, n.third, v, env)
+            write_target(vm, n.third, v, env, n.strict)
         }
         if vm.throwing do return true
     } else if n.stat {
@@ -3094,7 +3155,7 @@ for_of_run_body :: proc(vm: ^Interp, n: ^Node, env: ^Env, v: Value, my_label: st
         if n.left != nil {
             bind_pattern(vm, n.left, v, env, declare = false)
         } else {
-            env_assign(vm, env, n.name, v)
+            env_assign(vm, env, n.name, v, n.strict)
         }
     } else if n.left != nil {
         // let/const: padrão block-scoped, por iteração. `const` marca o binding —
@@ -3108,7 +3169,7 @@ for_of_run_body :: proc(vm: ^Interp, n: ^Node, env: ^Env, v: Value, my_label: st
             env_define(iter_env, n.name, v) // for (let x of ...)
         }
     } else {
-        env_assign(vm, env, n.name, v)      // for (x of ...) sem declaração
+        env_assign(vm, env, n.name, v, n.strict) // for (x of ...) sem declaração
     }
     eval(vm, n.callee, iter_env)
     if vm.continuing { if loop_take_continue(vm, my_label) do return false; return true }
@@ -3456,30 +3517,57 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         return nil            // undefined
 
     case .Delete:
+        // Prop própria NÃO-configurável não sai: `delete` devolve false em sloppy e
+        // lança TypeError em strict (spec 13.5.1.2). Antes devolvia true sempre.
         t := n.left
         #partial switch t.kind {
-        case .Member:
-            if o, ok := eval(vm, t.left, env).(^Object); ok {
-                if o.px_handler != nil { proxy_delete(vm, o, t.name); return true } // trap deleteProperty
-                if o.get == storage_get { storage_remove_key(o, t.name); return true } // delete localStorage.x
-                if .Configurable in prop_attrs(o, t.name) do oremove(o, t.name)
-            }
-        case .Index:
+        case .Member, .Index:
             obj := eval(vm, t.left, env)
-            if o, ok := obj.(^Object); ok {
-                if o.px_handler != nil { proxy_delete(vm, o, key_string(vm, eval(vm, t.right, env))); return true }
-                if o.get == storage_get { storage_remove_key(o, key_string(vm, eval(vm, t.right, env))); return true }
-                k := key_string(vm, eval(vm, t.right, env))
-                if .Configurable in prop_attrs(o, k) do oremove(o, k)
-            } else if a, ok := obj.(^Array); ok {
-                if idx := as_int(eval(vm, t.right, env)); idx >= 0 && idx < len(a.items) {
-                    if a.frozen || a.sealed do return false // não-configurável
-                    a.items[idx] = nil
-                    arr_mark_hole(a, idx) // `delete a[i]` deixa um BURACO (`i in a` = false)
-                    // `delete arguments[i]` desfaz o mapeamento com o parâmetro
-                    if a.args != nil && idx < 64 do a.args.unmapped |= u64(1) << uint(idx)
+            if vm.throwing do return nil
+            k: string
+            kv: Value
+            if t.kind == .Member {
+                k = t.name
+            } else {
+                kv = eval(vm, t.right, env)
+                if vm.throwing do return nil
+            }
+            ok := true
+            #partial switch o in obj {
+            case ^Object:
+                if t.kind == .Index do k = key_string(vm, kv)
+                if o.px_handler != nil { proxy_delete(vm, o, k); return true } // trap deleteProperty
+                if o.get == storage_get { storage_remove_key(o, k); return true } // delete localStorage.x
+                if _, own := o.props[k]; own && .Configurable not_in prop_attrs(o, k) {
+                    ok = false
+                } else if .Configurable in prop_attrs(o, k) {
+                    oremove(o, k)
+                }
+            case ^Function:
+                if t.kind == .Index do k = key_string(vm, kv)
+                if a, explicit := o.attrs[k]; explicit && .Configurable not_in a do ok = false
+            case ^Array:
+                if t.kind == .Member {
+                    if k == "length" do ok = false
+                } else if idx := as_int(kv); idx >= 0 && idx < len(o.items) {
+                    if o.frozen || o.sealed {
+                        ok = false // não-configurável
+                    } else {
+                        o.items[idx] = nil
+                        arr_mark_hole(o, idx) // `delete a[i]` deixa um BURACO (`i in a` = false)
+                        // `delete arguments[i]` desfaz o mapeamento com o parâmetro
+                        if o.args != nil && idx < 64 do o.args.unmapped |= u64(1) << uint(idx)
+                    }
+                } else if key_string(vm, kv) == "length" {
+                    ok = false
                 }
             }
+            if !ok && n.strict {
+                if t.kind == .Index && k == "" do k = key_string(vm, kv)
+                throw_type_error(vm, fmt.tprintf("Cannot delete property '%s' of object", k))
+                return nil
+            }
+            return ok
         }
         return true
 
@@ -3489,12 +3577,12 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         if ob, ok := old.(^BigInt); ok { // BigInt: ++ soma 1n (não Number 1)
             one := bigint_from_i64(vm, 1)
             nb := n.op == .PlusPlus ? bigint_add(vm, ob, one) : bigint_sub(vm, ob, one)
-            write_target(vm, n.left, nb, env)
+            write_target(vm, n.left, nb, env, n.strict)
             return nb if n.bval else ob
         }
         cur := as_number(old)
         newv := cur + (1 if n.op == .PlusPlus else -1)
-        write_target(vm, n.left, newv, env)
+        write_target(vm, n.left, newv, env, n.strict)
         return newv if n.bval else cur // prefixo devolve o novo; sufixo, o antigo
 
     case .Binary:
@@ -3605,7 +3693,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             }
             if keep do return cur
             rhs := eval(vm, n.right, env)
-            ref_write(vm, n.left, env, tobj, tkey, rhs)
+            ref_write(vm, n.left, env, tobj, tkey, rhs, n.strict)
             return rhs
         }
         old: Value
@@ -3613,7 +3701,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         rhs := eval(vm, n.right, env)
         val: Value = rhs
         if n.op != .Assign do val = binop(vm, n.op, old, rhs) // x += v ≡ x = x <op> v
-        ref_write(vm, n.left, env, tobj, tkey, val)
+        ref_write(vm, n.left, env, tobj, tkey, val, n.strict)
         return val
 
     case .Member:
@@ -4664,7 +4752,7 @@ eval_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 eargs := eval_args(vm, n.body, env)
                 defer delete(eargs)
                 if vm.throwing do return nil
-                return do_eval(vm, len(eargs) > 0 ? eargs[0] : nil, env)
+                return do_eval(vm, len(eargs) > 0 ? eargs[0] : nil, env, n.strict)
             }
         }
     }
@@ -5498,7 +5586,8 @@ vm_eval_source_global :: proc(vm: ^Interp, src: string) -> Value {
 // ⚠️ Erro de sintaxe: nosso parser RECUPERA em silêncio em vez de lançar, então
 // `eval("(")` roda o que parseou (best-effort) em vez de lançar SyntaxError — é a
 // degradação consciente do parser tolerante; anotada, não esquecida.
-vm_eval_source_in :: proc(vm: ^Interp, src: string, env: ^Env) -> Value {
+// `strict`: eval DIRETO feito de código strict (herda a strictness, spec 19.2.1.1).
+vm_eval_source_in :: proc(vm: ^Interp, src: string, env: ^Env, strict := false) -> Value {
     owned := strings.clone(src)
     append(&vm.owned_sources, owned)
     toks, tok_strings, _, lerr := tokenize(owned)
@@ -5506,6 +5595,7 @@ vm_eval_source_in :: proc(vm: ^Interp, src: string, env: ^Env) -> Value {
     for s in tok_strings do append(&vm.owned_strings, s)
     delete(tok_strings)
     p := Parser{ toks = toks[:], src_url = vm.base_url, src = owned, is_eval = true }
+    p.ctx.strict = strict
     prog := parse_program(&p)
     append(&vm.all_asts, prog)
     for s in p.owned_strings do append(&vm.owned_strings, s)
@@ -5519,16 +5609,24 @@ vm_eval_source_in :: proc(vm: ^Interp, src: string, env: ^Env) -> Value {
         delete(p.err_msg)
         return nil
     }
+    // eval STRICT (herdado ou por "use strict" no próprio fonte): `var`/funções
+    // ficam num ambiente PRÓPRIO — não vazam para o escopo do chamador (spec
+    // PerformEval: varEnv = o novo lexEnv quando strict).
+    if prog.strict {
+        own := new_env(vm, env)
+        own.is_fn_scope = true // fronteira de `var`: sem isto o var subia ao escopo de função
+        return eval(vm, prog, own)
+    }
     return eval(vm, prog, env)
 }
 
 // eval(x): se x NÃO é string, devolve x intacto (spec); se é, avalia no `env`.
 // Direto (eval_call passa o env do chamador → vê locais) e indireto (global_eval
 // passa vm.global) compartilham isto.
-do_eval :: proc(vm: ^Interp, code: Value, env: ^Env) -> Value {
+do_eval :: proc(vm: ^Interp, code: Value, env: ^Env, strict := false) -> Value {
     src, ok := code.(string)
     if !ok do return code
-    return vm_eval_source_in(vm, src, env)
+    return vm_eval_source_in(vm, src, env, strict)
 }
 
 vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil) -> Value {

@@ -25,6 +25,9 @@ m109_vm :: proc() -> ^Interp {
     vm.module_resolve = stub_resolve
     vm.module_fetch = stub_fetch
     vm.module_stubs = make(map[string]string)
+    // Módulo é STRICT: nome não declarado lança. As globais de relato vêm de um
+    // script clássico, como numa página.
+    vm_run(vm, `var resultadoGlobal;`)
     return vm
 }
 

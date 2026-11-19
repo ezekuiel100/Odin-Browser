@@ -50,6 +50,9 @@ m137_vm :: proc() -> ^Interp {
     vm.module_stubs = make(map[string]string)
     vm.base_url = strings.clone("https://site.test/pagina.html")
     vm.module_stubs["<last-referrer>"] = ""
+    // Módulo é STRICT: nome não declarado lança. As globais de relato vêm de um
+    // script clássico, como numa página.
+    vm_run(vm, `var maisTarde, leMeta;`)
     return vm
 }
 

@@ -44,6 +44,11 @@ ciclo_vm :: proc() -> ^Interp {
     vm.module_resolve = stub_resolve
     vm.module_fetch = stub_fetch
     vm.module_stubs = make(map[string]string)
+    // Módulo é STRICT: atribuir a nome não declarado é ReferenceError (como no
+    // navegador). Os fixtures relatam por globais, então elas são declaradas por um
+    // script CLÁSSICO antes — o jeito válido de um módulo escrever no global.
+    vm_run(vm, `var vistoIds, vistoMods, fora, vezes, viu, doImport, um, dois,
+        bViuAntes, bViuDepois, leDeNovo, fim, padrao, cedo, antes, depois, porNs;`)
     return vm
 }
 

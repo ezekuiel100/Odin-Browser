@@ -442,6 +442,7 @@ parse_program :: proc(p: ^Parser) -> ^Node {
     root := push_scope(p, true)
     if p.is_module do p.ctx.strict = true
     parse_directives(p)
+    prog.strict = p.ctx.strict // eval strict roda num escopo PRÓPRIO (var não vaza)
     for peek(p).kind != .EOF {
         append(&prog.body, parse_statement(p))
     }
@@ -1763,6 +1764,7 @@ check_assign_ident :: proc(p: ^Parser, name: string) {
 parse_pattern :: proc(p: ^Parser, binding := true) -> ^Node {
     n := new(Node)
     n.kind = .Pattern
+    n.strict = p.ctx.strict // destructuring-ATRIBUIÇÃO strict: alvo que falha lança
     if peek(p).kind == .LBrace {
         n.bval = true
         advance(p) // {
@@ -2050,6 +2052,7 @@ parse_for :: proc(p: ^Parser) -> ^Node {
     make_for_of :: proc(p: ^Parser, is_of, is_await: bool) -> ^Node {
         fo := new(Node)
         fo.kind = .ForOf
+        fo.strict = p.ctx.strict // alvo sem declaração (`for (x of a)`) segue as regras strict
         fo.bval = is_of
         fo.is_generator = is_await // for-await (drena iterável assíncrono)
         advance(p) // of/in
@@ -2640,6 +2643,7 @@ parse_assignment :: proc(p: ^Parser) -> ^Node {
             if !expect(p, .Assign) do return pat
             a := new(Node)
             a.kind = .Assign
+            a.strict = p.ctx.strict
             a.op = .Assign
             a.left = pat
             a.right = parse_assignment(p)
@@ -2658,6 +2662,7 @@ parse_assignment :: proc(p: ^Parser) -> ^Node {
         right := parse_assignment(p) // associativo à direita
         a := new(Node)
         a.kind = .Assign
+        a.strict = p.ctx.strict // escrita rejeitada / nome não declarado LANÇAM (ver strict_write_failed)
         a.op = op   // .Assign = simples; binário = composto (+=, -=, ...)
         a.left = left
         a.right = right
@@ -2917,6 +2922,7 @@ parse_unary :: proc(p: ^Parser) -> ^Node {
             advance(p)
             n := new(Node)
             n.kind = .Delete
+            n.strict = p.ctx.strict // delete de não-configurável lança
             n.left = parse_unary(p)
             if n.left != nil && n.left.kind == .Ident && p.ctx.strict && n.left.name != "this" {
                 syntax_error(p, "Delete of an unqualified identifier in strict mode.")
@@ -2945,6 +2951,7 @@ parse_unary :: proc(p: ^Parser) -> ^Node {
         advance(p)
         u := new(Node)
         u.kind = .Update
+        u.strict = p.ctx.strict
         u.op = k       // .PlusPlus ou .MinusMinus
         u.bval = true  // prefixo
         u.left = parse_unary(p)
@@ -3104,6 +3111,7 @@ parse_postfix_from :: proc(p: ^Parser, start: ^Node) -> ^Node {
             advance(p)
             call := new(Node)
             call.kind = .Call
+            call.strict = p.ctx.strict // `eval(...)` direto herda a strictness do chamador
             call.callee = node
             parse_call_args(p, call)
             node = call
@@ -3128,6 +3136,7 @@ parse_postfix_from :: proc(p: ^Parser, start: ^Node) -> ^Node {
         advance(p)
         u := new(Node)
         u.kind = .Update
+        u.strict = p.ctx.strict
         u.op = k
         u.bval = false // sufixo
         u.left = node

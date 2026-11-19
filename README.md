@@ -30,7 +30,7 @@ Todos os números foram medidos em **2026-08-03**, na árvore que está aqui.
 | Reftests do WPT | **353 PASS / 128 FAIL / 0 ERRO** (de 481) | conformidade de CSS e layout contra as referências da spec |
 | html5lib, tree-construction | **1689 / 1709** (12 diff, **0 crash**) | conformidade de `parse_document`/`parse_fragment`, o tree builder principal |
 | html5lib, tokenizer | **7028 / 7036** | conformidade do emissor `--tokenize` nos estados suportados |
-| Test262 | **1600 PASS / 415 FAIL / 0 ERROR** (2015 variantes, 2026-11-19) | 1070 arquivos locais (inclui `variable/dstr` e `assignment/dstr`), variantes normal/estrita, 93 negativos julgados; 170 / 299 era a medicao historica anterior ao runner rigoroso |
+| Test262 | **1612 PASS / 403 FAIL / 0 ERROR** (2015 variantes, 2026-11-19) | 1070 arquivos locais (inclui `variable/dstr` e `assignment/dstr`), variantes normal/estrita, 93 negativos julgados; 170 / 299 era a medicao historica anterior ao runner rigoroso |
 | Golden de layout | 17 fixtures | regressão de geometria, com nome e número |
 | Portão de pintura | 73 asserções | caixa no lugar certo mas **não pintada** — o ponto cego do golden |
 
