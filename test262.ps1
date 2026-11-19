@@ -93,18 +93,8 @@ function Get-YamlList($fm, $key) {
     }
     return $out
 }
-# negative: { phase: parse|resolution|runtime, type: TypeError }
-function Get-Negative($fm) {
-    $blk = [regex]::Match($fm, "(?ms)^\s*negative\s*:\s*\n((?:\s+\w+\s*:\s*\S+\s*\n?)+)")
-    if (-not $blk.Success) { return $null }
-    $body  = $blk.Groups[1].Value
-    $phase = [regex]::Match($body, 'phase\s*:\s*(\S+)')
-    $type  = [regex]::Match($body, 'type\s*:\s*(\S+)')
-    return @{
-        Phase = if ($phase.Success) { $phase.Groups[1].Value.Trim() } else { "" }
-        Type  = if ($type.Success)  { $type.Groups[1].Value.Trim() }  else { "" }
-    }
-}
+# Get-Negative (bloco `negative:`) mora em tools/test262-verdict.ps1, testado
+# por tests/test262-runner.ps1.
 
 # ---- descoberta ----
 $all = @(Get-ChildItem -Recurse -File -Path $testDir -Filter *.js | Where-Object { $_.Name -notlike '*_FIXTURE.js' } | Sort-Object FullName)
@@ -208,15 +198,17 @@ foreach ($t in $all) {
 # ---- resumo por area ----
 Write-Host "`n=== Resumo por area ===" -ForegroundColor Cyan
 foreach ($g in ($results | Group-Object { $_.Area } | Sort-Object Name)) {
-    $p = ($g.Group | Where-Object { $_.Status -eq "PASS" }).Count
+    # @(): com UM so resultado o Where-Object devolve a hashtable sozinha, e o
+    # .Count dela e o numero de CHAVES (4) -- dava "4 PASS de 3".
+    $p = @($g.Group | Where-Object { $_.Status -eq "PASS" }).Count
     $tot = $g.Count
     $col = if ($p -eq $tot) { "Green" } elseif ($p -eq 0) { "Red" } else { "Yellow" }
     Write-Host ("  {0,-48} {1,3}/{2,-3} PASS" -f $g.Name, $p, $tot) -ForegroundColor $col
 }
 
-$P = ($results | Where-Object { $_.Status -eq "PASS" }).Count
-$F = ($results | Where-Object { $_.Status -eq "FAIL" }).Count
-$E = ($results | Where-Object { $_.Status -eq "ERROR" }).Count
-$S = ($results | Where-Object { $_.Status -eq "SKIP" }).Count
+$P = @($results | Where-Object { $_.Status -eq "PASS" }).Count
+$F = @($results | Where-Object { $_.Status -eq "FAIL" }).Count
+$E = @($results | Where-Object { $_.Status -eq "ERROR" }).Count
+$S = @($results | Where-Object { $_.Status -eq "SKIP" }).Count
 Write-Host ("`nTOTAL: {0} PASS / {1} FAIL / {2} ERROR / {3} SKIP  (de {4})" -f $P, $F, $E, $S, $results.Count) -ForegroundColor Cyan
 if ($F -gt 0 -or $E -gt 0) { exit 1 } else { exit 0 }

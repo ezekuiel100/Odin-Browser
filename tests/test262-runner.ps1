@@ -18,3 +18,27 @@ foreach ($c in $cases) {
     if ($actual -ne $c[7]) { throw "Unexpected verdict: $c" }
 }
 Write-Host "$($cases.Count) verdict regression cases passed"
+
+# Get-Negative: the `negative:` block as Test262 writes it (indented keys, more
+# keys after it). Expected @(Phase, Type), or $null for "no negative block".
+$nl = "`n"
+$negCases = @(
+    @(("description: x" + $nl + "negative:" + $nl + "  phase: parse" + $nl + "  type: SyntaxError" + $nl + "info: |" + $nl + "    Foo : Bar" + $nl), @('parse', 'SyntaxError')),
+    @(("negative:" + $nl + "  type: TypeError" + $nl + "  phase: runtime" + $nl + "flags: [onlyStrict]" + $nl), @('runtime', 'TypeError')),
+    @(("flags: [raw]" + $nl + "negative:" + $nl + "  phase: resolution" + $nl + "  type: SyntaxError" + $nl), @('resolution', 'SyntaxError')),
+    @(("negative:" + $nl + "  phase: parse" + $nl + "  type: SyntaxError"), @('parse', 'SyntaxError')),
+    @(("negative:`r`n  phase: parse`r`n  type: SyntaxError`r`nflags: [x]`r`n"), @('parse', 'SyntaxError')),
+    @(("negative:" + $nl + "  phase: parse" + $nl + "info: |" + $nl + "  type: Wrong" + $nl), @('parse', '')),
+    @(("description: no negative here" + $nl + "info: |" + $nl + "  negative: phase" + $nl), $null)
+)
+foreach ($c in $negCases) {
+    $got = Get-Negative $c[0]
+    if ($null -eq $c[1]) {
+        if ($null -ne $got) { throw "Get-Negative should be null for: $($c[0])" }
+        continue
+    }
+    if ($null -eq $got -or $got.Phase -cne $c[1][0] -or $got.Type -cne $c[1][1]) {
+        throw "Get-Negative: want $($c[1] -join '/'), got $($got.Phase)/$($got.Type) for: $($c[0])"
+    }
+}
+Write-Host "$($negCases.Count) negative-frontmatter cases passed"
