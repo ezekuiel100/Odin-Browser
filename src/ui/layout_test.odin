@@ -464,6 +464,33 @@ test_link_color_unset_equivale_a_inherit :: proc(t: ^testing.T) {
     testing.expect_value(t, it.color, u32(0xf8f9fa))
 }
 
+@(test)
+test_link_all_unset_tira_azul_e_sublinhado :: proc(t: ^testing.T) {
+    // `a{all:unset}` (reset comum de link/botão) DEFINE color e text-decoration:
+    // color herda, text-decoration vai a `none`. O azul e o sublinhado do UA são
+    // aplicados no layout quando o autor "não definiu" — e o `all` não marcava.
+    root := build_from_html("<html><body style='color:#f8f9fa'>" +
+        "<p><a href='x' style='all:unset'>link</a> <a href='y'>outro</a></p></body></html>")
+    it, ok := find_word_item(root, "link")
+    testing.expect(t, ok, "palavra do link existe")
+    testing.expect(t, !it.deco.underline, "all:unset tira o sublinhado do link")
+    testing.expect_value(t, it.color, u32(0xf8f9fa))
+    // controle: link sem `all` continua com o default do UA
+    o, ok2 := find_word_item(root, "outro")
+    testing.expect(t, ok2, "palavra do controle existe")
+    testing.expect(t, o.deco.underline, "link comum segue sublinhado")
+    testing.expect_value(t, o.color, u32(COL_LINK))
+}
+
+@(test)
+test_link_all_initial_tira_sublinhado :: proc(t: ^testing.T) {
+    root := build_from_html("<html><body><p><a href='x' style='all:initial'>link</a></p></body></html>")
+    it, ok := find_word_item(root, "link")
+    testing.expect(t, ok, "palavra do link existe")
+    testing.expect(t, !it.deco.underline, "all:initial tira o sublinhado do link")
+    testing.expect(t, it.color != u32(COL_LINK), "all:initial tira o azul do link")
+}
+
 // Coleta o y de cada caixa que carrega itens inline (= uma "linha de conteúdo").
 @(private="file")
 collect_run_ys :: proc(b: ^Box, out: ^[dynamic]f32) {

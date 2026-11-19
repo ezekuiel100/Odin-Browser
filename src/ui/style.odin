@@ -3971,12 +3971,22 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     //   • revert  → descarta o autor e mantém o UA. Os defaults de UA já foram
     //               aplicados em comp antes daqui → mesmo no-op.
     if v, ok := decls["all"]; ok {
-        if strings.equal_fold(strings.trim_space(v), "initial") {
+        av := strings.trim_space(v)
+        if strings.equal_fold(av, "initial") {
             // ponteiros de pseudo são ALOCADOS e liberados por free_styles —
             // preservá-los, senão `all:initial` vaza memória.
             bf, af, fl := comp.before, comp.after, comp.first_letter
             comp^ = computed_initial()
             comp.before, comp.after, comp.first_letter = bf, af, fl
+        }
+        // O azul e o sublinhado de LINK não vivem em `comp`: o layout os aplica
+        // depois, quando o autor "não definiu" color/text-decoration
+        // (layout.odin: `!lc.has_color` / `!lc.deco_set`). `all:initial|unset`
+        // DEFINE as duas — sem a marca, `a{all:unset}` (reset comum de link)
+        // continuava azul e sublinhado. `revert` fica de fora: mantém o UA.
+        if strings.equal_fold(av, "initial") || strings.equal_fold(av, "unset") {
+            comp.has_color = true
+            comp.deco_set  = true
         }
     }
     // `color: transparent` — o texto SOME. `named_color` rejeita `transparent` de
