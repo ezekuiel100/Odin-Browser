@@ -9,6 +9,7 @@ import "core:strings"
 import win "core:sys/windows"
 import ui "src/ui"
 import js "src/js"
+import "base:runtime"
 
 // Rastreador de alocação, COMPILE-GATED (custo zero quando off, como o GRID_DEBUG):
 //   odin build . -define:TRACK_ALLOC=true ...
@@ -89,7 +90,34 @@ extrai_js_timeout :: proc(argv: []string) -> []string {
     return out[:]
 }
 
+// Diagnóstico de segfault SEM depurador, COMPILE-GATED (custo zero quando off):
+//   odin build . -o:speed -define:CRASHTRACE=true "-extra-linker-flags:... /MAP:browser.map"
+// No crash imprime a RVA da falha e varre a pilha CRUA: todo valor que cai no
+// .text do exe é candidato a endereço de retorno (`RET 0x<rva>`). Traduza as
+// RVAs pelo map file (símbolo com maior endereço <= RVA + 0x140000000). Os nomes
+// do `core:debug/trace` NÃO servem: dão o símbolo vizinho mais próximo.
+// ⚠️ Não combine com -sanitize:address (o ASan usa falha de página no Windows).
+CRASHTRACE :: #config(CRASHTRACE, false)
+
+when CRASHTRACE {
+    crash_handler :: proc "system" (info: ^win.EXCEPTION_POINTERS) -> win.LONG {
+        code := info.ExceptionRecord.ExceptionCode
+        if code != win.EXCEPTION_ACCESS_VIOLATION && code != 0xC000001D && code != win.EXCEPTION_STACK_OVERFLOW do return win.EXCEPTION_CONTINUE_SEARCH
+        context = runtime.default_context()
+        base := uintptr(win.GetModuleHandleW(nil))
+        rva := uintptr(info.ExceptionRecord.ExceptionAddress) - base
+        fmt.eprintf("\n=== CRASH 0x%X ===\n  RVA_FALHA 0x%X\n", u32(code), rva)
+        sp := cast([^]uintptr)uintptr(info.ContextRecord.Rsp)
+        for i in 0 ..< 4096 {
+            v := sp[i]
+            if v > base + 0x1000 && v < base + 0x2000000 do fmt.eprintf("  RET 0x%X\n", v - base)
+        }
+        os.exit(99)
+    }
+}
+
 main :: proc() {
+    when CRASHTRACE { win.AddVectoredExceptionHandler(1, crash_handler) }
     // Console em UTF-8: nossas mensagens (e o console.log das páginas) são
     // UTF-8; sem isto o codepage legado (cp850) mostra "exceção" como "exce├º├úo".
     when ODIN_OS == .Windows {
