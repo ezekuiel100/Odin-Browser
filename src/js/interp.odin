@@ -91,6 +91,61 @@ Array :: struct {
     props: map[string]Value, // props não-índice (exec.index/.input, strings.raw
                              // de tagged template); nil até a primeira escrita.
                              // NÃO enumeram (for-in/JSON seguem só nos items).
+    holes: [dynamic]u64, // BURACOS (índices ausentes: `[1,,3]`, `new Array(3)`, `delete a[i]`,
+                         // `a[9]=x` além do fim). Bitmap lateral, vazio no caso comum. Um
+                         // índice só é buraco com o bit ligado E o item == nil (arr_is_hole):
+                         // qualquer escrita de valor preenche o slot sem tocar no bitmap. Ver
+                         // arr_mark_hole / arr_holes_reset.
+}
+
+// ── buracos de array ──────────────────────────────────────────────────────────
+// Os items continuam DENSOS (o buraco lido dá undefined, como no JS); o bitmap só
+// responde "o índice EXISTE?" — HasProperty, Object.keys, for-in, e os métodos que
+// pulam ausentes (forEach/map/filter/reduce/indexOf...).
+
+arr_is_hole :: #force_inline proc(a: ^Array, i: int) -> bool {
+    w := i >> 6
+    if i < 0 || w >= len(a.holes) || i >= len(a.items) do return false
+    if a.items[i] != nil do return false
+    return a.holes[w] & (u64(1) << uint(i & 63)) != 0
+}
+
+// O índice existe (dentro do length e não é buraco).
+arr_has_index :: #force_inline proc(a: ^Array, i: int) -> bool {
+    return i >= 0 && i < len(a.items) && !arr_is_hole(a, i)
+}
+
+arr_mark_holes :: proc(a: ^Array, from, to: int) { // [from, to)
+    if from >= to do return
+    need := (to + 63) >> 6
+    for len(a.holes) < need do append(&a.holes, 0)
+    for i in from ..< to do a.holes[i >> 6] |= u64(1) << uint(i & 63)
+}
+
+arr_mark_hole :: proc(a: ^Array, i: int) { arr_mark_holes(a, i, i + 1) }
+
+// Escrita EXPLÍCITA de undefined num índice: deixa de ser buraco.
+arr_fill_slot :: #force_inline proc(a: ^Array, i: int) {
+    w := i >> 6
+    if w < len(a.holes) do a.holes[w] &~= u64(1) << uint(i & 63)
+}
+
+// Operações que REORDENAM/encolhem os items (shift/splice/sort/reverse/truncar):
+// o bitmap deixaria de casar com as posições. Os buracos viram undefined de
+// verdade. ⚠️ DEGRADAÇÃO ANOTADA: a spec preservaria/moveria os buracos.
+arr_holes_reset :: #force_inline proc(a: ^Array) {
+    if len(a.holes) > 0 do clear(&a.holes)
+}
+
+// Depois de ENCOLHER os items (pop, length menor): apaga os bits a partir do novo
+// fim, senão um `push(undefined)` posterior cairia num bit velho e viraria buraco.
+arr_holes_trim :: proc(a: ^Array) {
+    if len(a.holes) == 0 do return
+    n := len(a.items)
+    w := n >> 6
+    if w >= len(a.holes) do return
+    a.holes[w] &= (u64(1) << uint(n & 63)) - 1
+    resize(&a.holes, w + 1)
 }
 
 // Nativas recebem `this` (o objeto à esquerda do ponto) além dos argumentos.
@@ -1059,6 +1114,7 @@ vm_destroy :: proc(vm: ^Interp) {
     for a in vm.all_arrays {
         delete(a.items)
         if a.props != nil do delete(a.props)
+        delete(a.holes)
         free(a)
     }
     delete(vm.all_arrays)
@@ -1855,7 +1911,7 @@ js_in :: proc(vm: ^Interp, l, r: Value) -> bool {
         if x := proto_exotic_end(o); x != nil do return js_in(vm, l, x)
         return false
     case ^Array:
-        if idx, ok := strconv.parse_int(key); ok do return idx >= 0 && idx < len(o.items)
+        if idx, ok := strconv.parse_int(key); ok do return arr_has_index(o, idx)
         if o.props != nil { if _, ok := o.props[key]; ok do return true }
         if key == "length" do return true
         // HasProperty sobe até Array.prototype/Object.prototype: `"slice" in []` é TRUE
@@ -2108,7 +2164,7 @@ proto_exotic_end :: proc(o: ^Object) -> Value {
 // Um nome de propriedade é um ÍNDICE canônico de array? ("0","7" sim; "01","1.0",
 // "0x1"," 1","-1" não). Estrito de propósito: no JS `a["01"]` é uma prop comum, não
 // o item 1 — e `strconv.parse_int` sozinho aceitaria hexadecimal e sinal.
-@(private = "file")
+// package-visible: object.odin (descritor de índice de array) reusa.
 array_index_name :: proc(name: string) -> (idx: int, ok: bool) {
     if len(name) == 0 || len(name) > 10 do return 0, false
     if name[0] == '0' && len(name) > 1 do return 0, false // "01" não é canônico
@@ -2425,8 +2481,7 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) {
 // era IGNORADA — `buf.length = 0` (o idioma clássico de reuso de buffer) não limpava nada.
 // A spec coage DUAS vezes (ToUint32 e ToNumber, cada uma com seu valueOf) e exige que
 // concordem, senão RangeError: -1, 1.5, NaN e 2^32 são inválidos.
-// Aproximação: o motor não tem buracos, então estender preenche com undefined (o mesmo
-// que `arr[N] = x` já faz em set_index), e frozen/sealed ignoram a escrita (sloppy).
+// Estender cria BURACOS (arr_mark_holes); frozen/sealed ignoram a escrita (sloppy).
 // package-visible: Reflect.set/defineProperty podem reusar.
 array_set_length :: proc(vm: ^Interp, o: ^Array, val: Value) {
     u := to_number(vm, val)
@@ -2443,10 +2498,12 @@ array_set_length :: proc(vm: ^Interp, o: ^Array, val: Value) {
     new_len := int(n)
     if new_len <= len(o.items) {
         resize(&o.items, new_len)
+        arr_holes_trim(o)
         return
     }
     // mesma guarda de set_index: `a.length = 4e9` alocaria GBs de undefined
     if new_len > 100_000_000 do return
+    arr_mark_holes(o, len(o.items), new_len)
     for len(o.items) < new_len do append(&o.items, nil)
 }
 
@@ -2514,8 +2571,10 @@ set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) {
         // seal/preventExtensions: os itens EXISTENTES seguem graváveis, o array é que
         // não cresce mais.
         if idx >= len(o.items) && (o.sealed || o.frozen) do return
-        for len(o.items) <= idx do append(&o.items, nil) // preenche buracos
+        if idx > len(o.items) do arr_mark_holes(o, len(o.items), idx) // a[9]=x: 0..8 são buracos
+        for len(o.items) <= idx do append(&o.items, nil)
         o.items[idx] = val
+        if val == nil do arr_fill_slot(o, idx) // a[i]=undefined: existe, não é buraco
     case ^Object:
         // subclasse de Array (M136): índice numérico escreve no array embrulhado.
         if o.prim != nil {
@@ -3065,7 +3124,14 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             for k in keys do append(&values, own_str(vm, k))
         case ^Array:
             buf: [24]u8
-            for i in 0 ..< len(o.items) do append(&values, own_str(vm, strconv.write_int(buf[:], i64(i), 10)))
+            for i in 0 ..< len(o.items) {
+                if arr_is_hole(o, i) do continue // buraco não enumera
+                append(&values, own_str(vm, strconv.write_int(buf[:], i64(i), 10)))
+            }
+        case string:
+            // `for (i in "ab")` enumera os índices "0","1" (não dava nada)
+            buf: [24]u8
+            for i in 0 ..< str_rlen(o) do append(&values, own_str(vm, strconv.write_int(buf[:], i64(i), 10)))
         }
     }
 
@@ -3191,7 +3257,9 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 if .Configurable in prop_attrs(o, k) do oremove(o, k)
             } else if a, ok := obj.(^Array); ok {
                 if idx := as_int(eval(vm, t.right, env)); idx >= 0 && idx < len(a.items) {
-                    a.items[idx] = nil // JS deixa um buraco (undefined)
+                    if a.frozen || a.sealed do return false // não-configurável
+                    a.items[idx] = nil
+                    arr_mark_hole(a, idx) // `delete a[i]` deixa um BURACO (`i in a` = false)
                 }
             }
         }
@@ -3468,9 +3536,37 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 
     case .ArrayLit:
         a := new_array(vm)
-        items := eval_args(vm, n.body, env) // expande ...spread
-        defer delete(items)
-        for it in items do append(&a.items, it)
+        has_elision := false
+        for el in n.body do if el.kind == .Undef && el.bval { has_elision = true; break }
+        if !has_elision {
+            items := eval_args(vm, n.body, env) // expande ...spread
+            defer delete(items)
+            for it in items do append(&a.items, it)
+            return a
+        }
+        // Com elisão (`[1,,3]`): avalia em trechos entre os buracos (o spread pode
+        // mudar a posição de tudo que vem depois) e marca cada buraco no índice real.
+        seg: [dynamic]^Node
+        defer delete(seg)
+        flush :: proc(vm: ^Interp, a: ^Array, seg: ^[dynamic]^Node, env: ^Env) {
+            if len(seg) == 0 do return
+            items := eval_args(vm, seg^, env)
+            defer delete(items)
+            for it in items do append(&a.items, it)
+            clear(seg)
+        }
+        for el in n.body {
+            if el.kind == .Undef && el.bval {
+                flush(vm, a, &seg, env)
+                if vm.throwing do return nil
+                arr_mark_hole(a, len(a.items))
+                append(&a.items, nil)
+                continue
+            }
+            append(&seg, el)
+        }
+        flush(vm, a, &seg, env)
+        if vm.throwing do return nil
         return a
 
     case .Call:

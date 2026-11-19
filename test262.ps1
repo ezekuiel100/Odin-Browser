@@ -15,16 +15,52 @@
 #       .\test262.ps1 -Verbose             (mostra cada PASS/FAIL)
 #       .\test262.ps1 -ShowThrow           (nos FAIL, mostra a excecao)
 
+#       .\test262.ps1 -Browser X.exe       (A/B sem trocar o browser.exe)
+#       .\test262.ps1 -TimeoutSec 30       (prazo por execucao; estourou = ERROR timeout)
+
 param(
     [string]$Filter = "",
     [switch]$Verbose,
-    [switch]$ShowThrow
+    [switch]$ShowThrow,
+    [string]$Browser = "",
+    [int]$TimeoutSec = 20
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "tools/test262-verdict.ps1")
 $root       = $PSScriptRoot
-$browser    = Join-Path $root "browser.exe"
+$browser    = if ($Browser) { (Resolve-Path $Browser).Path } else { Join-Path $root "browser.exe" }
+
+# Roda o --js262 com PRAZO. Sem ele, um unico teste que nao termina (ex.: laco de
+# 2^53 iteracoes sobre um Proxy) trava a suite inteira em silencio.
+function Invoke-Js262($exe, $srcs, $timeoutMs) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = '--js262 ' + (($srcs | ForEach-Object { '"' + $_ + '"' }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $so = $p.StandardOutput.ReadToEndAsync()
+    $se = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit($timeoutMs)) {
+        try { $p.Kill() } catch {}
+        $p.WaitForExit()
+        return @{ Out = @(); Exit = -1; TimedOut = $true }
+    }
+    $p.WaitForExit()
+    return @{ Out = @($so.Result -split "`r?`n"); Exit = $p.ExitCode; TimedOut = $false }
+}
+
+function Write-Result($status, $rel, $variant, $reason) {
+    if ($Verbose -or ($status -ne "PASS")) {
+        $col = switch ($status) { "PASS" {"Green"} "FAIL" {"Red"} default {"Yellow"} }
+        $msg = "  {0,-5} {1} [{2}]" -f $status, $rel, $variant
+        if (($ShowThrow -and $status -ne "PASS") -or $status -eq "ERROR") { $msg += "  ($reason)" }
+        Write-Host $msg -ForegroundColor $col
+    }
+}
 $t262Dir    = Join-Path $root "tests\test262"
 $harnessDir = Join-Path $t262Dir "harness"
 $testDir    = Join-Path $t262Dir "test"
@@ -130,16 +166,19 @@ foreach ($t in $all) {
     }
 
     try {
-        $out = & $browser --js262 @($sources.ToArray()) 2>$null
-        $processExit = $LASTEXITCODE
+        $run = Invoke-Js262 $browser $sources.ToArray() ($TimeoutSec * 1000)
+        $out = $run.Out
+        $processExit = $run.Exit
     } finally {
         if ($tmpStrict) { Remove-Item -Force $tmpStrict -ErrorAction SilentlyContinue }
     }
 
     $verdicts = @($out | Where-Object { $_ -match '^__262__' })
     $line = $verdicts | Select-Object -First 1
-    if ($verdicts.Count -ne 1 -or $processExit -ne 0) {
-        $results += @{ Area = $area; Name = $rel; Status = "ERROR"; Reason = "sem veredito (crash?)" }
+    if ($run.TimedOut -or $verdicts.Count -ne 1 -or $processExit -ne 0) {
+        $why = if ($run.TimedOut) { "timeout ${TimeoutSec}s" } else { "sem veredito (crash? exit=$processExit)" }
+        $results += @{ Area = $area; Name = "$rel [$variant]"; Status = "ERROR"; Reason = $why }
+        Write-Result "ERROR" $rel $variant $why
         continue
     }
 
@@ -161,13 +200,7 @@ foreach ($t in $all) {
 
     $status = if ($pass) { "PASS" } else { "FAIL" }
     $results += @{ Area = $area; Name = "$rel [$variant]"; Status = $status; Reason = $reason }
-
-    if ($Verbose -or ($status -ne "PASS")) {
-        $col = switch ($status) { "PASS" {"Green"} "FAIL" {"Red"} default {"Yellow"} }
-        $msg = "  {0,-5} {1} [{2}]" -f $status, $rel, $variant
-        if ($ShowThrow -and $status -ne "PASS") { $msg += "  ($reason)" }
-        Write-Host $msg -ForegroundColor $col
-    }
+    Write-Result $status $rel $variant $reason
 }
 
 }

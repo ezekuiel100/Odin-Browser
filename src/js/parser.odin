@@ -3331,9 +3331,10 @@ parse_array_literal :: proc(p: ^Parser) -> ^Node {
     p.no_in = false
     defer p.no_in = saved_no_in
     for peek(p).kind != .RBracket && peek(p).kind != .EOF {
-        if peek(p).kind == .Comma { // buraco (elisão): [1, , 3] — vira undefined
+        if peek(p).kind == .Comma { // buraco (elisão): [1, , 3]
             u := new(Node)
             u.kind = .Undef
+            u.bval = true // marca de ELISÃO: o .ArrayLit deixa um buraco, não um undefined
             append(&n.body, u)
             advance(p)
             continue

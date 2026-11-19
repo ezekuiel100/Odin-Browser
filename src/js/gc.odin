@@ -362,6 +362,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
 
         delete(a.items)
         if a.props != nil do delete(a.props)
+        delete(a.holes)
         free(a)
         }
     resize(&vm.all_arrays, live_all_arrays)

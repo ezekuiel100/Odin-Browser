@@ -272,6 +272,7 @@ own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string) {
         }
     case ^Array:
         for i in 0 ..< len(x.items) {
+            if arr_is_hole(x, i) do continue // buraco não é chave própria
             s, _ := v_to_key_string(vm, f64(i))
             append(out, s)
         }
@@ -527,8 +528,6 @@ obj_prevent_extensions :: proc(vm: ^Interp, this: Value, args: []Value) -> Value
 obj_get_own_property_descriptors :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_object(vm)
     target := arg(args, 0)
-    o, ok := target.(^Object)
-    if !ok do return out
     seen: map[string]bool
     defer delete(seen)
     add_key :: proc(vm: ^Interp, target: Value, out: ^Object, seen: ^map[string]bool, key: string) {
@@ -537,6 +536,16 @@ obj_get_own_property_descriptors :: proc(vm: ^Interp, this: Value, args: []Value
         d := obj_get_own_property_descriptor(vm, nil, []Value{target, key})
         if d != nil do oput(out, key, d)
     }
+    if _, isarr := target.(^Array); isarr {
+        keys: [dynamic]string
+        defer delete(keys)
+        own_keys_any(vm, target, &keys) // índices presentes + props
+        for k in keys do add_key(vm, target, out, &seen, k)
+        add_key(vm, target, out, &seen, "length")
+        return out
+    }
+    o, ok := target.(^Object)
+    if !ok do return out
     for k in o.props do add_key(vm, target, out, &seen, k)
     if o.getters != nil do for k in o.getters do add_key(vm, target, out, &seen, k)
     if o.setters != nil do for k in o.setters do add_key(vm, target, out, &seen, k)
@@ -732,6 +741,25 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
         }
         return nil
     }
+    if arr, aok := arg(args, 0).(^Array); aok {
+        // array: índices PRESENTES (buraco = sem descritor), `length` e props não-índice.
+        // Não tem mapa de atributos: frozen/sealed decidem writable/configurable.
+        key := key_string(vm, arg(args, 1))
+        mk :: proc(vm: ^Interp, v: Value, w, e, c: bool) -> ^Object {
+            d := new_object(vm)
+            oput(d, "value", v); oput(d, "writable", w); oput(d, "enumerable", e); oput(d, "configurable", c)
+            return d
+        }
+        if key == "length" do return mk(vm, f64(len(arr.items)), !arr.frozen, false, false)
+        if idx, iok := array_index_name(key); iok {
+            if !arr_has_index(arr, idx) do return nil
+            return mk(vm, arr.items[idx], !arr.frozen, true, !arr.frozen && !arr.sealed)
+        }
+        if arr.props != nil {
+            if v, has := arr.props[key]; has do return mk(vm, v, !arr.frozen, true, !arr.frozen && !arr.sealed)
+        }
+        return nil
+    }
     o, ok := arg(args, 0).(^Object)
     if !ok do return nil
     key := key_string(vm, arg(args, 1))
@@ -835,7 +863,7 @@ obj_has_own_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
             for c in transmute([]u8)name { if c < '0' || c > '9' { all_dig = false; break } }
             if all_dig {
                 n := int(as_number(name))
-                return n >= 0 && n < len(o.items)
+                return arr_has_index(o, n)
             }
         }
     case ^Collection:

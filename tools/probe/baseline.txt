@@ -51,7 +51,6 @@ dom|rede/dados|navigator.serviceWorker
 dom|rede/dados|WebSocket
 dom|rede/dados|Worker / SharedWorker
 lang|array|Array.fromAsync
-lang|array|holes: forEach pula
 lang|async|unhandledrejection detectavel
 lang|binario|ArrayBuffer.transfer/resize
 lang|binario|Atomics/SharedArrayBuffer

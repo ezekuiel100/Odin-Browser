@@ -209,7 +209,7 @@ arr_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     if from < 0 do from = max(n + from, 0)
     for i := from; i < n; i += 1 {
-        if !array_like_has(this, i) do continue
+        if !array_like_has(vm,this, i) do continue
         v := array_like_get(vm, this, i)
         if vm.throwing do return nil
         if v == arg(args, 0) do return f64(i)
@@ -280,7 +280,7 @@ arr_slice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := array_species_create(vm, this, count)
     if vm.throwing do return nil
     for i := 0; i < count; i += 1 {
-        if !array_like_has(this, start + i) do continue
+        if !array_like_has(vm,this, start + i) do continue
         v := array_like_get(vm, this, start + i)
         if vm.throwing do return nil
         array_result_set(vm, out, i, v)
@@ -329,11 +329,18 @@ array_like_get :: proc(vm: ^Interp, this: Value, i: int) -> Value {
 // HasProperty(this, i): buracos (índices ausentes) são PULADOS pelos métodos de
 // Array (spec) — `[].filter.call({length:2, 1:true}, ...)` só visita o índice 1.
 @(private = "file")
-array_like_has :: proc(this: Value, i: int) -> bool {
+array_like_has :: proc(vm: ^Interp, this: Value, i: int) -> bool {
     #partial switch t in this {
-    case ^Array:  return i >= 0 && i < len(t.items)
+    case ^Array:  return arr_has_index(t, i) // buraco = ausente (pulado)
     case string:  return i >= 0 && i < str_rlen(t)
     case ^Object:
+        // Proxy: HasProperty é o trap `has` (ou o default no alvo). As props do
+        // objeto-proxy em si são vazias — sem isto todo índice dava "ausente" e
+        // `reverse.call(proxy)` com length 2^53 iterava para sempre sem tocar o alvo.
+        if t.px_handler != nil {
+            buf: [24]u8
+            return proxy_has(vm, t, strconv.write_int(buf[:], i64(i), 10))
+        }
         // objeto HOST com acesso INDEXADO (geti != nil, hoje só as coleções vivas de
         // DOM): os índices não moram em `props` — quem os serve é o hook. Sem esta
         // linha, uma HTMLCollection tem length>0 e NENHUM índice "presente", e
@@ -359,8 +366,8 @@ array_like_has :: proc(this: Value, i: int) -> bool {
             if cur.props == nil do continue
             if _, has := cur.props[key]; has do return true
         }
-        if array_is_array(t.prim) do return array_like_has(t.prim, i)
-        if x := proto_exotic_end(t); x != nil do return array_like_has(x, i)
+        if array_is_array(t.prim) do return array_like_has(vm,t.prim, i)
+        if x := proto_exotic_end(t); x != nil do return array_like_has(vm,x, i)
         return false
     case ^Function:
         if t.props == nil do return false
@@ -380,7 +387,7 @@ arr_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if !cok { throw_type_error(vm, "Array.prototype.forEach: callback não é função"); return nil }
     this_arg := arg(args, 1)
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) do continue // pula buracos (HasProperty)
+        if !array_like_has(vm,this, i) do continue // pula buracos (HasProperty)
         it := array_like_get(vm, this, i)
         if vm.throwing do break
         call_function(vm, cb, this_arg, []Value{it, f64(i), this})
@@ -400,7 +407,7 @@ arr_map :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     this_arg := arg(args, 1)
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) { continue } // buraco → undefined (preserva posição)
+        if !array_like_has(vm,this, i) { continue } // buraco → undefined (preserva posição)
         it := array_like_get(vm, this, i)
         if vm.throwing do break
         v := call_function(vm, cb, this_arg, []Value{it, f64(i), this})
@@ -423,7 +430,7 @@ arr_filter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     target := 0
     this_arg := arg(args, 1)
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) do continue // pula buracos (HasProperty)
+        if !array_like_has(vm,this, i) do continue // pula buracos (HasProperty)
         it := array_like_get(vm, this, i)
         if vm.throwing do break
         accepted := call_function(vm, cb, this_arg, []Value{it, f64(i), this})
@@ -440,10 +447,10 @@ arr_reverse :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     for lo := 0; lo < n / 2; lo += 1 {
         hi := n - lo - 1
-        lh := array_like_has(this, lo)
+        lh := array_like_has(vm,this, lo)
         lv: Value; if lh do lv = array_like_get(vm, this, lo)
         if vm.throwing do return nil
-        hh := array_like_has(this, hi)
+        hh := array_like_has(vm,this, hi)
         hv: Value; if hh do hv = array_like_get(vm, this, hi)
         if vm.throwing do return nil
         if hh { arr_set(vm, this, lo, hv) } else { arr_delete(vm, this, lo) }
@@ -483,7 +490,7 @@ arr_sort :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     values := new_array(vm)
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) do continue
+        if !array_like_has(vm,this, i) do continue
         append(&values.items, array_like_get(vm, this, i))
         if vm.throwing do return nil
     }
@@ -516,7 +523,7 @@ arr_reduce :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         acc = args[1]
     } else {
         // sem valor inicial: acc = 1º índice PRESENTE (pula buracos à esquerda)
-        for start < n && !array_like_has(this, start) do start += 1
+        for start < n && !array_like_has(vm,this, start) do start += 1
         // TypeError REAL (era string crua → assert.throws(TypeError) não casava)
         if start >= n { throw_type_error(vm, "Reduce of empty array with no initial value"); return nil }
         acc = array_like_get(vm, this, start)
@@ -524,7 +531,7 @@ arr_reduce :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         start += 1
     }
     for i := start; i < n; i += 1 {
-        if !array_like_has(this, i) do continue // pula buracos (HasProperty)
+        if !array_like_has(vm,this, i) do continue // pula buracos (HasProperty)
         cur := array_like_get(vm, this, i)
         if vm.throwing do break
         acc = call_function(vm, cb, nil, []Value{acc, cur, f64(i), this})
@@ -547,7 +554,7 @@ arr_reduce_right :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         acc = args[1]
     } else {
         // sem valor inicial: acc = 1º índice PRESENTE (pula buracos à esquerda)
-        for start >= 0 && !array_like_has(this, start) do start -= 1
+        for start >= 0 && !array_like_has(vm,this, start) do start -= 1
         // TypeError REAL (era string crua → assert.throws(TypeError) não casava)
         if start < 0 { throw_type_error(vm, "Reduce of empty array with no initial value"); return nil }
         acc = array_like_get(vm, this, start)
@@ -555,7 +562,7 @@ arr_reduce_right :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         start -= 1
     }
     for i := start; i >= 0; i -= 1 {
-        if !array_like_has(this, i) do continue // pula buracos (HasProperty)
+        if !array_like_has(vm,this, i) do continue // pula buracos (HasProperty)
         cur := array_like_get(vm, this, i)
         if vm.throwing do break
         acc = call_function(vm, cb, nil, []Value{acc, cur, f64(i), this})
@@ -583,7 +590,7 @@ arr_concat :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
             if vm.throwing do return nil
             if target + n > (1 << 53) - 1 { throw_type_error(vm, "Invalid concat length"); return nil }
             for i := 0; i < n; i += 1 {
-                if array_like_has(item, i) {
+                if array_like_has(vm,item, i) {
                     v := array_like_get(vm, item, i)
                     if vm.throwing do return nil
                     array_result_set(vm, out, target, v)
@@ -644,7 +651,7 @@ arr_some :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     cb, ok := arg(args, 0).(^Function)
     if !ok { throw_type_error(vm, "callback is not a function"); return nil }
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) do continue
+        if !array_like_has(vm,this, i) do continue
         it := array_like_get(vm, this, i)
         if vm.throwing do return nil
         r := call_function(vm, cb, arg(args, 1), []Value{it, f64(i), this})
@@ -662,7 +669,7 @@ arr_every :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     cb, ok := arg(args, 0).(^Function)
     if !ok { throw_type_error(vm, "callback is not a function"); return nil }
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) do continue
+        if !array_like_has(vm,this, i) do continue
         it := array_like_get(vm, this, i)
         if vm.throwing do return nil
         r := call_function(vm, cb, arg(args, 1), []Value{it, f64(i), this})
@@ -808,7 +815,7 @@ arr_splice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     removed := array_species_create(vm, this, delc)
     if vm.throwing do return nil
     for i := 0; i < delc; i += 1 {
-        if !array_like_has(this, start + i) do continue
+        if !array_like_has(vm,this, start + i) do continue
         v := array_like_get(vm, this, start + i)
         if vm.throwing do return nil
         array_result_set(vm, removed, i, v)
@@ -1594,7 +1601,7 @@ arr_flatten_into :: proc(vm: ^Interp, src: Value, depth: int, out: Value, target
     n := array_like_len(vm, src)
     if vm.throwing do return
     for i := 0; i < n; i += 1 {
-        if !array_like_has(src, i) do continue
+        if !array_like_has(vm,src, i) do continue
         it := array_like_get(vm, src, i)
         if vm.throwing do return
         if sub := it; array_is_array(sub) && depth > 0 {
@@ -1618,7 +1625,7 @@ arr_flat :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     target := 0
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) do continue
+        if !array_like_has(vm,this, i) do continue
         it := array_like_get(vm, this, i)
         if vm.throwing do return nil
         if sub := it; array_is_array(sub) && depth > 0 { arr_flatten_into(vm, sub, depth - 1, out, &target) } else { array_result_set(vm, out, target, it); target += 1 }
@@ -1637,7 +1644,7 @@ arr_flat_map :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     target := 0
     for i := 0; i < n; i += 1 {
-        if !array_like_has(this, i) do continue
+        if !array_like_has(vm,this, i) do continue
         it := array_like_get(vm, this, i)
         if vm.throwing do return nil
         r := call_function(vm, fn, arg(args, 1), []Value{it, f64(i), this})
@@ -1812,7 +1819,8 @@ arr_construct :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
                 vm.thrown = mk_error(vm, "RangeError", "Invalid array length"); vm.throwing = true; return nil
             }
             count := int(n)
-            for i := 0; i < count; i += 1 do append(&a.items, nil) // slots = undefined
+            arr_mark_holes(a, 0, count) // `new Array(3)`: length 3, NENHUM índice presente
+            for i := 0; i < count; i += 1 do append(&a.items, nil)
             return a
         }
     }
@@ -3343,7 +3351,13 @@ arr_write :: proc(vm: ^Interp, this: Value, key: string, v: Value) {
     case ^Array:
         if key == "length" {
             n := as_int(v)
-            if n < len(o.items) { resize(&o.items, n) } else { for len(o.items) < n do append(&o.items, nil) }
+            if n < len(o.items) {
+                resize(&o.items, n)
+                arr_holes_trim(o)
+            } else {
+                arr_mark_holes(o, len(o.items), n) // slots além do fim: ausentes
+                for len(o.items) < n do append(&o.items, nil)
+            }
             return
         }
         set_index(vm, this, key, v)
@@ -3388,7 +3402,11 @@ arr_delete :: proc(vm: ^Interp, this: Value, i: int) {
     case ^Function:
         delete_key(&o.props, key); delete_key(&o.getters, key); delete_key(&o.setters, key)
     case ^Array:
-        if i >= 0 && i < len(o.items) do o.items[i] = nil
+        if i >= 0 && i < len(o.items) {
+            if o.frozen || o.sealed { throw_type_error(vm, "Cannot delete property"); return }
+            o.items[i] = nil
+            arr_mark_hole(o, i)
+        }
     case string:
         if i >= 0 && i < str_rlen(o) do throw_type_error(vm, "Cannot delete string index")
     }
@@ -3396,7 +3414,7 @@ arr_delete :: proc(vm: ^Interp, this: Value, i: int) {
 @(private = "file")
 arr_move :: proc(vm: ^Interp, this: Value, src, dst: int) {
     if vm.throwing do return
-    if array_like_has(this, src) {
+    if array_like_has(vm,this, src) {
         v := array_like_get(vm, this, src)
         if !vm.throwing do arr_set(vm, this, dst, v)
     } else { arr_delete(vm, this, dst) }
@@ -3412,7 +3430,7 @@ arr_last_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if vm.throwing do return nil
     if from < 0 { from += n } else { from = min(from, n - 1) }
     for i := from; i >= 0; i -= 1 {
-        if !array_like_has(this, i) do continue
+        if !array_like_has(vm,this, i) do continue
         v := array_like_get(vm, this, i)
         if vm.throwing do return nil
         if v == arg(args, 0) do return f64(i)
@@ -3483,6 +3501,7 @@ array_species_create :: proc(vm: ^Interp, original: Value, length: int) -> Value
     }
     if ctor == nil {
         out := new_array(vm)
+        arr_mark_holes(out, 0, length) // ArrayCreate(n): só length; quem escreve preenche
         for i := 0; i < length; i += 1 do append(&out.items, nil)
         return out
     }
