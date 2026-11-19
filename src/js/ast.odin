@@ -6,7 +6,9 @@ package js
 // M2 acrescenta statements (VarDecl, If, While, Block, ...) além das
 // expressões do M1.
 
-Node_Kind :: enum {
+// `u8`: o `kind` ocupava 8 bytes por nó; com 1 byte sobra padding para flags
+// (ver Node.strict) sem crescer o nó.
+Node_Kind :: enum u8 {
     // ── expressões ──────────────────────────────
     Num,      // literal numérico          -> num
     BigIntLit,// literal BigInt (123n)     -> str (dígitos, sem o 'n'; pode ter 0x/0b/0o)
@@ -80,6 +82,8 @@ Node_Kind :: enum {
 
 Node :: struct {
     kind:   Node_Kind,
+    strict: bool,           // Func (não-arrow): o corpo é strict — `arguments` NÃO é mapeado
+                            // aos params e `arguments.callee` lança (ver setup_call_scope)
     num:    f64,            // Num
     str:    string,         // Str
     bval:   bool,           // Bool; Func: é arrow; Yield: é yield*

@@ -157,7 +157,8 @@ json_prop :: proc(st: ^Json_Out, holder: Value, key: Value, value: Value, depth:
             json_object(st, x, depth)
         }
     case ^Array:
-        json_array(st, x, x, depth)
+        if x.args != nil do json_object(st, x, depth) // `arguments` é objeto comum
+        else do json_array(st, x, x, depth)
     case ^Regex, ^Collection:
         strings.write_string(sb, "{}") // sem props próprias enumeráveis: `{}` no JS
     case ^BigInt:
@@ -183,18 +184,27 @@ json_enter :: proc(st: ^Json_Out, p: rawptr) -> bool {
 // era pulada e `{get a(){return 1}}` virava `{}`), na ordem de own_enum_keys ou da
 // PropertyList.
 @(private = "file")
-json_object :: proc(st: ^Json_Out, x: ^Object, depth: int) {
+json_object :: proc(st: ^Json_Out, x: Value, depth: int) {
     vm := st.vm
-    if !json_enter(st, rawptr(x)) do return
-    defer delete_key(&st.seen, rawptr(x))
+    // `x` é um ^Object ou o objeto `arguments` (^Array com args), que a spec
+    // serializa como OBJETO: {"0":1,"1":2}, não [1,2]
+    ptr: rawptr
+    #partial switch v in x {
+    case ^Object: ptr = v
+    case ^Array:  ptr = v
+    }
+    if !json_enter(st, ptr) do return
+    defer delete_key(&st.seen, ptr)
     sb := &st.sb
     strings.write_byte(sb, '{')
     keys: [dynamic]string
     defer delete(keys)
     if st.has_plist {
         for k in st.plist do append(&keys, k)
+    } else if o, isobj := x.(^Object); isobj {
+        own_enum_keys(o, &keys)
     } else {
-        own_enum_keys(x, &keys)
+        own_keys_any(vm, x, &keys)
     }
     first := true
     for k in keys {

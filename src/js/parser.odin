@@ -1243,6 +1243,7 @@ parse_function :: proc(p: ^Parser, is_decl := false, is_async := false, anon_ok 
     expect(p, .RParen)
     n.right = parse_fn_body(p, &info) // corpo { ... } (yield só é keyword se generator)
     validate_params(p, &info, .Normal, n.name)
+    n.strict = p.ctx.strict // ANTES do exit_fn, que restaura o contexto envolvente
     exit_fn(p, saved)
     fn_args_exit(p, n, saved_args)
     return n
@@ -1409,6 +1410,7 @@ parse_object_method_fn_gen :: proc(p: ^Parser, is_gen: bool, is_async := false, 
     }
     m.right = parse_fn_body(p, &info)
     validate_params(p, &info, kind, "")
+    m.strict = p.ctx.strict // ANTES do exit_fn (método de classe é sempre strict)
     exit_fn(p, saved)
     fn_args_exit(p, m, saved_args)
     return m

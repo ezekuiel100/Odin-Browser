@@ -85,6 +85,7 @@ $areas = @(
     "built-ins/Object",
     "built-ins/TypedArray/prototype/set",
     "built-ins/TypedArrayConstructors/ctors/buffer-arg",
+    "language/arguments-object",
     "language/statements/for-of",
     "language/expressions/optional-chaining",
     "language/expressions/spread",

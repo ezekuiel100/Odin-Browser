@@ -96,6 +96,39 @@ Array :: struct {
                          // índice só é buraco com o bit ligado E o item == nil (arr_is_hole):
                          // qualquer escrita de valor preenche o slot sem tocar no bitmap. Ver
                          // arr_mark_hole / arr_holes_reset.
+    args: ^Args_Info, // só no objeto `arguments` (is_arguments): callee + mapeamento
+}
+
+// Estado do objeto `arguments` de uma chamada, fora do ^Array para não pesar em
+// todo array. Mapeamento (sloppy + params simples, spec 10.4.4): `arguments[i]` e
+// o parâmetro i são o MESMO binding — escrever um muda o outro. Os items ficam
+// SEMPRE em dia nos dois sentidos (set_index escreve no env; env_assign escreve
+// nos items), então quem lê os items direto (spread, slice.call, apply) vê o certo.
+Args_Info :: struct {
+    callee:   ^Function, // arguments.callee (strict: lança TypeError)
+    env:      ^Env,      // escopo da chamada, onde moram os params
+    params:   []string,  // fn.params (fatia emprestada do nó)
+    nmap:     int,       // índices mapeáveis: min(len(args), len(params)); 0 = sem mapeamento
+    unmapped: u64,       // bit i = índice i desligado (delete arguments[i]); só os 64 primeiros mapeiam
+}
+
+// O índice i de `arguments` está ligado a um parâmetro? Param repetido (`function
+// f(a, a)`) liga só a ÚLTIMA ocorrência (spec: o laço vai do fim para o começo).
+args_mapped :: proc(info: ^Args_Info, i: int) -> bool {
+    if info == nil || i < 0 || i >= info.nmap || i >= 64 do return false
+    if info.unmapped & (u64(1) << uint(i)) != 0 do return false
+    name := info.params[i]
+    if name == "" do return false
+    for j in i + 1 ..< len(info.params) do if info.params[j] == name do return false
+    return true
+}
+
+// `param = v` numa função com arguments mapeado: espelha no item.
+args_param_written :: proc(a: ^Array, name: string, v: Value) {
+    info := a.args
+    for i in 0 ..< min(info.nmap, len(a.items)) {
+        if info.params[i] == name && args_mapped(info, i) do a.items[i] = v
+    }
 }
 
 // ── buracos de array ──────────────────────────────────────────────────────────
@@ -219,6 +252,7 @@ Function :: struct {
                      // próprio corpo — bindado no escopo da CHAMADA (setup_call_scope),
                      // já que não vaza mais p/ o env externo (spec)
     is_generator: bool, // function*: chamar devolve um objeto generator (generator.odin)
+    strict: bool, // corpo strict (do nó .Func): `arguments` sem mapeamento e callee que lança
     uses_arguments: bool, // o corpo menciona `arguments` (ou `eval`) — só então
                           // setup_call_scope materializa o objeto. Vem do nó .Func
                           // (Parser.saw_arguments); nativa/bound nunca precisam.
@@ -262,6 +296,8 @@ Env :: struct {
                                    // deles. Um mapa à parte (em vez de engordar `vars`
                                    // com um struct) mantém o caminho quente de leitura
                                    // intocado e não custa nada em escopo sem const.
+    mapped_args: ^Array, // escopo de função com `arguments` MAPEADO: env_assign num param
+                         // espelha o valor no item (ver Args_Info). nil no caso comum.
 }
 
 // Escopo de função mais próximo (onde `var` binda — var é function-scoped, não
@@ -701,6 +737,7 @@ new_env :: proc(vm: ^Interp, parent: ^Env) -> ^Env {
         pop(&vm.env_pool)
         e.parent = parent
         e.is_fn_scope = false
+        e.mapped_args = nil
     } else {
         e = new(Env)
         e.parent = parent
@@ -1115,6 +1152,7 @@ vm_destroy :: proc(vm: ^Interp) {
         delete(a.items)
         if a.props != nil do delete(a.props)
         delete(a.holes)
+        if a.args != nil do free(a.args)
         free(a)
     }
     delete(vm.all_arrays)
@@ -1318,6 +1356,7 @@ env_assign :: proc(vm: ^Interp, e: ^Env, name: string, v: Value) {
                 return
             }
             cur.vars[name] = v
+            if cur.mapped_args != nil do args_param_written(cur.mapped_args, name, v)
             return
         }
         root = cur
@@ -1914,6 +1953,12 @@ js_in :: proc(vm: ^Interp, l, r: Value) -> bool {
         if idx, ok := strconv.parse_int(key); ok do return arr_has_index(o, idx)
         if o.props != nil { if _, ok := o.props[key]; ok do return true }
         if key == "length" do return true
+        if o.args != nil { // `arguments`: callee/iterator próprios, cadeia de Object.prototype
+            if key == "callee" || key == vm.sym_iterator_key do return true
+            if _, ok := vm.object_methods[key]; ok do return true
+            if vm.object_proto != nil do return js_in(vm, l, vm.object_proto)
+            return false
+        }
         // HasProperty sobe até Array.prototype/Object.prototype: `"slice" in []` é TRUE
         // no JS (era false aqui). Um polyfill que testa assim instalava por cima do
         // nosso método nativo.
@@ -1956,6 +2001,7 @@ js_instanceof :: proc(vm: ^Interp, l, r: Value) -> bool {
     // Casam pelo construtor correspondente, como as coleções logo acima.
     #partial switch lv in l {
     case ^Array:
+        if lv.args != nil do return rf.name == "Object" // `arguments` não é Array
         if vm.array_ctor != nil && rf == vm.array_ctor do return true
         return rf.name == "Array" || rf.name == "Object"
     case ^Function:
@@ -2193,6 +2239,25 @@ prim_proto_lookup :: proc(vm: ^Interp, proto: ^Object, this: Value, name: string
     return nil, false
 }
 
+// Membro não-índice do objeto `arguments` (o.args != nil), depois das props próprias.
+@(private = "file")
+arguments_member :: proc(vm: ^Interp, o: ^Array, name: string) -> Value {
+    if name == "callee" {
+        // strict: o accessor %ThrowTypeError% (spec 10.4.4.6)
+        if o.args.callee == nil || o.args.callee.strict {
+            throw_type_error(vm, "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them")
+            return nil
+        }
+        return o.args.callee
+    }
+    // %Array.prototype.values% — o mesmo objeto que Array.prototype[Symbol.iterator]
+    if name == vm.sym_iterator_key do return vm.array_methods["values"]
+    if v, found := prim_proto_lookup(vm, vm.object_proto, o, name); found do return v
+    if fn, ok := vm.object_methods[name]; ok do return fn
+    if name == "constructor" do return global_ctor(vm, "Object")
+    return nil
+}
+
 // Visível no pacote (object.odin invoca getters ao ler values/entries/assign).
 get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
     when JSPROF { g_prof.get_member += 1 }
@@ -2271,6 +2336,10 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         if o.props != nil { // props não-índice (exec.index, strings.raw)
             if v, ok := o.props[name]; ok do return v
         }
+        // objeto `arguments`: é um objeto COMUM na spec — herda de Object.prototype,
+        // não de Array.prototype (`arguments.map` é undefined, `instanceof Array` é
+        // false), e tem `callee` e `[Symbol.iterator]` próprios.
+        if o.args != nil do return arguments_member(vm, o, name)
         if vm.array_ctor != nil {
             if proto, ok := vm.array_ctor.props["prototype"].(^Object); ok {
                 for cur := proto; cur != nil; cur = cur.proto {
@@ -2575,6 +2644,8 @@ set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) {
         for len(o.items) <= idx do append(&o.items, nil)
         o.items[idx] = val
         if val == nil do arr_fill_slot(o, idx) // a[i]=undefined: existe, não é buraco
+        // `arguments[i] = v` mapeado: o parâmetro i é o MESMO binding
+        if o.args != nil && args_mapped(o.args, idx) do o.args.env.vars[o.args.params[idx]] = val
     case ^Object:
         // subclasse de Array (M136): índice numérico escreve no array embrulhado.
         if o.prim != nil {
@@ -3260,6 +3331,8 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                     if a.frozen || a.sealed do return false // não-configurável
                     a.items[idx] = nil
                     arr_mark_hole(a, idx) // `delete a[i]` deixa um BURACO (`i in a` = false)
+                    // `delete arguments[i]` desfaz o mapeamento com o parâmetro
+                    if a.args != nil && idx < 64 do a.args.unmapped |= u64(1) << uint(idx)
                 }
             }
         }
@@ -3623,6 +3696,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         f.is_async = n.aux
         f.is_generator = n.is_generator
         f.uses_arguments = n.uses_arguments
+        f.strict = n.strict
         val: Value = f
         // Só DECLARAÇÕES bindam o nome no escopo externo. Expressão nomeada
         // (`var f = function g(){}`) tem `g` visível apenas no próprio corpo
@@ -3972,6 +4046,7 @@ build_method :: proc(vm: ^Interp, m: ^Node, env: ^Env, super_fn: ^Function, supe
     f.is_async = m.aux
     f.is_generator = m.is_generator
     f.uses_arguments = m.uses_arguments
+    f.strict = true // corpo de classe é sempre strict
     f.super_ctor = super_fn
     f.home_super = super_proto
     return f
@@ -4859,6 +4934,23 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
         argobj.is_arguments = true // Array.isArray(arguments) === false (spec)
         for a in args do append(&argobj.items, a)
         scope.vars["arguments"] = argobj
+        info := new(Args_Info)
+        info.callee = fn
+        argobj.args = info
+        // MAPEADO só em sloppy com lista de params SIMPLES (sem default, padrão nem
+        // rest — spec 10.2.11 passo 18). E só se houver o que mapear.
+        simple := fn.rest_param == "" && fn.rest_pat == nil
+        if simple do for d in fn.param_defaults do if d != nil { simple = false; break }
+        if simple do for pt in fn.param_pats do if pt != nil { simple = false; break }
+        if !fn.strict && simple && min(len(args), len(fn.params)) > 0 {
+            info.env = scope
+            info.params = fn.params
+            info.nmap = min(len(args), len(fn.params))
+            scope.mapped_args = argobj
+            // o objeto guarda o escopo: se ele sobreviver à chamada (`return
+            // arguments`), o escopo NÃO pode voltar ao pool
+            env_escaped(vm)
+        }
     }
     for p, i in fn.params {
         av: Value = args[i] if i < len(args) else nil

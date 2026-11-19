@@ -608,7 +608,8 @@ obj_get_prototype_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     // PRÓPRIA da union, não um ^Object, então não tem campo `proto` para ler. O
     // protótipo dele é sempre `Array.prototype` (não há como trocá-lo aqui), e é
     // de lá que `[].__proto__` também responde.
-    if _, ok := arg(args, 0).(^Array); ok {
+    if a, ok := arg(args, 0).(^Array); ok {
+        if a.args != nil && vm.object_proto != nil do return vm.object_proto // `arguments`
         if vm.array_ctor != nil {
             if p, pok := vm.array_ctor.props["prototype"].(^Object); pok do return p
         }
@@ -749,6 +750,12 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
             d := new_object(vm)
             oput(d, "value", v); oput(d, "writable", w); oput(d, "enumerable", e); oput(d, "configurable", c)
             return d
+        }
+        if arr.args != nil { // `arguments`: length e callee são data-props configuráveis
+            if key == "length" do return mk(vm, f64(len(arr.items)), !arr.frozen, false, !arr.frozen)
+            if key == "callee" && arr.args.callee != nil && !arr.args.callee.strict {
+                return mk(vm, arr.args.callee, true, false, true)
+            }
         }
         if key == "length" do return mk(vm, f64(len(arr.items)), !arr.frozen, false, false)
         if idx, iok := array_index_name(key); iok {

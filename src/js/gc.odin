@@ -69,6 +69,10 @@ gc_drain :: proc(gp: ^GC_State) {
             for _, v in x.props {
                 gc_push(&g, v)
             }
+            if x.args != nil { // objeto `arguments`: segura o callee e o escopo mapeado
+                gc_push(&g, x.args.callee)
+                gc_push(&g, x.args.env)
+            }
         case ^Function:
             gc_push(&g, x.closure)
             gc_push(&g, x.bound)
@@ -96,6 +100,7 @@ gc_drain :: proc(gp: ^GC_State) {
             for _, v in x.aliases {
                 gc_push(&g, v.src)
             }
+            gc_push(&g, x.mapped_args)
         case ^Array_Buffer:
         case ^Collection:
             if x.kind == .Map || x.kind == .Set {
@@ -363,6 +368,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
         delete(a.items)
         if a.props != nil do delete(a.props)
         delete(a.holes)
+        if a.args != nil do free(a.args)
         free(a)
         }
     resize(&vm.all_arrays, live_all_arrays)

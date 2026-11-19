@@ -3406,6 +3406,7 @@ arr_delete :: proc(vm: ^Interp, this: Value, i: int) {
             if o.frozen || o.sealed { throw_type_error(vm, "Cannot delete property"); return }
             o.items[i] = nil
             arr_mark_hole(o, i)
+            if o.args != nil && i < 64 do o.args.unmapped |= u64(1) << uint(i)
         }
     case string:
         if i >= 0 && i < str_rlen(o) do throw_type_error(vm, "Cannot delete string index")
