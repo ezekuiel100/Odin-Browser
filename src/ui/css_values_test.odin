@@ -2,6 +2,7 @@ package ui
 
 import "core:testing"
 import "core:fmt"
+import "base:runtime"
 import csspkg "../css"
 import jspkg "../js"
 import dompkg "../dom"
@@ -150,4 +151,30 @@ css_inert_diagnostics :: proc(t: ^testing.T) {
     testing.expect_value(t, len(g_css_unknown), 1)
     test_apply("hyphens: auto")
     testing.expect_value(t, g_css_inert["hyphens"], 2)
+}
+
+@(test)
+css_gap_count_sobrevive_ao_alocador_temp :: proc(t: ^testing.T) {
+    // Segfault do github: a sonda `value_usable` roda `apply_decls` com o
+    // `context.allocator` trocado pelo TEMP; o 1º `touch-action` (inerte) criava
+    // o mapa GLOBAL ali, e o `free_all` do frame deixava-o pendurado.
+    old_unknown, old_inert := g_css_unknown, g_css_inert
+    g_css_unknown, g_css_inert = nil, nil
+    defer { g_css_unknown, g_css_inert = old_unknown, old_inert }
+    {
+        ctx := context
+        ctx.allocator = context.temp_allocator
+        context = ctx
+        css_gap_count(&g_css_inert, "touch-action")
+    }
+    heap_proc := runtime.heap_allocator().procedure
+    testing.expect(t, g_css_inert.allocator.procedure == heap_proc,
+        "o mapa global tem de nascer no HEAP, não no alocador do contexto")
+    // A CHAVE também: clonada no temp, morreria no free_all do frame. Recicla
+    // a arena e a sobrescreve com lixo, como o frame seguinte faria.
+    free_all(context.temp_allocator)
+    lixo := make([]u8, 4096, context.temp_allocator)
+    for &b in lixo do b = 'X'
+    for k in g_css_inert do testing.expect_value(t, k, "touch-action")
+    testing.expect_value(t, g_css_inert["touch-action"], 1)
 }

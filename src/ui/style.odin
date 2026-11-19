@@ -105,12 +105,19 @@ css_prop_is_inert :: proc(prop: string) -> bool {
     return false
 }
 
+// ⚠️ Mapa e chaves no HEAP, explicitamente. `apply_decls` também roda dentro da
+// sonda de declaração repetida (`value_usable`), que troca o
+// `context.allocator` pelo TEMPORÁRIO: com o alocador implícito, o mapa global
+// podia nascer na arena temp, que o `free_all` do frame recicla — o próximo
+// `counts^[prop]` lia memória liberada. Segfault no github (`.ActionList-content`
+// declara `touch-action` DUAS vezes; `touch-action` é inerte → g_css_inert).
 css_gap_count :: proc(counts: ^map[string]int, prop: string) {
-    if counts^ == nil do counts^ = make(map[string]int)
+    heap := runtime.heap_allocator()
+    if counts^ == nil do counts^ = make(map[string]int, 16, heap)
     if _, exists := counts^[prop]; exists {
         counts^[prop] += 1
     } else {
-        counts^[strings.clone(prop)] = 1
+        counts^[strings.clone(prop, heap)] = 1
     }
 }
 
