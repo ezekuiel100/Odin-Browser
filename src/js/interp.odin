@@ -2803,39 +2803,128 @@ eval_args :: proc(vm: ^Interp, nodes: [dynamic]^Node, env: ^Env) -> [dynamic]Val
     return out
 }
 
-// Materializa um iterável num ^Array p/ destructuring posicional `[a,b] = it`.
-// Cobre Set/Map (entries), generators, iteradores e objetos com Symbol.iterator.
-// Devolve false p/ não-iteráveis (o chamador cai no acesso por índice, que trata
-// array-likes com .length). Iterável infinito é limitado pelo step_guard.
+// Materializa um Set/Map nativo num ^Array p/ destructuring posicional `[a,b] = s`
+// (finito e sem efeito colateral: dá no mesmo que iterá-lo). Iteráveis por
+// PROTOCOLO não passam por aqui — são puxados um a um (pattern_iter_step).
 @(private = "file")
-materialize_for_pattern :: proc(vm: ^Interp, val: Value) -> (^Array, bool) {
-    #partial switch v in val {
-    case ^Array:
-        return v, true // já é array (sem cópia)
-    case ^Collection:
-        arr := new_array(vm)
-        if v.kind == .Set || v.kind == .Weak_Set {
-            for e in v.entries do if !e.dead do append(&arr.items, e.key)
-        } else {
-            for e in v.entries {
-                if e.dead do continue // Map: pares [k,v] (como o for-of)
-                pair := new_array(vm)
-                append(&pair.items, e.key); append(&pair.items, e.val)
-                append(&arr.items, pair)
-            }
+materialize_collection :: proc(vm: ^Interp, c: ^Collection) -> ^Array {
+    arr := new_array(vm)
+    if c.kind == .Set || c.kind == .Weak_Set {
+        for e in c.entries do if !e.dead do append(&arr.items, e.key)
+    } else {
+        for e in c.entries {
+            if e.dead do continue // Map: pares [k,v] (como o for-of)
+            pair := new_array(vm)
+            append(&pair.items, e.key); append(&pair.items, e.val)
+            append(&arr.items, pair)
         }
-        return arr, true
-    case ^Object:
-        out: [dynamic]Value // iterador / generator / objeto com Symbol.iterator
-        if iterate_protocol(vm, v, &out) {
-            arr := new_array(vm)
-            arr.items = out // transfere posse do buffer materializado
-            return arr, true
-        }
-        delete(out)
-        return nil, false
     }
-    return nil, false
+    return arr
+}
+
+// Um passo do iterador de um padrão de array (IteratorStepValue, spec 7.4.8): devolve
+// o próximo valor, ou undefined com `done^ = true` quando o iterador terminou. Erro
+// em next()/done/value também marca done — a spec NÃO fecha um iterador que falhou.
+@(private = "file")
+pattern_iter_step :: proc(vm: ^Interp, iter: Value, next_fn: ^Function, done: ^bool) -> Value {
+    if done^ do return nil
+    if next_fn == nil || step_guard(vm) { done^ = true; return nil }
+    r := call_function(vm, next_fn, iter, nil)
+    if vm.throwing { done^ = true; return nil }
+    if is_primitive(r) {
+        done^ = true
+        throw_type_error(vm, "Iterator result is not an object")
+        return nil
+    }
+    d := get_member(vm, r, "done")
+    if vm.throwing || truthy(d) { done^ = true; return nil }
+    v := get_member(vm, r, "value")
+    if vm.throwing { done^ = true; return nil }
+    return v
+}
+
+// Nome do tipo primitivo p/ mensagem de erro do destructuring.
+@(private = "file")
+value_kind_name :: proc(v: Value) -> string {
+    #partial switch _ in v {
+    case nil:     return "undefined"
+    case JS_Null: return "null"
+    case f64:     return "number"
+    case bool:    return "boolean"
+    case ^Symbol: return "symbol"
+    case ^BigInt: return "bigint"
+    }
+    return "object"
+}
+
+// Alvo de destructuring-EXPRESSÃO (`[o.x, a[k]] = v`) com o objeto e a chave JÁ
+// avaliados: a spec avalia o alvo ANTES de ler o valor — `[ {}[f()] ] = it` chama
+// f() antes do next(), e se f() lança o iterador ainda é fechado.
+@(private = "file")
+Target_Ref :: struct {
+    node: ^Node,
+    obj:  Value,
+    key:  Value,
+}
+
+@(private = "file")
+eval_target_ref :: proc(vm: ^Interp, t: ^Node, env: ^Env) -> (ref: Target_Ref) {
+    ref.node = t
+    #partial switch t.kind {
+    case .Member:
+        ref.obj = eval(vm, t.left, env)
+    case .Index:
+        ref.obj = eval(vm, t.left, env)
+        if !vm.throwing do ref.key = eval(vm, t.right, env)
+    }
+    return
+}
+
+@(private = "file")
+put_target_ref :: proc(vm: ^Interp, ref: Target_Ref, val: Value, env: ^Env) {
+    #partial switch ref.node.kind {
+    case .Ident:
+        env_assign(vm, env, ref.node.name, val)
+    case .Member:
+        set_member(vm, ref.obj, ref.node.name, val)
+    case .Index:
+        set_index(vm, ref.obj, ref.key, val)
+    }
+}
+
+// IteratorClose (spec 7.4.11) do destructuring: o padrão acabou e o iterador NÃO
+// terminou — chama return(). Diferente do iterator_close do for-of, roda também com
+// exceção em voo (default/alvo que lançou), e aí a exceção ORIGINAL prevalece sobre
+// qualquer erro do return(). Sem exceção em voo, erro do return() propaga e um
+// resultado que não é objeto vira TypeError.
+@(private = "file")
+pattern_iter_close :: proc(vm: ^Interp, iter: Value) {
+    if vm.gen_hard_kill do return
+    saved_throw, saved_exc := vm.throwing, vm.thrown
+    saved_ret, saved_val := vm.returning, vm.ret_val
+    saved_break, saved_continue := vm.breaking, vm.continuing
+    vm.throwing = false; vm.thrown = nil
+    vm.returning = false; vm.ret_val = nil
+    vm.breaking = false; vm.continuing = false
+    ret := get_member(vm, iter, "return")
+    if !vm.throwing {
+        #partial switch fn in ret {
+        case nil, JS_Null: // sem return(): nada a fechar
+        case ^Function:
+            r := call_function(vm, fn, iter, nil)
+            if !vm.throwing && is_primitive(r) do throw_type_error(vm, "Iterator result is not an object")
+        case:
+            throw_type_error(vm, "iterator.return is not a function")
+        }
+    }
+    if vm.gen_hard_kill do return
+    if saved_throw {
+        vm.throwing = true; vm.thrown = saved_exc
+    }
+    if !vm.throwing {
+        vm.returning = saved_ret; vm.ret_val = saved_val
+        vm.breaking = saved_break; vm.continuing = saved_continue
+    }
 }
 
 // Liga um padrão de desestruturação (.Pattern) a `val`, definindo as variáveis
@@ -2862,17 +2951,50 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
     // elemento computado; o rest é sempre o último, logo já está completo ao chegar lá.
     computed_consumed: map[string]bool
     defer delete(computed_consumed)
-    // destructuring de ARRAY sobre um iterável não-array (Set/Map/generator/iterador/
-    // objeto com Symbol.iterator): materializa num array e usa acesso posicional.
-    // Array e string seguem o caminho rápido (get_index já os cobre por índice).
-    if !pat.bval {
-        #partial switch _ in val {
-        case ^Array, string: // caminho rápido posicional
-        case:
-            if arr, ok := materialize_for_pattern(vm, val); ok do val = arr
+    // destructuring de ARRAY sobre um iterável não-array. Array e string seguem o
+    // caminho rápido (get_index os cobre por índice); Set/Map nativos materializam.
+    // Iterável por PROTOCOLO (generator, iterador, objeto com Symbol.iterator) é
+    // PUXADO um next() por elemento — `[a] = gen()` puxa UM valor, não drena o
+    // gerador — e fechado (return()) no fim se não terminou (spec 8.6.2/13.15.5.5).
+    iter: Value
+    iter_next: ^Function
+    by_protocol, iter_done := false, false
+    // fonte que não se desestrutura lança MESMO com padrão vazio (`[] = 1`,
+    // `({} = null)`): GetIterator / RequireObjectCoercible da spec.
+    #partial switch _ in val {
+    case nil, JS_Null:
+        kind := value_kind_name(val)
+        if !pat.bval {
+            throw_type_error(vm, fmt.tprintf("%s is not iterable", kind))
+        } else if len(pat.body) > 0 && !pat.body[0].bval && pat.body[0].third == nil {
+            // nomeia a 1ª chave, como o V8: diz QUAL leitura falhou (pista p/ site real)
+            throw_type_error(vm, fmt.tprintf("Cannot destructure property '%s' of '%s' as it is %s.", pat.body[0].str, kind, kind))
+        } else {
+            throw_type_error(vm, fmt.tprintf("Cannot destructure '%s' as it is %s.", kind, kind))
+        }
+        return
+    case f64, bool, ^Symbol, ^BigInt:
+        if !pat.bval {
+            throw_type_error(vm, fmt.tprintf("%s is not iterable", value_kind_name(val)))
+            return
         }
     }
+    if !pat.bval {
+        #partial switch v in val {
+        case ^Array, string: // caminho rápido posicional
+        case ^Collection:
+            val = materialize_collection(vm, v)
+        case ^Object:
+            if it, ok := get_iterator(vm, v); ok {
+                iter, iter_next, by_protocol = it, iterator_next_fn(it), true
+            } else if vm.throwing {
+                return
+            } // não-iterável: cai no acesso por índice (array-like com .length)
+        }
+    }
+    defer if by_protocol && !iter_done do pattern_iter_close(vm, iter)
     for el, i in pat.body {
+        if vm.throwing do break
         if el.bval { // rest: recolhe o restante
             if pat.bval {
                 // objeto: chaves ainda não consumidas por este padrão (ordem da fonte)
@@ -2888,14 +3010,26 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
                 bind_one(vm, env, el.name, rest, declare, is_const)
             } else {
                 // array: itens a partir do índice atual
+                rest_ref: Target_Ref
+                if el.left != nil && el.left.kind != .Pattern {
+                    rest_ref = eval_target_ref(vm, el.left, env) // alvo ANTES de drenar
+                    if vm.throwing do break
+                }
                 rest := new_array(vm)
-                if src, ok := val.(^Array); ok {
+                if by_protocol {
+                    for !iter_done { // rest DRENA o iterador (aí não há o que fechar)
+                        v := pattern_iter_step(vm, iter, iter_next, &iter_done)
+                        if iter_done do break
+                        append(&rest.items, v)
+                    }
+                    if vm.throwing do break
+                } else if src, ok := val.(^Array); ok {
                     for j := i; j < len(src.items); j += 1 do append(&rest.items, src.items[j])
                 }
                 if el.left != nil && el.left.kind == .Pattern {
                     bind_pattern(vm, el.left, rest, env, declare, is_const) // [...[a, b]]
                 } else if el.left != nil {
-                    write_target(vm, el.left, rest, env) // [...o.x] = v (só expressão)
+                    put_target_ref(vm, rest_ref, rest, env) // [...o.x] = v (só expressão)
                 } else {
                     bind_one(vm, env, el.name, rest, declare, is_const)
                 }
@@ -2903,23 +3037,34 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
             continue
         }
         v: Value
+        // alvo member/index (`[o.x] = v`, só expressão): avaliado ANTES de ler o
+        // valor — depois da chave computada, antes do get/next() (spec 13.15.5.5-6)
+        ref: Target_Ref
+        has_ref := el.left != nil && el.left.kind != .Pattern
         if pat.bval {
+            key := el.str                         // objeto: pela chave estática
             if el.third != nil { // chave computada: { [expr]: alvo }
-                key := key_string(vm, eval(vm, el.third, env))
+                key = key_string(vm, eval(vm, el.third, env))
+                if vm.throwing do break
                 computed_consumed[key] = true
-                v = get_member(vm, val, key)
-            } else {
-                v = get_member(vm, val, el.str)   // objeto: pela chave estática
             }
+            if has_ref { ref = eval_target_ref(vm, el.left, env); if vm.throwing do break }
+            v = get_member(vm, val, key)
         } else {
-            v = get_index(vm, val, f64(i))        // array: pelo índice posicional
+            if has_ref { ref = eval_target_ref(vm, el.left, env); if vm.throwing do break }
+            if by_protocol {
+                v = pattern_iter_step(vm, iter, iter_next, &iter_done) // buraco também consome
+                if vm.throwing do break
+            } else {
+                v = get_index(vm, val, f64(i))    // array: pelo índice posicional
+            }
         }
         if v == nil && el.right != nil do v = eval(vm, el.right, env) // default
         if el.left != nil {
             if el.left.kind == .Pattern {
                 bind_pattern(vm, el.left, v, env, declare, is_const) // aninhado
             } else {
-                write_target(vm, el.left, v, env) // alvo member/index: [o.x] = v (só expressão)
+                put_target_ref(vm, ref, v, env)
             }
         } else if el.name != "" {
             bind_one(vm, env, el.name, v, declare, is_const)

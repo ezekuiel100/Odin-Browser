@@ -89,7 +89,11 @@ $areas = @(
     "language/statements/for-of",
     "language/expressions/optional-chaining",
     "language/expressions/spread",
-    "language/statements/class/definition"
+    "language/statements/class/definition",
+    # destructuring (binding e atribuicao): baixadas INTEIRAS com -PerDir 1000
+    # (79 + 338 arquivos); com o -PerDir padrao so os 25 primeiros (array-*) entram.
+    "language/statements/variable/dstr",
+    "language/expressions/assignment/dstr"
 )
 
 # Features que o motor NAO suporta -> pula qualquer teste que as exija (frontmatter
