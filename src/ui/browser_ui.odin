@@ -2144,6 +2144,12 @@ load_page_scripts :: proc(dom: ^dompkg.Node, base_url: string) -> ^jspkg.Interp 
     defer delete(scripts)
     collect_scripts_rec(dom, &scripts)
 
+    // <script type="importmap"> ANTES de qualquer módulo: é o que mapeia o
+    // `import "react"` do github para a URL real do bundle. Só inline (a spec
+    // não aceita `src` em import map). Todos os módulos rodam na fase deferida,
+    // então registrar todos agora equivale à regra "mapa antes do 1º import".
+    register_import_maps(vm, dom, base_url)
+
     ordenados := script_exec_order(scripts[:], context.temp_allocator)
 
     ext_count := 0 // só <script src> conta p/ o teto de downloads
@@ -2204,6 +2210,25 @@ load_page_scripts :: proc(dom: ^dompkg.Node, base_url: string) -> ^jspkg.Interp 
     // innerHTML dentro de um handler de DOMContentLoaded, e ficava vazia.
     jspkg.dispatch_event(vm, dom, "DOMContentLoaded")
     return vm
+}
+
+// Registra os `<script type="importmap">` em ordem de documento (pré-ordem).
+@(private)
+register_import_maps :: proc(vm: ^jspkg.Interp, n: ^dompkg.Node, base_url: string) {
+    if n == nil do return
+    if n.kind == .Element && n.tag == "script" && n.attrs != nil {
+        if t, ok := n.attrs["type"]; ok && strings.equal_fold(strings.trim_space(t), "importmap") {
+            if _, tem_src := n.attrs["src"]; !tem_src {
+                sb := strings.builder_make(context.temp_allocator)
+                for c in n.children do if c.kind == .Text do strings.write_string(&sb, c.text)
+                if !jspkg.import_map_register(vm, strings.to_string(sb), base_url) {
+                    fmt.eprintln("[js] import map com JSON inválido ignorado")
+                }
+            }
+        }
+        return
+    }
+    for c in n.children do register_import_maps(vm, c, base_url)
 }
 
 // Hosts de analytics/publicidade cujos scripts são ignorados: não afetam a

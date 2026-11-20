@@ -30,6 +30,8 @@ package js
 
 import "core:fmt"
 import "core:strings"
+import "core:unicode"
+import "core:unicode/utf8"
 
 // ⚠️ O separador entre número e símbolo de moeda é NBSP (U+00A0), NÃO espaço
 // comum — é o que o CLDR manda e o que o Chrome produz ("1.234,50 €").
@@ -719,6 +721,263 @@ locale_to_string :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     return own_str(vm, "en-US")
 }
 
+// ── Intl.Segmenter ──────────────────────────────────────────────────────────
+//
+// Entrou pelo github.com: o bundle `landing-pages` faz `new Intl.Segmenter` no
+// TOPO do módulo (divisão de texto p/ animação de título); sem o construtor o
+// módulo inteiro morria e a home ficava com o bloco principal em branco.
+//
+// • grapheme: UAX #29 COMPLETO, via core:unicode/utf8 (emoji ZWJ, bandeiras,
+//   Hangul, conjuntos índicos).
+// • word: as regras centrais da UAX #29 — corridas de letra/dígito/marca, com
+//   `'`/`’`/`.` ENTRE letras ou dígitos ficando dentro ("don't", "3.14");
+//   espaço em corrida; pontuação um a um. Ideograma CJK sai UM POR SEGMENTO
+//   (o ICU usaria dicionário para agrupar; não temos).
+// • sentence: termina em . ! ? (e …, 。！？) + aspas/parênteses de fecho + o
+//   espaço que segue. Não distingue abreviação ("Sr. Silva" quebra).
+// Índices em unidades UTF-16, como o JS espera.
+
+@(private = "file")
+Seg :: struct { text: string, word_like: bool }
+
+@(private = "file")
+seg_is_ideo :: proc(r: rune) -> bool {
+    return (r >= 0x3040 && r <= 0x30FF) || (r >= 0x3400 && r <= 0x4DBF) ||
+           (r >= 0x4E00 && r <= 0x9FFF) || (r >= 0xF900 && r <= 0xFAFF) ||
+           (r >= 0x20000 && r <= 0x2FA1F)
+}
+
+@(private = "file")
+seg_is_wordch :: proc(r: rune) -> bool {
+    return !seg_is_ideo(r) && (unicode.is_letter(r) || unicode.is_digit(r) || unicode.is_number(r) ||
+           unicode.is_combining(r) || unicode.is_nonspacing_mark(r) || unicode.is_spacing_mark(r) ||
+           r == '_' || r == 0x200D)
+}
+
+// ⚠️ o `text` devolvido por decode_grapheme_iterate fatia pela LARGURA em
+// células de monoespaço, não em bytes ("é" saía "\xc3"). Só o `byte_index` de
+// INÍCIO é confiável: cada grafema vai de um início ao próximo.
+@(private = "file")
+grapheme_starts :: proc(s: string) -> [dynamic]int {
+    starts := make([dynamic]int, context.temp_allocator)
+    it := utf8.decode_grapheme_iterator_make(s)
+    for _, g in utf8.decode_grapheme_iterate(&it) do append(&starts, g.byte_index)
+    return starts
+}
+
+@(private = "file")
+seg_graphemes :: proc(s: string, out: ^[dynamic]Seg) {
+    starts := grapheme_starts(s)
+    for st, k in starts {
+        end := k + 1 < len(starts) ? starts[k + 1] : len(s)
+        append(out, Seg{text = s[st:end]})
+    }
+}
+
+// Primeiro grafema de `s` (em bytes).
+@(private = "file")
+first_grapheme_len :: proc(s: string) -> int {
+    starts := grapheme_starts(s)
+    return len(starts) > 1 ? starts[1] : len(s)
+}
+
+@(private = "file")
+seg_words :: proc(s: string, out: ^[dynamic]Seg) {
+    i := 0
+    for i < len(s) {
+        r, n := utf8.decode_rune_in_string(s[i:])
+        start := i
+        switch {
+        case seg_is_wordch(r):
+            j := i + n
+            for j < len(s) {
+                r2, n2 := utf8.decode_rune_in_string(s[j:])
+                if seg_is_wordch(r2) { j += n2; continue }
+                // MidLetter/MidNum: `'` `’` `.` `,`(só número) ENTRE dois word chars
+                if r2 == '\'' || r2 == 0x2019 || r2 == '.' || r2 == ':' || r2 == ',' {
+                    if j + n2 < len(s) {
+                        r3, _ := utf8.decode_rune_in_string(s[j + n2:])
+                        prev, _ := utf8.decode_last_rune_in_string(s[:j])
+                        digits := unicode.is_digit(prev) && unicode.is_digit(r3)
+                        letters := unicode.is_letter(prev) && unicode.is_letter(r3)
+                        ok := (r2 == ',' || r2 == '.') ? digits || (r2 == '.' && letters) : letters
+                        if ok && seg_is_wordch(r3) { j += n2; continue }
+                    }
+                }
+                break
+            }
+            append(out, Seg{text = s[start:j], word_like = true})
+            i = j
+        case unicode.is_space(r):
+            j := i + n
+            for j < len(s) {
+                r2, n2 := utf8.decode_rune_in_string(s[j:])
+                if !unicode.is_space(r2) || r2 == '\n' || r2 == '\r' do break
+                if r == '\n' || r == '\r' do break
+                j += n2
+            }
+            // CR LF é um segmento só
+            if r == '\r' && j < len(s) && s[j] == '\n' do j += 1
+            append(out, Seg{text = s[start:j]})
+            i = j
+        case:
+            // pontuação/símbolo/ideograma: um GRAFEMA por segmento (emoji inteiro)
+            // (limita a busca: o grafema não passa de algumas dezenas de bytes)
+            gl := first_grapheme_len(s[i:min(len(s), i + 64)])
+            if gl <= 0 do gl = n
+            append(out, Seg{text = s[i:i + gl], word_like = seg_is_ideo(r)})
+            i += gl
+        }
+    }
+}
+
+@(private = "file")
+seg_sentences :: proc(s: string, out: ^[dynamic]Seg) {
+    start, i := 0, 0
+    for i < len(s) {
+        r, n := utf8.decode_rune_in_string(s[i:])
+        i += n
+        is_term := r == '.' || r == '!' || r == '?' || r == 0x2026 || r == 0x3002 || r == 0xFF01 || r == 0xFF1F
+        if r == '\n' || r == 0x2029 {
+            append(out, Seg{text = s[start:i]}); start = i
+            continue
+        }
+        if !is_term do continue
+        // mais terminadores, depois fechos (aspas/parênteses)
+        for i < len(s) {
+            r2, n2 := utf8.decode_rune_in_string(s[i:])
+            if r2 == '.' || r2 == '!' || r2 == '?' || r2 == '"' || r2 == '\'' || r2 == ')' || r2 == ']' ||
+               r2 == 0x2019 || r2 == 0x201D || r2 == 0x00BB || r2 == 0x2026 { i += n2; continue }
+            break
+        }
+        // só quebra se vier espaço ou o fim (senão é "3.14", "a.b.com")
+        if i < len(s) {
+            r2, _ := utf8.decode_rune_in_string(s[i:])
+            if !unicode.is_space(r2) && !(r == 0x3002 || r == 0xFF01 || r == 0xFF1F) do continue
+        }
+        for i < len(s) {
+            r2, n2 := utf8.decode_rune_in_string(s[i:])
+            if !unicode.is_space(r2) do break
+            i += n2
+            if r2 == '\n' do break
+        }
+        append(out, Seg{text = s[start:i]}); start = i
+    }
+    if start < len(s) do append(out, Seg{text = s[start:]})
+}
+
+// comprimento em unidades UTF-16 (o `index` que o JS enxerga)
+@(private = "file")
+utf16_len :: proc(s: string) -> int {
+    n := 0
+    for r in s do n += r >= 0x10000 ? 2 : 1
+    return n
+}
+
+@(private = "file")
+segmenter_segment :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    inst := receiver(vm, this)
+    gran := "grapheme"
+    if inst != nil do if g, ok := inst.props["#gran"].(string); ok do gran = g
+    input := key_string(vm, arg(a, 0))
+    segs := make([dynamic]Seg, context.temp_allocator)
+    switch gran {
+    case "word":     seg_words(input, &segs)
+    case "sentence": seg_sentences(input, &segs)
+    case:            seg_graphemes(input, &segs)
+    }
+    input_v := own_str(vm, input)
+    arr := new_array(vm)
+    idx := 0
+    for sg in segs {
+        d := new_object(vm)
+        oput(d, "segment", own_str(vm, sg.text))
+        oput(d, "index", f64(idx))
+        oput(d, "input", input_v)
+        if gran == "word" do oput(d, "isWordLike", sg.word_like)
+        append(&arr.items, d)
+        idx += utf16_len(sg.text)
+    }
+    // %Segments%: iterável (NÃO é Array) com containing(i)
+    segments := new_object(vm)
+    segments.props["#kind"] = "segments"
+    segments.props["#segs"] = arr
+    segments.props["containing"] = mk_bound(vm, segments, segments_containing)
+    mark_non_enumerable(segments, "containing")
+    if vm.sym_iterator_key != "" {
+        segments.props[vm.sym_iterator_key] = mk_bound(vm, segments, segments_iterator)
+        mark_non_enumerable(segments, vm.sym_iterator_key)
+    }
+    return segments
+}
+
+@(private = "file")
+segments_list :: proc(vm: ^Interp, this: Value) -> ^Array {
+    inst := receiver(vm, this)
+    if inst == nil do return nil
+    arr, _ := inst.props["#segs"].(^Array)
+    return arr
+}
+
+@(private = "file")
+segments_iterator :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    arr := segments_list(vm, this)
+    if arr == nil do arr = new_array(vm)
+    return make_array_iterator(vm, arr)
+}
+
+// containing(i): o segmento que cobre a unidade UTF-16 `i` (undefined fora)
+@(private = "file")
+segments_containing :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    arr := segments_list(vm, this)
+    if arr == nil do return nil
+    i := 0.0
+    if f, ok := arg(a, 0).(f64); ok && f == f do i = f
+    if i < 0 do return nil
+    for it in arr.items {
+        d, ok := it.(^Object)
+        if !ok do continue
+        start, _ := d.props["index"].(f64)
+        seg, _ := d.props["segment"].(string)
+        if i >= start && i < start + f64(utf16_len(seg)) do return d
+    }
+    return nil
+}
+
+@(private = "file")
+segmenter_resolved :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    inst := receiver(vm, this)
+    o := new_object(vm)
+    loc, gran := "en-US", "grapheme"
+    if inst != nil {
+        if v, ok := inst.props["#loc"].(string); ok do loc = v
+        if v, ok := inst.props["#gran"].(string); ok do gran = v
+    }
+    oput(o, "locale", own_str(vm, loc))
+    oput(o, "granularity", own_str(vm, gran))
+    return o
+}
+
+@(private = "file")
+intl_segmenter :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    gran := opt_str(vm, arg(a, 1), "granularity", "grapheme")
+    if gran != "grapheme" && gran != "word" && gran != "sentence" {
+        vm.thrown = mk_error(vm, "RangeError", fmt.tprintf("Value %s out of range for Intl.Segmenter options property granularity", gran))
+        vm.throwing = true
+        return nil
+    }
+    inst := new_object(vm)
+    inst.props["#loc"]  = first_locale(vm, arg(a, 0))
+    inst.props["#gran"] = gran == "word" ? "word" : gran == "sentence" ? "sentence" : "grapheme"
+    inst.props["#kind"] = "segmenter"
+    inst.props["segment"]         = mk_bound(vm, inst, segmenter_segment)
+    inst.props["resolvedOptions"] = mk_bound(vm, inst, segmenter_resolved)
+    mark_non_enumerable(inst, "segment")
+    mark_non_enumerable(inst, "resolvedOptions")
+    adopt_proto(vm, inst)
+    return inst
+}
+
 // ── nível Intl ──────────────────────────────────────────────────────────────
 
 // getCanonicalLocales(x) → array. Não canonizamos de verdade (isso é tabela
@@ -828,6 +1087,7 @@ install_intl :: proc(vm: ^Interp) {
         {"RelativeTimeFormat", intl_relative_time_format},
         {"ListFormat",         intl_list_format},
         {"Locale",             intl_locale},
+        {"Segmenter",          intl_segmenter},
     }
     for c in ctors do intl.props[c.name] = mk_intl_ctor(vm, c.name, c.fn)
     intl.props["getCanonicalLocales"] = mk_native(vm, intl_get_canonical_locales)

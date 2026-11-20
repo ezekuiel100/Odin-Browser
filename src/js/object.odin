@@ -88,6 +88,15 @@ install_object :: proc(vm: ^Interp) {
     mark_non_enumerable(obj_proto, "__proto__")
     vm.object_methods["toString"] = ts // todo objeto sem toString próprio herda este
     vm.object_methods["toLocaleString"] = ts // default: mesmo que toString
+    // Os demais métodos de Object.prototype também têm de ser propriedades
+    // PRÓPRIAS dele (não só o fallback do get_member): o zod (github.com) decide
+    // "objeto simples" por `hasOwnProperty.call(Ctor.prototype, "isPrototypeOf")`
+    // e, com false, `schema.extend({...})` lançava "expected a plain object" —
+    // o bundle da home morria. Mesmas ^Function do mapa: identidade preservada.
+    for nome in ([]string{"hasOwnProperty", "propertyIsEnumerable", "isPrototypeOf", "valueOf", "toLocaleString"}) {
+        obj_proto.props[nome] = vm.object_methods[nome]
+        mark_non_enumerable(obj_proto, nome)
+    }
     ctor.props["prototype"] = obj_proto
     vm.object_proto = obj_proto // base da cadeia de protótipos (p/ %IteratorPrototype% etc.)
     env_define(vm.global, "Object", ctor)

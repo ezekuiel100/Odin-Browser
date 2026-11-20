@@ -104,6 +104,16 @@ install_dom :: proc(vm: ^Interp, root: ^dom.Node) {
     vm.dom_element_methods["canPlayType"]      = mk_dom(vm, native_media_can_play_type)
     vm.dom_element_methods["getClientRects"]   = mk_dom(vm, native_get_client_rects)
     vm.dom_element_methods["scrollIntoView"]   = mk_dom(vm, dom_noop)
+    // scrollTo/scroll/scrollBy de ELEMENTO: no-op, como scrollIntoView. A leitura
+    // de scrollTop vem do layout (g_element_metric), mas a ESCRITA de scroll de
+    // caixa pelo JS ainda não está ligada à UI. Existir importa: o DataMarquee do
+    // github chama `e.scrollTo(...)` no render e o TypeError derrubava a home.
+    vm.dom_element_methods["normalize"]        = mk_dom(vm, native_node_normalize)
+    vm.dom_element_methods["scrollTo"]         = mk_dom(vm, dom_noop)
+    vm.dom_element_methods["scroll"]           = mk_dom(vm, dom_noop)
+    vm.dom_element_methods["scrollBy"]         = mk_dom(vm, dom_noop)
+    vm.dom_element_methods["animate"]          = mk_dom(vm, native_element_animate) // web_animations.odin
+    vm.dom_element_methods["getAnimations"]    = mk_dom(vm, native_get_animations)
     vm.dom_element_methods["contains"]         = mk_dom(vm, native_contains)
     vm.dom_element_methods["hasChildNodes"]    = mk_dom(vm, native_has_child_nodes)
     vm.dom_element_methods["isEqualNode"]      = mk_dom(vm, native_is_equal_node)
@@ -219,6 +229,8 @@ install_dom :: proc(vm: ^Interp, root: ^dom.Node) {
         title_txt = strings.to_string(sb)
     }
     doc.props["title"] = own_str(vm, title_txt)
+    install_font_face_set(vm, doc) // document.fonts (font_face_set.odin)
+    doc.props["getAnimations"] = mk_dom(vm, native_get_animations)
     env_define(vm.global, "document", doc)
 
     // Interfaces DOM globais (Element/Node/HTMLElement/Document/…). Idempotente —
@@ -695,10 +707,17 @@ vm_create_with_dom :: proc(root: ^dom.Node) -> ^Interp {
 
 // Resolve o especificador contra o referrer (módulo importador) ou o base_url.
 @(private = "file")
+// Passa pelo import map (import_map.odin): especificador NU (`react`) só resolve
+// se mapeado — sem mapa, a spec manda falhar, e buscar `…/react` era 404 certo.
 dom_module_resolve :: proc(vm: ^Interp, specifier, referrer: string) -> string {
     base := referrer != "" ? referrer : vm.base_url
     if base == "" do return strings.clone(specifier)
-    return strings.clone(net.resolve_url(base, specifier, context.temp_allocator))
+    url, ok := import_map_resolve(vm, specifier, base)
+    if !ok {
+        fmt.eprintfln("[js] especificador de módulo não resolvido (import map): %q (referrer %s)", specifier, base)
+        return ""
+    }
+    return strings.clone(url)
 }
 
 // Busca BLOQUEANTE da fonte do módulo (mesma filosofia do chunk do M102).
@@ -1573,6 +1592,25 @@ upgrade_element :: proc(vm: ^Interp, n: ^dom.Node, ctor: ^Function, run_connecte
     }
 }
 
+// `name` está definido num prototype de CLASSE do autor (constructor não nativo)
+// de um custom element promovido? Para no 1º prototype nativo (HTMLElement &c.):
+// polyfill pendurado em HTMLElement.prototype não sombreia o nativo.
+@(private = "file")
+class_proto_defines :: proc(vm: ^Interp, o: ^Object, name: string) -> bool {
+    if o.props == nil do return false
+    if _, upgraded := o.props[UPGRADED_KEY]; !upgraded do return false
+    for p := o.proto; p != nil; p = p.proto {
+        // código do AUTOR = class (class_node) ou function com corpo; os stubs de
+        // interface (mk_dom_interface: HTMLElement…) não têm nenhum dos dois
+        c, _ := p.props["constructor"].(^Function)
+        if c == nil || c.native != nil || (c.class_node == nil && c.body == nil) do return false
+        if _, has := p.props[name]; has do return true
+        if p.getters != nil do if _, has := p.getters[name]; has do return true
+        if p.setters != nil do if _, has := p.setters[name]; has do return true
+    }
+    return false
+}
+
 @(private = "file")
 UPGRADED_KEY :: "__ce_upgraded"
 @(private = "file")
@@ -1959,12 +1997,13 @@ populate_dom_interface_prototypes :: proc(vm: ^Interp) {
     }
     // Colocação padrão (interface-base; derivadas herdam):
     put(vm, proto_of(vm, "EventTarget"), {"addEventListener", "removeEventListener", "dispatchEvent"})
-    put(vm, proto_of(vm, "Node"), {"appendChild", "insertBefore", "removeChild", "replaceChild", "cloneNode", "contains", "hasChildNodes", "isEqualNode", "isSameNode", "attachShadow", "getRootNode",
+    put(vm, proto_of(vm, "Node"), {"appendChild", "insertBefore", "removeChild", "replaceChild", "cloneNode", "contains", "hasChildNodes", "isEqualNode", "isSameNode", "attachShadow", "getRootNode", "normalize",
         "assignedNodes", "assignedElements"})
     put(vm, proto_of(vm, "Element"), {
         "getAttribute", "setAttribute", "removeAttribute", "hasAttribute", "toggleAttribute",
         "matches", "matchesSelector", "webkitMatchesSelector", "mozMatchesSelector",
         "closest", "getBoundingClientRect", "getClientRects", "scrollIntoView",
+        "scrollTo", "scroll", "scrollBy", "animate", "getAnimations",
         "remove", "before", "after", "replaceWith", "append", "prepend", "replaceChildren",
         "insertAdjacentElement", "insertAdjacentText", "insertAdjacentHTML",
         "querySelector", "querySelectorAll", "getElementsByTagName", "getElementsByClassName",
@@ -3357,6 +3396,47 @@ native_remove_child :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return args[0]
 }
 
+// Node.prototype.normalize(): na subárvore, junta Text adjacentes no primeiro e
+// remove Text vazio (DOM §4.4). O SplitText (GSAP) chama no meio do corte do
+// título do github.com; sem o método o corte lançava dentro de uma cadeia
+// async, a promise morria calada e o bloco principal nunca era revelado.
+// Remoção pelo mesmo `detach` do removeChild e alteração de texto pelo mesmo
+// registro do `.data =` — MutationObserver e layout veem as duas.
+native_node_normalize :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    n := node_of(this)
+    if n != nil do normalize_rec(vm, n)
+    return nil
+}
+
+@(private = "file")
+normalize_rec :: proc(vm: ^Interp, n: ^dom.Node) {
+    i := 0
+    for i < len(n.children) {
+        c := n.children[i]
+        if c.kind == .Text {
+            for i + 1 < len(n.children) && n.children[i + 1].kind == .Text {
+                nx := n.children[i + 1]
+                if nx.text != "" {
+                    joined := strings.concatenate({c.text, nx.text})
+                    mo_record_char(vm, c, c.text)
+                    if c.text != "" do delete(c.text)
+                    c.text = joined
+                }
+                detach(vm, nx)
+                vm.owned_nodes[rawptr(nx)] = true
+            }
+            if c.text == "" {
+                detach(vm, c)
+                vm.owned_nodes[rawptr(c)] = true
+                continue // o próximo irmão desceu para o índice i
+            }
+        } else if c.kind == .Element {
+            normalize_rec(vm, c)
+        }
+        i += 1
+    }
+}
+
 // Libera os nós rastreados que ficaram órfãos (parent==nil). Duas passadas: 1)
 // coleta as raízes (todos ainda vivos); 2) free_tree — evita ler .parent de um
 // descendente já liberado por um free_tree anterior.
@@ -3701,6 +3781,13 @@ dom_elem_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
     // p/ não deixar ponteiro pendurado — ver o crash do wikipedia). Toda leitura
     // de propriedade vira undefined em vez de dereferenciar nil.
     if node == nil do return nil, true
+    // Custom element promovido: o que a CLASSE do autor define (getter, método,
+    // valor no prototype) vem ANTES de HTMLElement.prototype na cadeia (spec) e
+    // tem de vencer a propriedade nativa. O `<react-app>` do github define
+    // `get name(){ return this.getAttribute(this.nameAttribute) }`, e o nosso
+    // `name` nativo (refletido de atributo) devolvia "" — o app de nome vazio
+    // nunca era encontrado e o React nunca hidratava (meio da home em branco).
+    if class_proto_defines(vm, o, name) do return nil, false
     switch name {
     case "isConnected":
         // true se o nó alcança o Document subindo por parent (spec). Libs usam p/
@@ -4135,6 +4222,8 @@ serialize_node :: proc(sb: ^strings.Builder, n: ^dom.Node) {
 dom_elem_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> bool {
     node := cast(^dom.Node) o.host
     if node == nil do return true // nó destruído: escrita é NO-OP silencioso
+    // setter/prop da CLASSE de um custom element vence o nativo (ver dom_elem_get)
+    if class_proto_defines(vm, o, name) do return false
     // Handler de evento por propriedade: onclick, oninput, onchange, onsubmit,
     // onkeydown, onblur, ... `el.on<tipo> = fn` registra p/ o evento `<tipo>`;
     // `= null` remove. Substitui o handler-propriedade anterior (não acumula).

@@ -2080,6 +2080,24 @@ global_queue_microtask :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     return nil
 }
 
+// reportError(e) (HTML §8.1.4.6): relata `e` como exceção NÃO capturada, sem
+// lançar. O React 19 (github.com) o usa para erros de render/hidratação; sem
+// ele o `ReferenceError: reportError is not defined` ESCONDIA o erro real.
+// Mesmo destino de uma exceção não capturada do motor (log + uncaught_log);
+// o motor ainda não dispara `error`/ErrorEvent no window para nenhuma das duas.
+global_report_error :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    if len(a) == 0 {
+        throw_type_error(vm, "reportError: 1 argument required, but only 0 present")
+        return nil
+    }
+    prev_throwing, prev_thrown := vm.throwing, vm.thrown
+    vm.throwing = true
+    vm.thrown = a[0]
+    vm_clear_uncaught(vm)
+    vm.throwing, vm.thrown = prev_throwing, prev_thrown
+    return nil
+}
+
 // ── percent-encoding (M61) — opera nos BYTES UTF-8, como manda a spec ────────
 
 // unreserved de encodeURIComponent: A-Z a-z 0-9 - _ . ! ~ * ' ( )
@@ -3082,6 +3100,7 @@ install_builtins :: proc(vm: ^Interp) {
 
     // timers (o hospedeiro dispara via vm_pump_timers a cada frame)
     env_define(vm.global, "queueMicrotask", mk_native(vm, global_queue_microtask))
+    env_define(vm.global, "reportError", mk_native(vm, global_report_error))
     env_define(vm.global, "setTimeout",    mk_native(vm, global_set_timeout))
     env_define(vm.global, "setInterval",   mk_native(vm, global_set_interval))
     env_define(vm.global, "clearTimeout",  mk_native(vm, global_clear_timer))

@@ -485,6 +485,7 @@ Interp :: struct {
     module_resolve: Module_Resolve_Fn,    // instalado por dom_bindings (net.resolve_url)
     module_fetch:   Module_Fetch_Fn,      // instalado por dom_bindings (net.fetch)
     module_stubs:   map[string]string,    // testes: fontes de módulo em memória (stub loader)
+    import_map:     Import_Map,           // <script type="importmap"> (import_map.odin)
     event_prevent_fn: ^Function,          // e.preventDefault / e.stopPropagation (dom_bindings)
     event_stop_fn:    ^Function,
     returning:      bool,
@@ -1129,6 +1130,7 @@ vm_destroy :: proc(vm: ^Interp) {
     delete(vm.all_funcs)
     fetch_abandon_pending(vm) // fetches em voo: protocolo atômico (fetch.odin)
     if vm.base_url != "" do delete(vm.base_url)
+    import_map_destroy(&vm.import_map)
     // módulos ES: o registry referencia m.url como chave — deleta o mapa ANTES
     // de liberar as urls. ns/env são vm-tracked (all_objects/all_envs).
     delete(vm.modules)
