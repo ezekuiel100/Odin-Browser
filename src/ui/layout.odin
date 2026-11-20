@@ -613,6 +613,8 @@ Inline_Item :: struct {
     deco: Deco, // text-decoration (line/color/style/thickness) que cobre este item
     valign: V_Align,    // vertical-align dentro da linha
     space_before: bool, // havia whitespace antes deste item no fluxo?
+    // átomo (InlineBox/Image): fonte do PAI p/ medir o espaço antes dele
+    sp_font: ^im.Font, sp_size, sp_em: f32, sp_has: bool,
     nowrap: bool,       // white-space:nowrap — não quebra linha antes deste item
     pad_before, pad_after: f32, // margem/padding/borda HORIZONTAL do elemento inline
                                 // (acumulada no 1º/último item do elemento)
@@ -1498,6 +1500,7 @@ build_inline_pseudo :: proc(pc: ^Computed, items: ^[dynamic]Inline_Item, st: Inl
             append(items, Inline_Item{kind = .InlineBox, box = pb, effect = st.effect,
                 valign = pc.valign, nowrap = ws == .Pre || ws == .Nowrap,
                 space_before = pending^ && started^})
+            atom_space_font(items, st)
             started^ = true; pending^ = false
         }
         return
@@ -1564,6 +1567,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         if comp, ok := &styles[node]; ok && (comp.display_inline_block || comp.display_inline_level) && !root {
             if cb := build_layout(node, styles, base); cb != nil {
                 append(items, Inline_Item{kind = .InlineBox, box = cb, effect = st.effect, valign = comp.valign, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
+                atom_space_font(items, st)
                 started^ = true; pending^ = false
             }
             return
@@ -1583,6 +1587,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
         if comp, ok := &styles[node]; ok && !root && comp.float == .None && !comp.has_transform && !l_flows_inline(node.tag, comp^) && under_inline_anchor(node) {
             if cb := build_layout(node, styles, base); cb != nil {
                 append(items, Inline_Item{kind = .InlineBox, box = cb, effect = st.effect, valign = comp.valign, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
+                atom_space_font(items, st)
                 started^ = true; pending^ = false
             }
             return
@@ -1623,6 +1628,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
                 va := V_Align.Baseline
                 if comp, ok := &styles[node]; ok do va = comp.valign
                 append(items, Inline_Item{kind = .InlineBox, box = cb, effect = st.effect, valign = va, nowrap = ws == .Pre || ws == .Nowrap, space_before = pending^ && started^})
+                atom_space_font(items, st)
                 started^ = true; pending^ = false
             }
             return
@@ -1657,6 +1663,7 @@ build_inline_items :: proc(node: ^dompkg.Node, items: ^[dynamic]Inline_Item, sty
             it.img_url, _ = image_source_for(node, base)
             it.img_deco = img_is_decorative(node)
             append(items, it)
+            atom_space_font(items, st)
             started^ = true; pending^ = false
             return
         }
@@ -3262,12 +3269,38 @@ text_metrics_clear :: proc() {
 }
 
 space_adv :: proc(it: ^Inline_Item) -> f32 {
-    if it.font == nil || it.fsize <= 0 do return it.fsize * 0.28
-    if it.font == g_sp_font && it.fsize == g_sp_size do return g_sp_w
-    w := im.Font_CalcTextSizeA(it.font, render_px(it.fsize, it.em), FLT_MAX, FLT_MAX, " ").x
-    if w <= 0 do w = it.fsize * 0.28 // face sem glifo de espaço: mantém o antigo
-    g_sp_font, g_sp_size, g_sp_w = it.font, it.fsize, w
+    return space_w_of(it.font, it.fsize, it.em)
+}
+
+space_w_of :: proc(font: ^im.Font, fsize, em: f32) -> f32 {
+    if font == nil || fsize <= 0 do return fsize * 0.28
+    if font == g_sp_font && fsize == g_sp_size do return g_sp_w
+    w := im.Font_CalcTextSizeA(font, render_px(fsize, em), FLT_MAX, FLT_MAX, " ").x
+    if w <= 0 do w = fsize * 0.28 // face sem glifo de espaço: mantém o antigo
+    g_sp_font, g_sp_size, g_sp_w = font, fsize, w
     return w
+}
+
+// Espaço colapsado ANTES de um átomo inline (inline-block/img/svg). Ele é texto
+// do PAI, então mede-se na fonte do pai (`sp_font`), não no átomo. Até 20/11 era
+// um 4px FIXO: num título de 40px o espaço real tem ~10px, e o SplitText do
+// github (cada palavra vira um inline-block) colava "Software still" em
+// "Softwarestill". Item sem fonte do pai registrada (!sp_has) mantém os 4px;
+// pai com font-size:0 (o truque p/ sumir com o vão) dá 0, como no Chrome.
+atom_space_adv :: proc(it: ^Inline_Item, word_spacing: f32) -> f32 {
+    if !it.space_before do return 0
+    if !it.sp_has do return 4
+    return space_w_of(it.sp_font, it.sp_size, it.sp_em) + word_spacing
+}
+
+// Registra no último item (átomo recém-emitido) a fonte do texto em volta.
+@(private="file")
+atom_space_font :: proc(items: ^[dynamic]Inline_Item, st: Inline_Style) {
+    if len(items) == 0 do return
+    it := &items[len(items) - 1]
+    if !it.space_before do return
+    font, _, fem := l_pick_font(st.size, st.weight, st.fam_id, st.family, st.italic)
+    it.sp_font, it.sp_size, it.sp_em, it.sp_has = font, st.size, fem, true
 }
 
 word_width :: proc(it: ^Inline_Item) -> f32 {
@@ -3588,7 +3621,7 @@ layout_inline :: proc(b: ^Box, wrap_w: f32 = -1, nlines: ^int = nil) -> f32 {
 
         case .Image:
             iw, ih := inline_img_dims(it, cw)
-            sp: f32 = (it.space_before ? 4 : 0) + it.pad_before
+            sp: f32 = atom_space_adv(it, b.word_spacing) + it.pad_before
             if x > 0 && x + sp + iw > ww && !it.nowrap { wrap(b, &line_start, i, &x, &y, cw, sp_p, tp_p, &nl); sp = it.pad_before }
             it.x = x + sp; it.w = iw; it.h = ih
             x = it.x + iw + it.pad_after
@@ -3635,7 +3668,7 @@ layout_inline :: proc(b: ^Box, wrap_w: f32 = -1, nlines: ^int = nil) -> f32 {
             // que layout_box devolve (`b.margin[2] = mb`, p/ o colapso com o irmão).
             ml_eff, mt_eff := bx.x, bx.y
             outer_w := ml_eff + bx.w + bx.margin[1]
-            sp: f32 = (it.space_before ? 4 : 0) + it.pad_before
+            sp: f32 = atom_space_adv(it, b.word_spacing) + it.pad_before
             if x > 0 && x + sp + outer_w > ww && !it.nowrap { wrap(b, &line_start, i, &x, &y, cw, sp_p, tp_p, &nl); sp = it.pad_before }
             // it.x/it.y passam a ser o canto da MARGIN box. O paint reencontra a
             // border-box sozinho: `paint_box` recebe it.x/it.y como OFFSET e soma
@@ -6400,10 +6433,10 @@ inline_min_width :: proc(b: ^Box) -> f32 {
         case .Image:
             iw, _ := inline_img_dims(&it, FLT_MAX)
             w = it.pad_before + iw + it.pad_after
-            sp = it.space_before ? 4 : 0
+            sp = atom_space_adv(&it, b.word_spacing)
         case .InlineBox:
             w = it.pad_before + (it.box != nil ? measure_min_content_w(it.box) + atom_margin_x(it.box) : 0) + it.pad_after
-            sp = it.space_before ? 4 : 0
+            sp = atom_space_adv(&it, b.word_spacing)
         }
         if it.nowrap {
             run += sp + w // não pode quebrar antes: continua o MESMO trecho
@@ -6433,10 +6466,10 @@ inline_max_width :: proc(b: ^Box) -> f32 {
         case .Image:
             trailing = 0
             iw, _ := inline_img_dims(&it, FLT_MAX)
-            cur += (it.space_before ? 4 : 0) + it.pad_before + iw + it.pad_after
+            cur += atom_space_adv(&it, b.word_spacing) + it.pad_before + iw + it.pad_after
         case .InlineBox:
             trailing = 0
-            cur += (it.space_before ? 4 : 0) + it.pad_before + (it.box != nil ? measure_intrinsic_w(it.box) + atom_margin_x(it.box) : 0) + it.pad_after
+            cur += atom_space_adv(&it, b.word_spacing) + it.pad_before + (it.box != nil ? measure_intrinsic_w(it.box) + atom_margin_x(it.box) : 0) + it.pad_after
         }
     }
     maxl = max(maxl, cur - trailing)
@@ -7035,7 +7068,7 @@ intrinsic_border_w :: proc(b: ^Box) -> f32 {
             case .Image:
                 line += (it.w > 0 ? it.w : 32) + it.pad_before + it.pad_after
             case .InlineBox:
-                line += (it.space_before ? 4 : 0) + it.pad_before + (it.box != nil ? measure_intrinsic_w(it.box) + atom_margin_x(it.box) : 0) + it.pad_after
+                line += atom_space_adv(&it, b.word_spacing) + it.pad_before + (it.box != nil ? measure_intrinsic_w(it.box) + atom_margin_x(it.box) : 0) + it.pad_after
             }
         }
         if line > mx do mx = line
