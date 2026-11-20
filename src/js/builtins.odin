@@ -317,7 +317,7 @@ array_like_len :: proc(vm: ^Interp, this: Value) -> int {
 @(private = "file")
 array_like_get :: proc(vm: ^Interp, this: Value, i: int) -> Value {
     #partial switch t in this {
-    case ^Array:  return t.items[i] if i >= 0 && i < len(t.items) else nil
+    case ^Array:  return get_index(vm, t, f64(i))
     case string:  return own_str(vm, str_rslice(t, i, i + 1)) if i >= 0 && i < str_rlen(t) else nil
     case ^Object, ^Function:
         buf: [24]u8
@@ -3372,17 +3372,8 @@ arr_write :: proc(vm: ^Interp, this: Value, key: string, v: Value) {
         // quando o [[Set]] falha (`Object.freeze([]).push(1)` é TypeError mesmo em
         // sloppy). Antes o caminho do ^Array ignorava o false e o length mudava.
         if key == "length" {
-            n := as_int(v)
-            if (o.frozen || o.sealed) && n != len(o.items) {
+            if !array_set_length(vm, o, v) && !vm.throwing {
                 throw_type_error(vm, "Cannot assign to read only property 'length' of object")
-                return
-            }
-            if n < len(o.items) {
-                resize(&o.items, n)
-                arr_holes_trim(o)
-            } else {
-                arr_mark_holes(o, len(o.items), n) // slots além do fim: ausentes
-                for len(o.items) < n do append(&o.items, nil)
             }
             return
         }
@@ -3430,12 +3421,7 @@ arr_delete :: proc(vm: ^Interp, this: Value, i: int) {
     case ^Function:
         delete_key(&o.props, key); delete_key(&o.getters, key); delete_key(&o.setters, key)
     case ^Array:
-        if i >= 0 && i < len(o.items) {
-            if o.frozen || o.sealed { throw_type_error(vm, "Cannot delete property"); return }
-            o.items[i] = nil
-            arr_mark_hole(o, i)
-            if o.args != nil && i < 64 do o.args.unmapped |= u64(1) << uint(i)
-        }
+        if !array_delete_property(o, key) do throw_type_error(vm, "Cannot delete property")
     case string:
         if i >= 0 && i < str_rlen(o) do throw_type_error(vm, "Cannot delete string index")
     }

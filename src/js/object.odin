@@ -263,7 +263,7 @@ obj_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // package-visible: o spread de object literal (`{...src}`) em interp.odin reusa —
 // era a MESMA lista de tipos escrita duas vezes, e a cópia de lá tinha ficado só no
 // `^Object` (M220).
-own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string) {
+own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string, all: bool = false) {
     #partial switch x in v {
     case ^Object:
         own_enum_keys(x, out)
@@ -283,9 +283,14 @@ own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string) {
         for i in 0 ..< len(x.items) {
             if arr_is_hole(x, i) do continue // buraco não é chave própria
             s, _ := v_to_key_string(vm, f64(i))
+            if !all && .Enumerable not_in array_attrs(x, s) do continue
             append(out, s)
         }
-        for k in x.props do if !is_non_enumerable_key(k) do append(out, k)
+        for k in x.props {
+            if is_non_enumerable_key(k) do continue
+            if !all && .Enumerable not_in array_attrs(x, k) do continue
+            append(out, k)
+        }
     case string:
         // índices em CODE UNITS UTF-16, como o resto do motor (ver M167)
         for i in 0 ..< str_rlen(x) {
@@ -548,7 +553,7 @@ obj_get_own_property_descriptors :: proc(vm: ^Interp, this: Value, args: []Value
     if _, isarr := target.(^Array); isarr {
         keys: [dynamic]string
         defer delete(keys)
-        own_keys_any(vm, target, &keys) // índices presentes + props
+        own_keys_any(vm, target, &keys, true) // índices presentes + props
         for k in keys do add_key(vm, target, out, &seen, k)
         add_key(vm, target, out, &seen, "length")
         return out
@@ -636,7 +641,12 @@ obj_get_prototype_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 //   Um atributo OMITIDO numa redefinição preserva o que já valia, como na spec.
 @(private = "file")
 apply_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, source_desc: ^Object) {
-    desc := source_desc
+    desc := normalize_descriptor(vm, source_desc)
+    if vm.throwing do return
+    apply_normalized_descriptor(vm, o, key, desc)
+}
+
+normalize_descriptor :: proc(vm: ^Interp, desc: ^Object) -> ^Object {
     normalized := new_object(vm)
     fields := []string{"enumerable", "configurable", "value", "writable", "get", "set"}
     for field in fields {
@@ -646,9 +656,18 @@ apply_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, source_desc: ^Obj
             _, setter := cur.setters[field]
             if data || getter || setter { normalized.props[field] = get_member(vm, desc, field); break }
         }
-        if vm.throwing do return
+        if vm.throwing do return normalized
     }
-    desc = normalized
+    g, hg := normalized.props["get"]; s, hs := normalized.props["set"]
+    _, hv := normalized.props["value"]; _, hw := normalized.props["writable"]
+    _, gok := g.(^Function); _, sok := s.(^Function)
+    if ((hg || hs) && (hv || hw)) || (hg && g != nil && !gok) || (hs && s != nil && !sok) {
+        throw_type_error(vm, "Invalid property descriptor")
+    }
+    return normalized
+}
+
+apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: ^Object) {
     g, hg := desc.props["get"]
     st, hs := desc.props["set"]
     v, hv := desc.props["value"]
@@ -700,6 +719,14 @@ apply_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, source_desc: ^Obj
 // Object.defineProperty(obj, key, descriptor) — devolve obj.
 // package-visible: Reflect.defineProperty (proxy.odin) delega aqui.
 obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if a, aok := arg(args, 0).(^Array); aok {
+        key := key_string(vm, arg(args, 1))
+        if vm.throwing do return nil
+        desc, dok := arg(args, 2).(^Object)
+        if !dok { throw_type_error(vm, "Property descriptor must be an object"); return nil }
+        array_define_property(vm, a, key, desc)
+        return a
+    }
     if fn, fok := arg(args, 0).(^Function); fok {
         key := key_string(vm, arg(args, 1))
         desc, dok := arg(args, 2).(^Object)
@@ -713,9 +740,6 @@ obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     }
     o, ok := arg(args, 0).(^Object)
     if !ok {
-        // arrays são objetos → passam adiante (define limitado, mas sem throw);
-        // primitivos (undefined/null/número/string/bool) → TypeError (spec).
-        if _, aok := arg(args, 0).(^Array); aok do return arg(args, 0)
         throw_type_error(vm, "Object.defineProperty called on non-object")
         return nil
     }
@@ -727,6 +751,26 @@ obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // Object.defineProperties(obj, {k1: desc1, ...}) — devolve obj.
 @(private = "file")
 obj_define_properties :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if a, isarr := arg(args, 0).(^Array); isarr {
+        keys: [dynamic]string
+        descs: [dynamic]^Object
+        defer delete(keys)
+        defer delete(descs)
+        own_keys_any(vm, arg(args, 1), &keys)
+        for key in keys {
+            value := get_index(vm, arg(args, 1), key)
+            if vm.throwing do return nil
+            desc, valid := value.(^Object)
+            if !valid { throw_type_error(vm, "Property descriptor must be an object"); return nil }
+            append(&descs, normalize_descriptor(vm, desc))
+            if vm.throwing do return nil
+        }
+        for desc, i in descs {
+            array_define_property(vm, a, keys[i], desc)
+            if vm.throwing do return nil
+        }
+        return a
+    }
     o, ok := arg(args, 0).(^Object)
     if !ok do return arg(args, 0)
     apply_descriptors(vm, o, arg(args, 1)) // MESMA regra do Object.create (ver lá)
@@ -753,8 +797,20 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
     }
     if arr, aok := arg(args, 0).(^Array); aok {
         // array: índices PRESENTES (buraco = sem descritor), `length` e props não-índice.
-        // Não tem mapa de atributos: frozen/sealed decidem writable/configurable.
+        // Explicit descriptors override defaults; frozen/sealed restrict them further.
         key := key_string(vm, arg(args, 1))
+        attrs := array_attrs(arr, key)
+        if m := arr.descriptors; m != nil {
+            g, hg := m.getters[key]; s, hs := m.setters[key]
+            if hg || hs {
+                d := new_object(vm)
+                d.props["get"] = g if g != nil else nil
+                d.props["set"] = s if s != nil else nil
+                d.props["enumerable"] = .Enumerable in attrs
+                d.props["configurable"] = .Configurable in attrs
+                return d
+            }
+        }
         mk :: proc(vm: ^Interp, v: Value, w, e, c: bool) -> ^Object {
             d := new_object(vm)
             oput(d, "value", v); oput(d, "writable", w); oput(d, "enumerable", e); oput(d, "configurable", c)
@@ -766,13 +822,13 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
                 return mk(vm, arr.args.callee, true, false, true)
             }
         }
-        if key == "length" do return mk(vm, f64(len(arr.items)), !arr.frozen, false, false)
+        if key == "length" do return mk(vm, f64(len(arr.items)), .Writable in attrs, false, false)
         if idx, iok := array_index_name(key); iok {
             if !arr_has_index(arr, idx) do return nil
-            return mk(vm, arr.items[idx], !arr.frozen, true, !arr.frozen && !arr.sealed)
+            return mk(vm, arr.items[idx], .Writable in attrs, .Enumerable in attrs, .Configurable in attrs)
         }
         if arr.props != nil {
-            if v, has := arr.props[key]; has do return mk(vm, v, !arr.frozen, true, !arr.frozen && !arr.sealed)
+            if v, has := arr.props[key]; has do return mk(vm, v, .Writable in attrs, .Enumerable in attrs, .Configurable in attrs)
         }
         return nil
     }
@@ -837,7 +893,7 @@ obj_get_own_property_names :: proc(vm: ^Interp, this: Value, args: []Value) -> V
     case ^Array:
         keys: [dynamic]string
         defer delete(keys)
-        own_keys_any(vm, o, &keys)
+        own_keys_any(vm, o, &keys, true)
         for k in keys do if !seen[k] { seen[k] = true; append(&out.items, k) }
         if !seen["length"] { seen["length"] = true; append(&out.items, "length") }
     case string:

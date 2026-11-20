@@ -79,6 +79,7 @@ Array_Buffer :: struct {
 
 Array :: struct {
     items: [dynamic]Value,
+    descriptors: ^Object, // Lazy attributes/accessors; data values stay in items/props.
     frozen: bool, // Object.freeze: itens não mudam e o array não cresce
     sealed: bool, // Object.seal/preventExtensions: não cresce, mas os itens mudam
     is_arguments: bool, // este ^Array é o objeto `arguments` de uma chamada. É um
@@ -1966,7 +1967,7 @@ js_in :: proc(vm: ^Interp, l, r: Value) -> bool {
         if x := proto_exotic_end(o); x != nil do return js_in(vm, l, x)
         return false
     case ^Array:
-        if idx, ok := strconv.parse_int(key); ok do return arr_has_index(o, idx)
+        if idx, ok := array_index_name(key); ok do return arr_has_index(o, idx)
         if o.props != nil { if _, ok := o.props[key]; ok do return true }
         if key == "length" do return true
         if o.args != nil { // `arguments`: callee/iterator próprios, cadeia de Object.prototype
@@ -2235,7 +2236,7 @@ array_index_name :: proc(name: string) -> (idx: int, ok: bool) {
         if c < '0' || c > '9' do return 0, false
         n = n * 10 + int(c - '0')
     }
-    return n, true
+    return n, n < 4294967295
 }
 
 // Membro de um primitivo pela cadeia do seu prototype (String/Number/Boolean.prototype
@@ -2334,6 +2335,13 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         return nil
     case ^Array:
         if name == "length" do return f64(len(o.items))
+        if m := o.descriptors; m != nil {
+            if g, has := m.getters[name]; has {
+                if g == nil do return nil
+                return call_function(vm, g, o, nil)
+            }
+            if _, has := m.setters[name]; has do return nil
+        }
         // `[].__proto__`: array é variante própria da union e NÃO percorre os
         // getters de Object.prototype (cai no mapa PLANO object_methods lá
         // embaixo), então o acessor instalado lá não o alcança. Mesma fonte que
@@ -2578,7 +2586,18 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
         // prop não-índice num array (m.index custom, marcações de libs); índices
         // inteiros passam por set_index.
         if name == "length" do return array_set_length(vm, o, val)
+        if idx, indexed := array_index_name(name); indexed do return set_index(vm, o, f64(idx), val)
+        if m := o.descriptors; m != nil {
+            if s, has := m.setters[name]; has {
+                if s == nil do return false
+                call_function(vm, s, o, []Value{val}); return true
+            }
+            if _, has := m.getters[name]; has do return false
+        }
         if o.frozen do return false
+        if _, exists := o.props[name]; exists {
+            if .Writable not_in array_attrs(o, name) do return false
+        } else if o.sealed { return false }
         if o.props == nil do o.props = make(map[string]Value)
         o.props[name] = val
         return true
@@ -2618,8 +2637,18 @@ array_set_length :: proc(vm: ^Interp, o: ^Array, val: Value) -> bool {
         return true
     }
     new_len := int(n)
+    if .Writable not_in array_attrs(o, "length") do return false
     if o.frozen || o.sealed do return new_len == len(o.items) // mudar o length: rejeitado
     if new_len <= len(o.items) {
+        if o.descriptors != nil {
+            for i := len(o.items) - 1; i >= new_len; i -= 1 {
+                if !array_delete_property(o, key_string(vm, f64(i))) {
+                    resize(&o.items, i + 1)
+                    arr_holes_trim(o)
+                    return false
+                }
+            }
+        }
         resize(&o.items, new_len)
         arr_holes_trim(o)
         return true
@@ -2638,10 +2667,11 @@ get_index :: proc(vm: ^Interp, obj: Value, key: Value) -> Value {
     case ^Array:
         // só chave numérica INTEIRA indexa items; "length"/métodos/"foo" caem
         // no get_member (antes, as_number("foo")→0 lia items[0] por engano)
-        if n := as_number(key); n == n && math.trunc(n) == n {
-            idx := int(n)
-            if idx >= 0 && idx < len(o.items) do return o.items[idx]
-            return nil // fora do range: undefined
+        if o.descriptors == nil {
+            if n, numeric := key.(f64); numeric && n >= 0 && n < 4294967295 && math.trunc(n) == n {
+                idx := int(n)
+                return o.items[idx] if idx < len(o.items) else nil
+            }
         }
         return get_member(vm, obj, key_string(vm, key))
     case ^Object:
@@ -2685,16 +2715,29 @@ get_index :: proc(vm: ^Interp, obj: Value, key: Value) -> Value {
 set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) -> bool {
     #partial switch o in obj {
     case ^Array:
-        n := as_number(key)
-        if n != n || math.trunc(n) != n { // chave não-inteira num Array → props
-            return set_member(vm, obj, key_string(vm, key), val)
+        // Numeric indices only need a transient map lookup key. Do not retain
+        // a new VM string on every ordinary element assignment.
+        name: string
+        buf: [24]u8
+        if n, numeric := key.(f64); numeric && n >= 0 && n < 4294967295 && math.trunc(n) == n {
+            name = strconv.write_int(buf[:], i64(n), 10)
+        } else { name = key_string(vm, key) }
+        idx, indexed := array_index_name(name)
+        if !indexed do return set_member(vm, obj, name, val)
+        if m := o.descriptors; m != nil {
+            if s, has := m.setters[name]; has {
+                if s == nil do return false
+                call_function(vm, s, o, []Value{val}); return true
+            }
+            if _, has := m.getters[name]; has do return false
         }
-        idx := int(n)
+        if arr_has_index(o, idx) && .Writable not_in array_attrs(o, name) do return false
+        if idx >= len(o.items) && .Writable not_in array_attrs(o, "length") do return false
         if idx < 0 || idx > 100_000_000 do return true // guarda (limitação): arr[1e12]=x alocaria GBs
         if o.frozen do return false // Object.freeze([...]): item não muda
         // seal/preventExtensions: os itens EXISTENTES seguem graváveis, o array é que
         // não cresce mais.
-        if idx >= len(o.items) && (o.sealed || o.frozen) do return false
+        if !arr_has_index(o, idx) && (o.sealed || o.frozen) do return false
         if idx > len(o.items) do arr_mark_holes(o, len(o.items), idx) // a[9]=x: 0..8 são buracos
         for len(o.items) <= idx do append(&o.items, nil)
         o.items[idx] = val
@@ -3410,11 +3453,10 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             own_enum_keys(o, &keys)
             for k in keys do append(&values, own_str(vm, k))
         case ^Array:
-            buf: [24]u8
-            for i in 0 ..< len(o.items) {
-                if arr_is_hole(o, i) do continue // buraco não enumera
-                append(&values, own_str(vm, strconv.write_int(buf[:], i64(i), 10)))
-            }
+            keys: [dynamic]string
+            defer delete(keys)
+            own_keys_any(vm, o, &keys)
+            for k in keys do append(&values, own_str(vm, k))
         case string:
             // `for (i in "ab")` enumera os índices "0","1" (não dava nada)
             buf: [24]u8
@@ -3557,20 +3599,8 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 if t.kind == .Index do k = key_string(vm, kv)
                 if a, explicit := o.attrs[k]; explicit && .Configurable not_in a do ok = false
             case ^Array:
-                if t.kind == .Member {
-                    if k == "length" do ok = false
-                } else if idx := as_int(kv); idx >= 0 && idx < len(o.items) {
-                    if o.frozen || o.sealed {
-                        ok = false // não-configurável
-                    } else {
-                        o.items[idx] = nil
-                        arr_mark_hole(o, idx) // `delete a[i]` deixa um BURACO (`i in a` = false)
-                        // `delete arguments[i]` desfaz o mapeamento com o parâmetro
-                        if o.args != nil && idx < 64 do o.args.unmapped |= u64(1) << uint(idx)
-                    }
-                } else if key_string(vm, kv) == "length" {
-                    ok = false
-                }
+                if t.kind == .Index do k = key_string(vm, kv)
+                ok = array_delete_property(o, k)
             }
             if !ok && n.strict {
                 if t.kind == .Index && k == "" do k = key_string(vm, kv)
