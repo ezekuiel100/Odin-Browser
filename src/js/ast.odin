@@ -87,6 +87,9 @@ Node :: struct {
                             // Assign/Update/Delete/Pattern/ForOf: escrito em código strict —
                             // escrita rejeitada vira TypeError e nome não declarado ReferenceError.
                             // Call: `eval(...)` direto em código strict. Program: o fonte é strict.
+    is_method: bool,        // Func: MÉTODO de literal de objeto (`m(){}`, get/set) — ganha
+                            // home object p/ `super`. `k: function(){}` NÃO é. (Mora aqui,
+                            // ao lado de `strict`, p/ caber no padding antes do f64.)
     num:    f64,            // Num
     str:    string,         // Str
     bval:   bool,           // Bool; Func: é arrow; Yield: é yield*

@@ -1393,6 +1393,7 @@ parse_object_method_fn :: proc(p: ^Parser, kind: Fn_Kind = .Method) -> ^Node {
 parse_object_method_fn_gen :: proc(p: ^Parser, is_gen: bool, is_async := false, kind: Fn_Kind = .Method) -> ^Node {
     m := new(Node)
     m.kind = .Func
+    m.is_method = true
     m.is_generator = is_gen
     m.aux = is_async
     saved_args := fn_args_enter(p)

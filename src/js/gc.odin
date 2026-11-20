@@ -81,6 +81,8 @@ gc_drain :: proc(gp: ^GC_State) {
             }
             gc_push(&g, x.super_ctor)
             gc_push(&g, x.home_super)
+            gc_push(&g, x.home_obj)
+            gc_push(&g, x.home_static)
             for _, v in x.getters {
                 gc_push(&g, v)
             }

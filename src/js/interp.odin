@@ -262,7 +262,12 @@ Function :: struct {
     // ── suporte a `class` (M21 fatia 1) ──
     super_ctor:  ^Function, // construtora da superclasse, para `super(...)`
     home_super:  ^Object,   // prototype da superclasse, para `super.metodo()`
+    home_static: ^Function, // método STATIC de classe derivada: `super` = a construtora-pai
+    home_obj:    ^Object,   // método de LITERAL de objeto ({ m(){ super.x } }): o objeto
+                            // dono. `super` = Object.getPrototypeOf(home_obj), lido NA
+                            // CHAMADA (setPrototypeOf depois da criação vale — spec).
     auto_super:  bool,      // construtor default derivado: chama super_ctor com os mesmos args
+    super_null:  bool,      // `class extends null`: derivada SEM construtora-pai — super() lança
     class_node:  ^Node,     // se é a construtora de uma class: o nó .Class (p/ inicializar
                             // os campos de instância no `new`, ver init_instance_fields)
     getters:  map[string]^Function, // getters STATIC de classe (static get x(){}); nil até ter algum
@@ -2860,6 +2865,9 @@ eval_args :: proc(vm: ^Interp, nodes: [dynamic]^Node, env: ^Env) -> [dynamic]Val
         } else {
             append(&out, eval(vm, a, env))
         }
+        // um argumento que LANÇA aborta a lista: os seguintes não são avaliados
+        // (efeito colateral deles não pode acontecer) — quem chama confere throwing
+        if vm.throwing do break
     }
     return out
 }
@@ -3801,6 +3809,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 if vnode.right != nil && vnode.right.kind == .Func && vnode.right.acc != 0 {
                     // accessor com chave computada
                     if fn, fok := eval(vm, vnode.right, env).(^Function); fok {
+                        fn.home_obj = o
                         okey_accessor(o, k)
                         if vnode.right.acc == 1 {
                             if o.getters == nil do o.getters = make(map[string]^Function)
@@ -3812,12 +3821,15 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                     }
                     continue
                 }
-                oput(o, k, eval(vm, vnode.right, env))
+                cv := eval(vm, vnode.right, env)
+                set_home_object(cv, vnode.right, o)
+                oput(o, k, cv)
                 continue
             }
             if vnode.acc != 0 { // getter (1) / setter (2)
                 fn, _ := eval(vm, vnode, env).(^Function)
                 if fn == nil do continue
+                fn.home_obj = o
                 okey_accessor(o, key)
                 if vnode.acc == 1 {
                     if o.getters == nil do o.getters = make(map[string]^Function)
@@ -3838,7 +3850,9 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 set_proto_value(o, eval(vm, vnode, env)) // no-op p/ não-objeto, como no acessor
                 continue
             }
-            oput(o, key, eval(vm, vnode, env))
+            mv := eval(vm, vnode, env)
+            set_home_object(mv, vnode, o)
+            oput(o, key, mv)
         }
         return o
 
@@ -3890,6 +3904,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             if p, pok := callee.(^Object); pok && p.px_handler != nil {
                 pargs := eval_args(vm, n.body, env)
                 defer delete(pargs)
+                if vm.throwing do return nil
                 return proxy_construct(vm, p, pargs[:])
             }
             // new de não-função → TypeError (era undefined silencioso; M42 BUG 2)
@@ -3898,6 +3913,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         }
         args := eval_args(vm, n.body, env)
         defer delete(args)
+        if vm.throwing do return nil // argumento lançou: o construtor não roda
         return construct_object(vm, fn, args[:])
 
     case .NewTarget:
@@ -4283,8 +4299,23 @@ build_method :: proc(vm: ^Interp, m: ^Node, env: ^Env, super_fn: ^Function, supe
     f.uses_arguments = m.uses_arguments
     f.strict = true // corpo de classe é sempre strict
     f.super_ctor = super_fn
-    f.home_super = super_proto
+    if m.stat {
+        // static: o home object é a CONSTRUTORA, cujo [[Prototype]] é a do pai —
+        // `super.m()` num static procura em Pai, não em Pai.prototype
+        f.home_static = super_fn
+    } else {
+        f.home_super = super_proto
+    }
     return f
+}
+
+// Método de literal de objeto (`{ m(){} }`, nó marcado pelo parser) ganha o objeto
+// como home object — é o que dá sentido a `super.x` nele. `{ k: function(){} }` e
+// arrows NÃO ganham (spec: só MethodDefinition tem [[HomeObject]]).
+@(private = "file")
+set_home_object :: proc(v: Value, node: ^Node, o: ^Object) {
+    if node == nil || node.kind != .Func || !node.is_method do return
+    if fn, ok := v.(^Function); ok do fn.home_obj = o
 }
 
 // Inicializa os campos de instância (`x = init`) no objeto recém-criado por `new`.
@@ -4332,16 +4363,26 @@ class_member_key :: proc(vm: ^Interp, m: ^Node, env: ^Env) -> string {
 eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     super_fn: ^Function
     super_proto: ^Object
+    extends_null := false
     if n.callee != nil {
-        if sv, ok := eval(vm, n.callee, env).(^Function); ok {
+        hv := eval(vm, n.callee, env)
+        if vm.throwing do return nil
+        #partial switch sv in hv {
+        case ^Function:
             super_fn = sv
             if sv.props != nil {
                 if pv, ok2 := sv.props["prototype"].(^Object); ok2 do super_proto = pv
             }
+        case JS_Null:
+            // `class X extends null` (spec ClassDefinitionEvaluation): o prototype
+            // NÃO herda de Object.prototype, a construtora herda de
+            // Function.prototype, e a classe é DERIVADA sem pai — super() lança.
+            extends_null = true
         }
     }
 
     proto := new_object(vm)
+    if extends_null do proto.proto = nil
     // Classe DERIVADA: o prototype dela encadeia no prototype da superclasse.
     // Classe BASE: fica com o Object.prototype que new_object já ligou (spec:
     // %Object.prototype% é o [[Prototype]] do prototype de uma classe sem extends).
@@ -4389,8 +4430,9 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         ctor.closure = cenv
         env_escaped(vm)
         ctor.super_ctor = super_fn
-        ctor.auto_super = super_fn != nil
+        ctor.auto_super = super_fn != nil || extends_null
     }
+    ctor.super_null = extends_null
     // nome da classe visível p/ os métodos (closures capturaram cenv por referência)
     if n.name != "" do env_define(cenv, n.name, ctor)
     ctor.class_node = n // campos de instância são inicializados no `new` (init_instance_fields)
@@ -4471,22 +4513,31 @@ try_eval_super_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> (result: Value,
     // super(...)
     if c.kind == .Ident && c.name == "super" {
         sc, _ := env_get(env, "__superctor__")
+        if _, is_null := sc.(JS_Null); is_null {
+            throw_type_error(vm, "Super constructor null of anonymous class is not a constructor")
+            return nil, true
+        }
         fn, ok := sc.(^Function)
         if !ok do return nil, true // sem superclasse: no-op silencioso
         args := eval_args(vm, n.body, env)
         defer delete(args)
-        return super_construct(vm, fn, this_val, args[:]), true
+        if vm.throwing do return nil, true
+        nt, _ := env_get(env, "new.target")
+        return super_construct(vm, fn, this_val, args[:], nt), true
     }
 
     // super.metodo(...)
     if c.kind == .Member && c.left.kind == .Ident && c.left.name == "super" {
         sp, _ := env_get(env, "__superproto__")
-        base, ok := sp.(^Object)
-        if !ok do return nil, true
-        fn, fok := get_member(vm, base, c.name).(^Function)
+        #partial switch _ in sp {
+        case ^Object, ^Function: // ^Function = super num método static
+        case: return nil, true
+        }
+        fn, fok := get_member(vm, sp, c.name).(^Function)
         if !fok do return nil, true
         args := eval_args(vm, n.body, env)
         defer delete(args)
+        if vm.throwing do return nil, true
         return call_function(vm, fn, this_val, args[:]), true // this = objeto atual
     }
 
@@ -4499,9 +4550,22 @@ try_eval_super_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> (result: Value,
 @(private = "file")
 eval_super_member :: proc(vm: ^Interp, name: string, env: ^Env) -> Value {
     sp, _ := env_get(env, "__superproto__")
+    this_val, _ := env_get(env, "this")
+    // método STATIC: a base é a construtora-pai; sobe pela cadeia de construtoras
+    // (super_ctor = [[Prototype]] da função) e, no fim, os builtins de Function.
+    if sf, fok := sp.(^Function); fok {
+        for c := sf; c != nil; c = c.super_ctor {
+            if c.getters != nil {
+                if g, gok := c.getters[name]; gok do return call_function(vm, g, this_val, nil)
+            }
+            if c.props != nil {
+                if v, vok := c.props[name]; vok do return v
+            }
+        }
+        return get_member(vm, sf, name)
+    }
     base, ok := sp.(^Object)
     if !ok do return nil // fora de método de classe derivada
-    this_val, _ := env_get(env, "this")
     for cur := base; cur != nil; cur = cur.proto {
         if cur.getters != nil {
             if g, gok := cur.getters[name]; gok do return call_function(vm, g, this_val, nil)
@@ -4559,7 +4623,12 @@ describe_callee :: proc(n: ^Node) -> string {
 //   ^Object (Error e afins) → COPIA as props (message/stack/cause) p/ o `this`,
 //       que já tem o prototype certo da subclasse.
 //   exótico (^Collection/^Array/^Regex) → guarda em `this.prim`.
-super_construct :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) -> Value {
+//
+// `new_target` = o new.target da construtora DERIVADA: a do pai roda como parte do
+// mesmo [[Construct]] (é o que deixa passar a guarda de "classe sem new" do
+// call_function, e o new.target lá dentro é a subclasse, como manda a spec).
+super_construct :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value, new_target: Value = nil) -> Value {
+    vm.pending_new_target = new_target if new_target != nil else fn
     ret := call_function(vm, fn, this, args)
     if vm.throwing do return ret
     o, ok := this.(^Object)
@@ -4636,6 +4705,17 @@ wrapper_value :: proc(v: Value) -> (Value, bool) {
 // new_target != nil só via Reflect.construct(alvo, args, newTarget): o corpo que
 // roda é o do `fn`, mas o prototype da instância e o `new.target` vêm do newTarget.
 construct_object :: proc(vm: ^Interp, fn: ^Function, args: []Value, new_target: ^Function = nil) -> Value {
+    // `new (f.bind(t, a))(b)` = `new f(a, b)` (spec §10.4.1.2): prototype, campos de
+    // classe e new.target vêm do ALVO; o boundThis é ignorado.
+    if fn.bind_target != nil {
+        combined := make([dynamic]Value, 0, len(fn.bind_args) + len(args))
+        defer delete(combined)
+        for v in fn.bind_args do append(&combined, v)
+        for v in args do append(&combined, v)
+        nt := new_target
+        if nt == fn do nt = nil
+        return construct_object(vm, fn.bind_target, combined[:], nt)
+    }
     if fn.non_constructor || fn.is_arrow || fn.is_async || fn.is_generator {
         throw_type_error(vm, "function is not a constructor"); return nil
     }
@@ -4828,6 +4908,10 @@ eval_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 
     args := eval_args(vm, n.body, env) // expande ...spread (pode conter cadeias opcionais)
     defer delete(args)
+    // argumento lançou: a chamada NÃO acontece. Sem isto a função rodava com os
+    // args já avaliados — `console.log("x" + f())` imprimia "xundefined" ANTES do
+    // TypeError de f() chegar ao catch.
+    if vm.throwing do return nil
     res := call_function(vm, fn, this_val, args[:])
     vm.opt_short = false // esta chamada operou; limpa flag que args/callee possam ter deixado
     return res
@@ -5146,6 +5230,12 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
     // elos de super p/ métodos de classe (super()/super.m() os leem via env_get)
     if fn.super_ctor != nil do scope.vars["__superctor__"] = fn.super_ctor
     if fn.home_super != nil do scope.vars["__superproto__"] = fn.home_super
+    if fn.home_static != nil do scope.vars["__superproto__"] = fn.home_static
+    // método de literal: `super` é o [[Prototype]] ATUAL do home object
+    if fn.home_obj != nil && fn.home_obj.proto != nil do scope.vars["__superproto__"] = fn.home_obj.proto
+    // `class extends null`: marca que existe heritage, mas sem construtora — o
+    // super() lê isto e lança em vez do no-op silencioso de "sem superclasse"
+    if fn.super_null do scope.vars["__superctor__"] = JS_Null{}
     // function expression NOMEADA: o nome referencia a si mesma DENTRO do corpo
     // (`var f = function g(n){ return g(n-1) }`) — antes dos params (que sombreiam).
     if fn.self_bind && fn.name != "" do scope.vars[fn.name] = fn
@@ -5256,7 +5346,20 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
         defer delete(combined)
         for v in fn.bind_args do append(&combined, v)
         for v in args do append(&combined, v)
-        return call_function(vm, fn.bind_target, fn.bind_this, combined[:])
+        // `new (f.bind(...))()` continua sendo `new`, e o [[Construct]] de bound
+        // function IGNORA o boundThis: o `this` é o objeto recém-criado (spec §10.4.1.2)
+        vm.pending_new_target = nt_pending
+        bthis := this if nt_pending != nil else fn.bind_this
+        return call_function(vm, fn.bind_target, bthis, combined[:])
+    }
+    // Construtora de CLASSE só roda via [[Construct]] (`new`, super(), Reflect.construct,
+    // upgrade de custom element) — todos põem o pending_new_target. Chamada comum
+    // (`A()`, `A.call(o)`) é TypeError (spec §10.2.1 [[Call]] de classConstructor).
+    if fn.class_node != nil && nt_pending == nil {
+        cname := fn.class_node.name
+        if cname == "" do cname = "(anonymous)"
+        throw_type_error(vm, fmt.tprintf("Class constructor %s cannot be invoked without 'new'", cname))
+        return nil
     }
     if fn.native != nil {
         // expõe fn.bound à nativa via vm.native_bound (save/restore = reentrante)
@@ -5292,8 +5395,13 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
     defer { if vm.env_escapes == esc_mark do recycle_envs(vm, env_mark) }
     scope := setup_call_scope(vm, fn, this, args, nt_pending)
     // construtor default de classe derivada: encaminha os args ao super
+    if fn.auto_super && fn.super_null {
+        throw_type_error(vm, "Super constructor null of anonymous class is not a constructor")
+        return nil
+    }
     if fn.auto_super && fn.super_ctor != nil {
-        super_construct(vm, fn.super_ctor, this, args)
+        super_construct(vm, fn.super_ctor, this, args, nt_pending)
+        if vm.throwing do return nil
     }
     if fn.body != nil {
         hoist_functions(vm, fn.body.body[:], scope) // declarações do corpo içadas
