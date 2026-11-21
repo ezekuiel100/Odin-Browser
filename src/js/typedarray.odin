@@ -463,7 +463,16 @@ ta_to_locale_string :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     for i in 0 ..< o.ta_len {
         if i > 0 do strings.write_string(&sb, ",")
         el: Value = ta_read(o, i)
-        method := get_member(vm, el, "toLocaleString")
+        // Read Number.prototype directly: numeric member dispatch otherwise
+        // prioritizes the native method over user overrides.
+        method: Value
+        for proto := vm.number_proto; proto != nil; proto = proto.proto {
+            if getter, found := proto.getters["toLocaleString"]; found {
+                if getter != nil do method = call_function(vm, getter, el, nil)
+                break
+            }
+            if value, found := proto.props["toLocaleString"]; found { method = value; break }
+        }
         if vm.throwing do return nil
         cb, callable := method.(^Function)
         if !callable { throw_type_error(vm, "toLocaleString is not a function"); return nil }

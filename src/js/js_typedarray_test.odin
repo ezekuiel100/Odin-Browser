@@ -194,3 +194,169 @@ test_array_from_iterable :: proc(t: ^testing.T) {
         Array.from(g()).join(',') + '|' + Array.from(new Set([4,4,5])).join(',')
     `).(string), "1,2,3|4,5")
 }
+
+@(test)
+test_ta_at_relative_indices :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Int16Array([10,20,30]);
+        a.at() === 10 && a.at(-1) === 30 && a.at(-1.9) === 30 &&
+        a.at(NaN) === 10 && a.at({valueOf:function(){return 1;}}) === 20 &&
+        a.at(-4) === undefined && a.at(3) === undefined &&
+        a.at(Infinity) === undefined && a.at(-Infinity) === undefined &&
+        new Uint8Array().at(0) === undefined
+    `).(bool), true)
+}
+
+@(test)
+test_ta_find_methods_direction_and_this :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Uint8Array([2,7,4,7]), seen = [], ctx = {limit:4};
+        var result = a.findLast(function(v,i,source) {
+            seen.push(i); return this === ctx && source === a && v < this.limit;
+        }, ctx);
+        result === 2 && seen.join() === '3,2,1,0' &&
+        a.findLastIndex(function(v){return v === 7;}) === 3 &&
+        a.findIndex(function(v){return v === 7;}) === 1 &&
+        a.find(function(v){return v > 3;}) === 7 &&
+        a.findLast(function(){return false;}) === undefined &&
+        a.findLastIndex(function(){return false;}) === -1 &&
+        new Uint8Array().findIndex(function(){return true;}) === -1
+    `).(bool), true)
+}
+
+@(test)
+test_ta_search_equality_and_from_index :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Float64Array([1,2,1,NaN]);
+        a.indexOf(1,1) === 2 && a.indexOf(1,-2) === 2 &&
+        a.indexOf(1,Infinity) === -1 && a.indexOf(1,-Infinity) === 0 &&
+        a.lastIndexOf(1) === 2 && a.lastIndexOf(1,undefined) === 0 &&
+        a.lastIndexOf(1,-3) === 0 && a.lastIndexOf(1,-5) === -1 &&
+        a.lastIndexOf(1,Infinity) === 2 && a.lastIndexOf(1,-Infinity) === -1 &&
+        a.indexOf('1') === -1 && !a.includes('1') &&
+        a.includes(NaN) && a.indexOf(NaN) === -1 && a.lastIndexOf(NaN) === -1 &&
+        !a.includes(1,3) && !new Uint8Array().includes(0)
+    `).(bool), true)
+}
+
+@(test)
+test_ta_copy_within_overlap_and_view :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Uint16Array([99,1,2,3,4,88]), v = a.subarray(1,5);
+        var same = v.copyWithin(1,0,3) === v;
+        var first = a.join();
+        v.copyWithin(0,2);
+        var second = a.join();
+        v.copyWithin(-1,-4,-3);
+        same && first === '99,1,1,2,3,88' && second === '99,2,3,2,3,88' &&
+        a.join() === '99,2,3,2,2,88' && v.copyWithin(Infinity,0) === v &&
+        v.copyWithin(0,0,-Infinity) === v
+    `).(bool), true)
+}
+
+@(test)
+test_ta_copy_methods_preserve_kind_and_source :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var kinds = [Int8Array,Uint8Array,Uint8ClampedArray,Int16Array,Uint16Array,
+                     Int32Array,Uint32Array,Float32Array,Float64Array];
+        kinds.every(function(C) {
+            var a = new C([3,1,2]), r = a.toReversed(), s = a.toSorted(), w = a.with(-1,9);
+            return r instanceof C && s instanceof C && w instanceof C &&
+                r.buffer !== a.buffer && s.buffer !== a.buffer && w.buffer !== a.buffer &&
+                r.join() === '2,1,3' && s.join() === '1,2,3' && w.join() === '3,1,9' &&
+                a.join() === '3,1,2';
+        }) && new Uint8Array([1]).with(0,257)[0] === 1 &&
+        new Uint8Array().toSorted().length === 0 && new Uint8Array().toReversed().length === 0
+    `).(bool), true)
+}
+
+@(test)
+test_ta_to_sorted_numeric_and_comparator :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Float64Array([NaN,10,2,0,-0,-3,NaN]), s = a.toSorted();
+        var stable = new Uint8Array([4,1,3,2]).toSorted(function(){return NaN;});
+        s[0] === -3 && 1/s[1] === -Infinity && 1/s[2] === Infinity &&
+        s[3] === 2 && s[4] === 10 && Number.isNaN(s[5]) && Number.isNaN(s[6]) &&
+        a.toSorted(function(a,b){return b-a;}).length === 7 &&
+        new Uint8Array([2,10,1]).toSorted(function(a,b){return b-a;}).join() === '10,2,1' &&
+        stable.join() === '4,1,3,2' && Number.isNaN(a[0])
+    `).(bool), true)
+}
+
+@(test)
+test_ta_reduce_right_order_and_initial :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Uint8Array([1,2,3]), seen = [];
+        var r = a.reduceRight(function(acc,v,i,source) {
+            seen.push(i); return source === a ? acc-v : 999;
+        });
+        r === 0 && seen.join() === '1,0' &&
+        a.reduceRight(function(acc,v){return acc+v;},10) === 16 &&
+        new Uint8Array().reduceRight(function(){return 99;},undefined) === undefined
+    `).(bool), true)
+}
+
+@(test)
+test_ta_new_method_errors :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Uint8Array([1,2]), errors = [];
+        function check(f) { try { f(); } catch(e) { errors.push(e.name); } }
+        check(function(){a.with(2,0);});
+        check(function(){a.with(-3,0);});
+        check(function(){a.with(Infinity,0);});
+        check(function(){new Uint8Array().with(0,0);});
+        check(function(){a.toSorted(null);});
+        check(function(){new Uint8Array().findLast(null);});
+        check(function(){a.findIndex(1);});
+        check(function(){a.reduceRight(null);});
+        check(function(){new Uint8Array().reduceRight(function(){});});
+        check(function(){Uint8Array.prototype.at.call({},0);});
+        errors.join() === 'RangeError,RangeError,RangeError,RangeError,TypeError,TypeError,TypeError,TypeError,TypeError,TypeError'
+    `).(bool), true)
+}
+
+@(test)
+test_ta_callback_exceptions_stop_iteration :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Uint8Array([1,2,3]), count = 0, caught = 0, marker = {};
+        function fail() { count++; throw marker; }
+        try { a.findLast(fail); } catch(e) { if(e === marker) caught++; }
+        try { a.findIndex(fail); } catch(e) { if(e === marker) caught++; }
+        try { a.reduceRight(fail); } catch(e) { if(e === marker) caught++; }
+        try { a.toSorted(fail); } catch(e) { if(e === marker) caught++; }
+        count === 4 && caught === 4 && a.join() === '1,2,3'
+    `).(bool), true)
+}
+
+@(test)
+test_ta_locale_string_dispatch :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var original = Number.prototype.toLocaleString;
+        Number.prototype.toLocaleString = function(locale) { return locale + ':' + this; };
+        var result = new Uint8Array([1,2]).toLocaleString('pt');
+        Number.prototype.toLocaleString = original;
+        result === 'pt:1,pt:2' && new Uint8Array().toLocaleString() === ''
+    `).(bool), true)
+}
+
+@(test)
+test_ta_copy_within_preserves_nan_bytes :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var buffer = new ArrayBuffer(12), bits = new Uint32Array(buffer);
+        bits.set([0x7fc12345,0x80000000,0]);
+        new Float32Array(buffer).copyWithin(1,0,2);
+        bits[0] === 0x7fc12345 && bits[1] === 0x7fc12345 && bits[2] === 0x80000000
+    `).(bool), true)
+}
+
+@(test)
+test_ta_with_coercion_order :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`
+        var a = new Uint8Array([1,2]), seen = [], marker = {};
+        var index = {valueOf:function(){seen.push('index'); return 8;}};
+        var value = {valueOf:function(){seen.push('value'); throw marker;}};
+        var caught = false;
+        try { a.with(index,value); } catch(e) { caught = e === marker; }
+        caught && seen.join() === 'index,value' && a.join() === '1,2'
+    `).(bool), true)
+}
