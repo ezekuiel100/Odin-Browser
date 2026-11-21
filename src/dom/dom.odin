@@ -69,6 +69,21 @@ Node :: struct {
     // i32 e não int: cabe no padding e 2 bi de filhos num nó não existe.
     n_elem_kids:   i32,
     n_pseudo_kids: i32,
+    // Custom element JÁ promovido por customElements.define (estado "custom" da
+    // spec). É o que a pseudo-classe `:defined` lê no motor de estilo — o
+    // registro mora no vm do JS, que o `ui` não enxerga na cascata. Escrito só
+    // pelo upgrade (src/js/dom_bindings.odin). Entra no fingerprint: um upgrade
+    // sem outra mutação ainda tem de reestilizar.
+    ce_defined: bool,
+}
+
+// `:defined` (HTML §4.13.2 / Selectors 4): todo elemento NÃO-custom é definido;
+// um custom element (nome com hífen, no namespace HTML) só depois do upgrade.
+is_defined_element :: proc(n: ^Node) -> bool {
+    if n == nil || n.kind != .Element do return true
+    if n.ns != "" do return true // SVG/MathML: `font-face`, `color-profile`… não são custom
+    if !strings.contains(n.tag, "-") do return true
+    return n.ce_defined
 }
 
 // Pseudo-filho: nó que existe na árvore mas NÃO é filho de luz — o "#content" de
@@ -175,6 +190,9 @@ style_fingerprint :: proc(n: ^Node, layout_only := false) -> u64 {
         if layout_only && (k == "class" || k == "style") do continue
         h += fp_str(k) * 0x9E3779B97F4A7C15 + fp_str(v)
     }
+    // `:defined` muda com o upgrade sem mexer em atributo: sem isto o restyle
+    // INCREMENTAL não veria o nó mudar e a regra `:not(:defined)` ficaria grudada
+    if n.ce_defined do h += 0xCE0D_EF1E_D000_0001
     return h
 }
 
@@ -204,6 +222,7 @@ fp_walk :: proc(n: ^Node, h: ^u64) {
     fp_mix(h, n.tag)
     fp_mix(h, n.text)
     fp_mix(h, n.ns)
+    if n.ce_defined { h^ ~= 0xce; h^ *= FP_PRIME } // upgrade muda `:defined`
     // Atributos combinados de forma COMUTATIVA (soma): `attrs` é um map, que não
     // tem ordem, e `attr_order` pode não refletir escrita direta no map.
     acc: u64 = 0

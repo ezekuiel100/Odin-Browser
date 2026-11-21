@@ -486,6 +486,10 @@ Interp :: struct {
     pending_fetches: [dynamic]^Fetch_Req, // fetches em voo (threads; ver fetch.odin)
     base_url:        string,              // URL da página (owned) p/ resolver fetch relativo
     current_script:  rawptr,              // ^dom.Node do <script> em execução AGORA (document.currentScript);
+    nav_request:     string,              // navegação pedida pela PÁGINA (location.href=/assign/replace,
+                                          // envio de <form>); URL ABSOLUTA, owned. O host (ui) consome
+                                          // e zera: vm_take_nav_request. Última escrita vence.
+    nav_replace:     bool,                // location.replace: não empilha no histórico
                                           // rawptr pois interp.odin não importa `dom`. Setado por
                                           // load_page_scripts (por script) e maybe_run_injected_script.
     // document.write: PONTO DE INSERÇÃO. `write_owner` é o <script> a que a
@@ -1668,7 +1672,8 @@ console_format :: proc(args: []Value) -> string {
 
 // Guarda a linha no buffer do painel DevTools. Ring: ao passar do teto, descarta o
 // bloco mais antigo (libera as strings) — um setInterval que loga não cresce sem fim.
-@(private = "file")
+// `text` passa a ser POSSE do buffer (clone antes de passar). Visível no pacote:
+// avisos do HOST (dom_forms.odin: envio POST não suportado) aparecem no DevTools.
 console_capture :: proc(vm: ^Interp, level: Console_Level, text: string) {
     if len(vm.console_buf) >= CONSOLE_LOG_MAX {
         drop := CONSOLE_LOG_MAX / 4

@@ -107,6 +107,12 @@ Compound :: struct {
     // Avaliado no motor de estilo (precisa da ÁRVORE), como :nth-*/:dir.
     empty_req:   bool,
     scope_req: bool,
+    // `:defined` — elemento que NÃO é custom element (sem hífen / fora do HTML) ou
+    // que JÁ foi promovido por customElements.define. Avaliado no motor de estilo
+    // (precisa do estado do nó). Antes era permissiva: `:not(:defined)` virava
+    // "casa tudo", e o `:not(:defined){visibility:hidden}` do reddit escondia o
+    // <html> — página inteira em branco.
+    defined_req: bool,
 }
 
 // Seletor complexo: cadeia de compostos (esquerda→direita; o último é o alvo)
@@ -1459,7 +1465,7 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                     tgt := sel.parts[len(sel.parts) - 1]
                     safe := len(sel.parts) > 1 || tgt.tag != "" || tgt.id != "" ||
                             len(tgt.classes) > 0 || len(tgt.attrs) > 0 ||
-                            tgt.nth_kind != .None || tgt.empty_req || tgt.scope_req || tgt.never ||
+                            tgt.nth_kind != .None || tgt.empty_req || tgt.defined_req || tgt.scope_req || tgt.never ||
                             tgt.ui_states != {} || len(tgt.nots) > 0 || len(tgt.ors) > 0 || tgt.dir_req != .None
                     if is_not && safe {
                         append(&out.nots, sel)
@@ -1543,6 +1549,11 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
             }
             if strings.equal_fold(name, "empty") {
                 out.empty_req = true
+                i = p
+                continue
+            }
+            if strings.equal_fold(name, "defined") && arg == "" {
+                out.defined_req = true
                 i = p
                 continue
             }
@@ -1646,7 +1657,7 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
             // continua tratado como permissivo naquele caso.)
             out.pseudo_only = true
         } else if out.pseudo == .None && out.nth_kind == .None && out.ui_states == {} && out.dir_req == .None &&
-                  !out.empty_req && !out.scope_req && !out.never &&
+                  !out.empty_req && !out.defined_req && !out.scope_req && !out.never &&
                   len(out.ors) == 0 && len(out.nots) == 0 && len(out.has) == 0 && !out.is_unresolved {
             // REDE DE SEGURANÇA da classe "composto vazio casa tudo": chegamos aqui
             // com tag/classe/id/atributo vazios, sem pseudo-elemento (::before/::after
@@ -1755,7 +1766,7 @@ is_nth_family :: proc(name: string) -> bool {
 //
 // ⚠️ O critério é "estaticamente falsa", não "não implementada". Ficam DE FORA
 // de propósito, seguindo permissivas, as que são estaticamente VERDADEIRAS na
-// maioria dos elementos — `:valid`, `:in-range`, `:defined`, `:link`,
+// maioria dos elementos — `:valid`, `:in-range`, `:link`,
 // `:any-link`, `:placeholder-shown` (input vazio MOSTRA o placeholder),
 // `:default`: marcá-las como "casa nada" apagaria estilo que o Chrome aplica.
 @(private)

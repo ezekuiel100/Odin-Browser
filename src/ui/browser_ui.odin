@@ -1424,6 +1424,28 @@ draw_content :: proc(s: ^State) {
                     }
                 }
             }
+            consume_js_navigation(s)
+        }
+    }
+}
+
+// Navegação PEDIDA PELA PÁGINA (location.href/assign/replace, envio de <form>):
+// o JS só grava o pedido no vm (js.vm_take_nav_request); quem navega é o host,
+// aqui, fora do JS, no fim do frame. Todas as abas: um <form> que se envia sozinho
+// no DOMContentLoaded (o desafio de JS do reddit) pode estar numa aba de fundo.
+consume_js_navigation :: proc(s: ^State) {
+    for i in 0 ..< len(s.tabs) {
+        tab := &s.tabs[i]
+        if tab.vm == nil do continue
+        url, replace, ok := jspkg.vm_take_nav_request(tab.vm)
+        if !ok do continue
+        // replace: troca a entrada corrente do histórico em vez de empilhar
+        if replace && tab.hist_idx >= 0 && tab.hist_idx < len(tab.history) {
+            delete(tab.history[tab.hist_idx])
+            tab.history[tab.hist_idx] = strings.clone(url)
+            start_navigation(s, url, record = false, tab_idx = i)
+        } else {
+            start_navigation(s, url, tab_idx = i)
         }
     }
 }
@@ -2438,7 +2460,11 @@ dispatch_page_click :: proc(s: ^State, vw, vh: f32) {
     if tab.vm == nil do return
 
     // bubbling acontece dentro de dispatch_event (alvo -> raiz)
-    fired, _ := jspkg.dispatch_mouse_event(tab.vm, node, "click", 0, 0)
+    fired, prevented := jspkg.dispatch_mouse_event(tab.vm, node, "click", 0, 0)
+    // ação padrão: botão de envio envia o <form> (vira pedido de navegação,
+    // consumido por consume_js_navigation no fim do frame). O `submit` pode
+    // ter handlers que mexem no DOM, então conta como "disparou".
+    if !prevented && jspkg.click_default_submit(tab.vm, node) do fired = true
     if fired && tab.dom != nil {
         // o JS pode ter criado/removido nós ou mudado classes: re-estiliza a
         // página inteira (o mapa styles antigo não cobre os nós novos) e

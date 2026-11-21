@@ -101,6 +101,12 @@ install_dom :: proc(vm: ^Interp, root: ^dom.Node) {
     vm.dom_element_methods["play"]             = mk_dom(vm, native_media_play)
     vm.dom_element_methods["pause"]            = mk_dom(vm, native_media_pause)
     vm.dom_element_methods["load"]             = mk_dom(vm, native_media_load)
+    // <form> (dom_forms.odin): envio de verdade, vira navegação da aba.
+    vm.dom_element_methods["submit"]           = mk_dom(vm, native_form_submit)
+    vm.dom_element_methods["requestSubmit"]    = mk_dom(vm, native_form_request_submit)
+    vm.dom_element_methods["reset"]            = mk_dom(vm, dom_noop)
+    vm.dom_element_methods["checkValidity"]    = mk_dom(vm, native_true)
+    vm.dom_element_methods["reportValidity"]   = mk_dom(vm, native_true)
     vm.dom_element_methods["canPlayType"]      = mk_dom(vm, native_media_can_play_type)
     vm.dom_element_methods["getClientRects"]   = mk_dom(vm, native_get_client_rects)
     vm.dom_element_methods["scrollIntoView"]   = mk_dom(vm, dom_noop)
@@ -174,7 +180,7 @@ install_dom :: proc(vm: ^Interp, root: ^dom.Node) {
     doc.props["createComment"]    = mk_dom(vm, native_create_comment)
     doc.props["createDocumentFragment"] = mk_dom(vm, native_create_document_fragment)
     doc.props["importNode"] = mk_dom(vm, native_import_node)
-    doc.props["adoptNode"]  = mk_dom(vm, native_import_node)
+    doc.props["adoptNode"]  = mk_dom(vm, native_adopt_node) // MOVE, nao clona
     // nodeType=9 (DOCUMENT_NODE) / nodeName="#document". FALTAVAM no objeto document
     // (que não passa pelo dom_elem_get dos elementos wrapped). O Sizzle (motor de
     // seletores do jQuery) faz `setDocument`: `9===r.nodeType && r.documentElement`
@@ -310,12 +316,13 @@ install_window :: proc(vm: ^Interp, doc: ^Object) {
     // location — get-hook lê vm.base_url NA HORA (base_url é setado após install)
     loc := new_object(vm)
     loc.get = location_get
+    loc.set = location_set // href/search/pathname/hash = x NAVEGA (dom_forms.odin)
     // `String(location)` / `new URL(location)`: sem um toString próprio o ToPrimitive
     // caía no de Object e dava "[object Object]".
     loc.props["toString"] = mk_dom(vm, location_to_string)
-    loc.props["reload"]  = mk_dom(vm, dom_noop)
-    loc.props["assign"]  = mk_dom(vm, dom_noop)
-    loc.props["replace"] = mk_dom(vm, dom_noop)
+    loc.props["reload"]  = mk_dom(vm, location_reload)
+    loc.props["assign"]  = mk_dom(vm, location_assign)
+    loc.props["replace"] = mk_dom(vm, location_replace)
     win.props["location"] = loc
     doc.props["location"] = loc // document.location === window.location (bundles leem
                                 // `document.location.search/host`; era undefined → gap-report)
@@ -546,7 +553,12 @@ window_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
 @(private = "file")
 window_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> bool {
     // window.foo = x  ≡  var foo = x (window É o global). location/history ficam protegidas.
-    if name == "location" || name == "history" || name == "navigator" {
+    // `window.location = url` NAVEGA (≡ location.href = url) e mantém o objeto Location.
+    if name == "location" {
+        js_request_navigation(vm, js_value_to_string(vm, val))
+        return true
+    }
+    if name == "history" || name == "navigator" {
         o.props[name] = val
         return true
     }
@@ -556,7 +568,6 @@ window_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> bool {
 
 // Quebra uma URL em componentes (scheme sem ':', host com porta, path, search, hash).
 // scheme padrão "https"; path padrão "/". Compartilhado por location e URL.
-@(private = "file")
 split_url :: proc(url: string) -> (scheme, host, path, search, hash: string) {
     scheme, host, path = "https", "", "/"
     s := url
@@ -773,6 +784,9 @@ document_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
          "firstChild", "lastChild", "childNodes":
         return dom_elem_get(vm, o, name)
     }
+    if name == "forms" {
+        if root := cast(^dom.Node) o.host; root != nil do return doc_forms(vm, root), true
+    }
     if name == "currentScript" {
         if vm.current_script != nil do return wrap_element(vm, cast(^dom.Node) vm.current_script), true
         return JS_Null{}, true
@@ -910,7 +924,6 @@ dispatch_mouse_event :: proc(vm: ^Interp, node: ^dom.Node, type: string, button,
 // preserva as props dele (detail etc.) e honra `bubbles` (default false, como
 // new Event na spec); ev_in == nil → evento sintetizado pela UI, sempre sobe.
 // Devolve (algum handler disparou, preventDefault foi chamado).
-@(private = "file")
 dispatch_event_obj :: proc(vm: ^Interp, node: ^dom.Node, type: string, ev_in: ^Object) -> (fired: bool, prevented: bool) {
     vm.steps = 0 // watchdog: um handler de evento é uma tarefa síncrona nova
     vm.call_depth = 0
@@ -945,15 +958,22 @@ dispatch_event_obj :: proc(vm: ^Interp, node: ^dom.Node, type: string, ev_in: ^O
             // (des)registrar listeners DESTE nó (el.onclick=null / addEventListener)
             // — delete/append realocam o backing e o `for h in list` leria memória
             // liberada. As ^Function são posse do vm e continuam válidas.
-            snap := make([dynamic]^Function)
+            snap := make([dynamic]Listener)
             defer delete(snap)
-            for h in list do if h.type == type do append(&snap, h.fn)
+            for h in list do if h.type == type do append(&snap, h)
             if len(snap) > 0 {
                 cur := wrap_element(vm, n)
                 ev.props["currentTarget"] = cur
-                for fn in snap {
-                    call_function(vm, fn, cur, []Value{ev})
+                for h in snap {
+                    r := call_function(vm, h.fn, cur, []Value{ev})
                     fired = true
+                    // Handler-PROPRIEDADE (`el.onsubmit = fn`, `onsubmit="return v()"`)
+                    // que devolve false CANCELA o evento (HTML §event handler processing).
+                    // É o idioma clássico de validação de formulário: sem isto o envio
+                    // seguia mesmo com o validador recusando.
+                    if h.prop {
+                        if b, bok := r.(bool); bok && !b do ev.props["defaultPrevented"] = true
+                    }
                 }
             }
         }
@@ -1558,6 +1578,10 @@ upgrade_element :: proc(vm: ^Interp, n: ^dom.Node, ctor: ^Function, run_connecte
 
     if _, done := w.props[UPGRADED_KEY]; !done { // construção: idempotente
         w.props[UPGRADED_KEY] = true
+        // `:defined` passa a casar (lido pela cascata). Spec: o estado vira "custom"
+        // só se o constructor TERMINA sem lançar — aproximação: marca antes, como
+        // o resto deste upgrade, que também não desfaz nada se o constructor falhar.
+        n.ce_defined = true
 
         // proto = Ctor.prototype: métodos da classe (render, connectedCallback, ...)
         // passam a resolver no wrapper. A cadeia do DOM continua atrás dele.
@@ -2274,6 +2298,29 @@ native_import_node :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return wrap_element(vm, clone_subtree(vm, src, deep))
 }
 
+// document.adoptNode(node): MOVE o nó para este documento e devolve O MESMO nó (não
+// uma cópia). Era um alias de importNode(node) — que, sem `deep`, clona RASO: o
+// `adoptNode(template.content)` do streaming SSR do reddit recebia um fragmento
+// VAZIO e o feed inteiro sumia. Sem multi-documento, "adotar" = tirar do pai.
+// Exceção: o conteúdo de um <template> ("#content") é pseudo-filho do template e
+// fica onde está — inseri-lo depois move os FILHOS (is_fragment), igual à spec, em
+// que template.content nem tem pai.
+@(private = "file")
+native_adopt_node :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := arg(args, 0).(^Object)
+    if !ok || o.host == nil do return JS_Null{}
+    n := cast(^dom.Node) o.host
+    if n.kind == .Document {
+        throw_type_error(vm, "adoptNode: não é possível adotar um Document") // NotSupportedError na spec
+        return nil
+    }
+    if n.parent != nil && n.tag != "#content" {
+        detach(vm, n)
+        vm.owned_nodes[rawptr(n)] = true // solto: o vm libera se ninguém o reinserir
+    }
+    return o
+}
+
 @(private = "file")
 native_clone_node :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     src := node_of(this)
@@ -2329,7 +2376,7 @@ native_create_html_document :: proc(vm: ^Interp, this: Value, args: []Value) -> 
     d.props["createComment"]   = mk_dom(vm, native_create_comment)
     d.props["createDocumentFragment"] = mk_dom(vm, native_create_document_fragment)
     d.props["importNode"] = mk_dom(vm, native_import_node)
-    d.props["adoptNode"]  = mk_dom(vm, native_import_node) // sem multi-documento: mesmo efeito
+    d.props["adoptNode"]  = mk_dom(vm, native_adopt_node)
     d.props["getElementsByTagName"] = mk_dom(vm, native_get_elements_by_tag_name)
     d.props["querySelector"]    = mk_dom(vm, native_query_selector)
     d.props["querySelectorAll"] = mk_dom(vm, native_query_selector_all)
@@ -3176,25 +3223,34 @@ native_append :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 native_prepend :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     parent := node_of(this)
     if parent == nil do return nil
-    idx := 0
-    for a in args {
-        child := arg_to_node(vm, a)
-        if would_create_cycle(parent, child) do continue
-        if child.parent != nil do detach(vm, child)
-        mo_insert(vm, parent, child, idx)
-        idx += 1
-    }
+    insert_nodes_at(vm, parent, 0, args)
     return nil
 }
 
-// Insere os args no `parent` a partir do índice `at` (usado por before/after).
+// Insere os args no `parent` a partir do índice `at` (prepend/before/after/
+// replaceWith). Um DocumentFragment entra pelos FILHOS, como no dom_attach: sem
+// isto `el.replaceWith(frag)` enfiava o próprio nó-fragmento na árvore, vazio aos
+// olhos do layout — era o que deixava o feed do reddit em branco (o streaming SSR
+// deles troca cada placeholder por `replaceWith(fragmento)`).
 @(private = "file")
 insert_nodes_at :: proc(vm: ^Interp, parent: ^dom.Node, at: int, args: []Value) {
     idx := at
     for a in args {
         child := arg_to_node(vm, a)
+        if is_fragment(child) {
+            n := len(child.children)
+            move_fragment_children(vm, parent, child, min(idx, len(parent.children)))
+            idx += n
+            continue
+        }
         if would_create_cycle(parent, child) do continue
-        if child.parent != nil do detach(vm, child)
+        if child.parent != nil {
+            // mover um irmão que estava ANTES do ponto de inserção encurta a lista
+            if child.parent == parent {
+                if ci := child_index(child); ci >= 0 && ci < idx do idx -= 1
+            }
+            detach(vm, child)
+        }
         mo_insert(vm, parent, child, idx) // idx além do fim = append
         idx += 1
     }
@@ -4085,6 +4141,9 @@ dom_elem_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
     case "htmlFor":     return attr_or_empty(vm, node, "for"), true
     case "checked":     return attr_bool(node, "checked"), true
     case "disabled":    return attr_bool(node, "disabled"), true
+    // <form>/controles: form.elements, form.action/method, control.form (dom_forms.odin)
+    case "elements", "form", "action", "method", "enctype", "encoding":
+        if v, ok := form_prop_get(vm, node, name); ok do return v, true
     }
     // <video>/<audio>: paused/currentTime/volume/… (media.odin). Depois do switch
     // acima de propósito — `src`/`title` etc. são refletidas de atributo e valem
@@ -4129,7 +4188,6 @@ option_text :: proc(vm: ^Interp, node: ^dom.Node) -> Value {
 // no pacote ui — `src/js` NÃO pode importar `src/ui`, então a duplicação é
 // estrutural; se uma mudar, a outra tem de mudar (o ui pinta o rótulo, o js
 // responde ao script, e divergir aí é bug silencioso).
-@(private = "file")
 option_nodes :: proc(node: ^dom.Node, out: ^[dynamic]^dom.Node) {
     for c in node.children {
         if c.kind != .Element do continue
@@ -4141,7 +4199,6 @@ option_nodes :: proc(node: ^dom.Node, out: ^[dynamic]^dom.Node) {
 }
 
 // Valor de um <option>: atributo `value`, senão o texto (spec).
-@(private = "file")
 option_value_str :: proc(node: ^dom.Node) -> string {
     if v, ok := node.attrs["value"]; ok do return v
     sb := strings.builder_make(context.temp_allocator)
@@ -4151,7 +4208,6 @@ option_value_str :: proc(node: ^dom.Node) -> string {
 
 // Índice da opção corrente: o atributo `value` do select vence (é onde `el.value`
 // aterra neste motor), senão o primeiro `selected`, senão 0.
-@(private = "file")
 select_index :: proc(node: ^dom.Node) -> int {
     opts := make([dynamic]^dom.Node, context.temp_allocator)
     option_nodes(node, &opts)
@@ -4267,6 +4323,12 @@ dom_elem_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> bool 
     case "htmlFor":
         set_attr_val(vm, node, "for", val)
         return true
+    case "action", "method", "enctype", "target":
+        // refletidos no <form> (o envio lê o ATRIBUTO — ver dom_forms.odin)
+        if node.tag == "form" {
+            set_attr_val(vm, node, name, val)
+            return true
+        }
     case "width", "height":
         // `canvas.width = N`: reflete no ATRIBUTO (é dele que o layout tira o
         // tamanho intrínseco) e RESETA a superfície inteira, como manda a spec —

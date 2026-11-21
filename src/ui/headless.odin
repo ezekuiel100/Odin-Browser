@@ -943,6 +943,23 @@ headless_fonttest :: proc(ttf_path := "C:\\Windows\\Fonts\\impact.ttf") -> bool 
     return ok
 }
 
+// Headless: segue a navegação pedida pela página da aba 0 (desafio de JS do reddit,
+// redirect por location.replace). Teto de 5 por execução — um site que navega
+// em laço não pode prender o --diagnose/--render até o timeout. true = navegou.
+headless_follow_js_nav :: proc(s: ^State, count: ^int) -> bool {
+    if len(s.tabs) == 0 || s.tabs[0].vm == nil do return false
+    url, _, ok := jspkg.vm_take_nav_request(s.tabs[0].vm)
+    if !ok do return false
+    if count^ >= 5 {
+        fmt.eprintfln("[headless] navegação por JS IGNORADA (teto de 5): %s", url)
+        return false
+    }
+    count^ += 1
+    fmt.eprintfln("[headless] navegação pedida pela página → %s", url)
+    start_navigation(s, url)
+    return true
+}
+
 headless_diagnose :: proc(url: string, json_path := "") -> bool {
     if sdl2.Init(sdl2.INIT_VIDEO) != 0 { fmt.eprintln("SDL_Init falhou"); return false }
     defer sdl2.Quit()
@@ -974,6 +991,7 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
     page_w: f32 = 1280
     lay: ^Box = nil
     stable := 0
+    js_navs := 0
     for f in 0 ..< 2000 {
         // Recicla a arena temp POR FRAME, igual ao loop real do navegador
         // (browser_ui.odin, topo do frame). Sem isto, 2000 frames de
@@ -1030,6 +1048,8 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
                 when UIPROF { if mudou { g_uiprof.ms_restyle += time.duration_milliseconds(time.tick_since(tf)); g_uiprof.restyles += 1 } }
             }
         }
+        // navegação pedida pela página (location/<form>): segue, com teto contra laço
+        if headless_follow_js_nav(&s, &js_navs) do stable = 0
         im.SetNextWindowPos({0, 0}); im.SetNextWindowSize({1280, 900})
         im.Begin("##diag", nil, {.NoTitleBar, .NoResize, .NoMove, .NoScrollbar, .NoBringToFrontOnFocus, .NoNavFocus})
         lay = len(s.tabs) > 0 ? s.tabs[0].layout : nil
@@ -1054,7 +1074,7 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
         when UIPROF { g_uiprof.ms_render += time.duration_milliseconds(time.tick_since(tf)) }
         // estabilizou = layout pronto e nenhuma imagem baixando NEM esperando backoff
         // de retry (images_pending inclui as .Loading em espera de Retry-After) por ~45 frames
-        if lay != nil && g_img_active == 0 && !images_pending() {
+        if lay != nil && g_img_active == 0 && !images_pending() && !s.tabs[0].loading {
             stable += 1
             if stable >= 45 do break
         } else {
@@ -1131,12 +1151,24 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
         // Pipeline de rede COMPLETO (igual ao --fetch): scripts externos+inline em
         // duas fases (load_page_scripts) E folhas de estilo externas (collect_page_css).
         // É o caminho que representa um site ao vivo — o --render de arquivo NÃO baixa CSS.
-        resp := net.fetch(html_path)
-        if !resp.ok { fmt.eprintfln("headless: fetch falhou %s (%s)", html_path, resp.err); return false }
-        dom = htmlp.parse_render(resp.body)
-        page_vm = load_page_scripts(dom, html_path) // roda <script>; retém handlers
-        css_text = collect_page_css(dom, html_path) // <style> + <link> externos
-        base_url = html_path
+        page_url := html_path
+        for hop := 0; ; hop += 1 {
+            resp := net.fetch(page_url)
+            if !resp.ok { fmt.eprintfln("headless: fetch falhou %s (%s)", page_url, resp.err); return false }
+            dom = htmlp.parse_render(resp.body)
+            page_vm = load_page_scripts(dom, page_url) // roda <script>; retém handlers
+            // Navegação pedida pela página DURANTE a carga (desafio de JS do reddit:
+            // <form> enviado no DOMContentLoaded; redirect por location.replace).
+            // Teto de 5, como o headless_follow_js_nav. O DOM/vm antigos ficam para
+            // trás (processo de uma execução só; o vm é liberado, o DOM vaza).
+            nav, _, has_nav := jspkg.vm_take_nav_request(page_vm)
+            if !has_nav || hop >= 5 do break
+            fmt.eprintfln("[headless] navegação pedida pela página → %s", nav)
+            page_url = strings.clone(nav)
+            jspkg.vm_free(page_vm)
+        }
+        css_text = collect_page_css(dom, page_url) // <style> + <link> externos
+        base_url = page_url
     } else {
         data, rerr := os.read_entire_file_from_path(html_path, context.allocator)
         if rerr != nil { fmt.eprintfln("headless: nao consegui ler %s", html_path); return false }

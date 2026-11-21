@@ -8032,6 +8032,7 @@ compound_matches_node :: proc(c: csspkg.Compound, n: ^dompkg.Node, scope: ^dompk
     if !csspkg.compound_matches(c, n.tag, classes, id, n.attrs) do return false
     if c.nth_kind != .None && !structural_matches(c, n, scope) do return false
     if c.empty_req && !node_is_empty(n) do return false
+    if c.defined_req && !dompkg.is_defined_element(n) do return false
     if c.dir_req != .None { // :dir(ltr)/:dir(rtl)
         switch c.dir_req {
         case .None:  // inalcançável (guardado acima)
