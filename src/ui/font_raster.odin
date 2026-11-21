@@ -15,10 +15,10 @@ Native_Font :: struct {
 }
 g_native_fonts: [dynamic]Native_Font
 g_native_font_pixels: f32
-// Interactive navigation must not rebuild the entire shared atlas for each
-// newly encountered CSS size. Use the bootstrap size ladder there; offline
-// rendering can still request exact raster sizes and wait for the rebuild.
-g_native_font_requests_enabled := true
+// Interactive pages only request rasters when the bootstrap texture would be
+// enlarged. Coarse upward buckets and reuse keep font-size animations from
+// requesting an atlas rebuild at every pixel; offline rendering stays exact.
+g_native_font_interactive := false
 NATIVE_FONT_LIMIT :: 64
 NATIVE_FONT_PIXEL_BUDGET :: 24 * 1024 * 1024
 
@@ -38,10 +38,20 @@ native_font_pick :: proc(base: ^im.Font, size: f32) -> ^im.Font {
     // This ImGui rasterizer floors SizePixels. Use nearest physical pixels,
     // avoiding redundant fractional entries during zoom/animations.
     target := math.round(size)
+    if g_native_font_interactive {
+        density := max(f32(1), base.Sources.RasterizerDensity)
+        if size <= base.FontSize * density do return base
+        target = math.ceil(size / 16) * 16
+        best: ^Native_Font
+        for &v in g_native_fonts {
+            if v.base == base && v.size >= target && (best == nil || v.size < best.size) do best = &v
+        }
+        if best != nil do return best.font != nil ? best.font : base
+    }
+    if target == base.FontSize do return base
     for v in g_native_fonts {
         if v.base == base && v.size == target do return v.font != nil ? v.font : base
     }
-    if !g_native_font_requests_enabled do return base
     // Conservative area estimate, counting actual fallback/merged glyphs too.
     pixels := target * target * f32(base.Glyphs.Size)
     if len(g_native_fonts) < NATIVE_FONT_LIMIT &&

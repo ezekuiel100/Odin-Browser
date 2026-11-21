@@ -682,9 +682,9 @@ mem_tracking_report :: proc() {
 
 run :: proc() {
     loading_trace_event("app-start")
-    previous_native_requests := g_native_font_requests_enabled
-    g_native_font_requests_enabled = false
-    defer { g_native_font_requests_enabled = previous_native_requests }
+    previous_native_interactive := g_native_font_interactive
+    g_native_font_interactive = true
+    defer { g_native_font_interactive = previous_native_interactive }
     defer painter_cache_free()
     // Instalado ANTES de qualquer alocação Odin (p/ não gerar falso "free
     // inválido"). Os workers adotam via dbg_adopt_allocator.
