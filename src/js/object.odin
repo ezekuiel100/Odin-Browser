@@ -979,8 +979,6 @@ obj_has_own_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
                 return arr_has_index(o, n)
             }
         }
-    case ^Collection:
-        if name == "size" do return true
     }
     return false
 }

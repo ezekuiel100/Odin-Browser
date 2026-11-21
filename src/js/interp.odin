@@ -2443,25 +2443,8 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         if fn, ok := vm.object_methods[name]; ok do return fn
         return nil
     case ^Collection:
-        if name == "size" do return f64(o.size)
-        // Constructors must observe a replaced/deleted iterator on the source
-        // collection's prototype, rather than always using native dispatch.
-        if name == vm.sym_iterator_key {
-            value, _ := prim_proto_lookup(vm, vm.collection_protos[o.kind], o, name)
-            return value
-        }
-        if o.kind != .Set && set_operation_name(name) do return nil
-        if fn, ok := vm.collection_methods[name]; ok do return fn
-        if name == "constructor" {
-            switch o.kind {
-            case .Map:      return global_ctor(vm, "Map")
-            case .Set:      return global_ctor(vm, "Set")
-            case .Weak_Map: return global_ctor(vm, "WeakMap")
-            case .Weak_Set: return global_ctor(vm, "WeakSet")
-            }
-        }
-        if fn, ok := vm.object_methods[name]; ok do return fn // idem p/ Map/Set
-        return nil
+        value, _ := prim_proto_lookup(vm, vm.collection_protos[o.kind], o, name)
+        return value
     case ^Symbol:
         if name == "description" do return own_str(vm, o.desc)
         if name == "constructor" do return global_ctor(vm, "Symbol")
@@ -4839,7 +4822,11 @@ unwrap_prim :: proc(vm: ^Interp, fn: ^Function, this: Value) -> Value {
     o, ok := this.(^Object)
     if !ok || o.prim == nil do return this
     #partial switch _ in o.prim {
-    case ^Collection: for _, m in vm.collection_methods do if m == fn do return o.prim
+    case ^Collection:
+        // Branded collection methods validate wrappers themselves and preserve
+        // their identity for chaining and forEach's third callback argument.
+        if fn.native == coll_method_dispatch do return this
+        for _, m in vm.collection_methods do if m == fn do return o.prim
     case ^Array:      return this
     // wrapper de primitivo (`new String("a").toUpperCase()`, valueOf no ToPrimitive):
     // os métodos nativos leem `this.(string)`/`.(f64)`/`.(bool)` — é o valor

@@ -1,18 +1,61 @@
 package js
 
-
+import "core:strings"
 
 // Map / Set / WeakMap / WeakSet.
 //
-// Implementação única (^Collection) com um `kind`. A "fraqueza" de WeakMap/
-// WeakSet só afeta a coleta de lixo — não a semântica observável de get/set/has/
-// delete — então os quatro compartilham o mesmo backing e métodos. As chaves são
+// Implementação única (^Collection) com um `kind`. Os quatro compartilham o
+// armazenamento; cada prototype tem seus próprios métodos e valida o receptor.
+// WeakMap/WeakSet também validam as chaves e usam referências fracas. As chaves são
 // comparadas por SameValueZero (identidade p/ objetos; valor p/ primitivos; e
 // NaN igual a NaN), então objetos servem de chave, como no JS real.
 //
 // Ordered entries with a hash index; deleted slots keep iteration cursors stable.
 
 Coll_Kind :: enum { Map, Set, Weak_Map, Weak_Set }
+
+Coll_Method :: enum { Set, Get, Add, Has, Delete, Clear, For_Each, Keys, Values, Entries, Size }
+COLL_METHOD_STRIDE :: 16
+
+// Shared storage does not imply shared internal slots. The function's bound
+// tag records its required collection kind independently of the receiver.
+coll_method_dispatch :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    tag := int(vm.native_bound.(f64))
+    kind := Coll_Kind(tag / COLL_METHOD_STRIDE)
+    method := Coll_Method(tag % COLL_METHOD_STRIDE)
+    c := coll_receiver(this)
+    if c == nil || c.kind != kind {
+        throw_type_error(vm, "Collection method called on incompatible receiver")
+        return nil
+    }
+    switch method {
+    case .Set:
+        map_set(vm, c, args)
+        if !vm.throwing do return this
+    case .Get: return coll_get(vm, c, args)
+    case .Add:
+        set_add(vm, c, args)
+        if !vm.throwing do return this
+    case .Has: return coll_has(vm, c, args)
+    case .Delete: return coll_delete(vm, c, args)
+    case .Clear: return coll_clear(vm, c, args)
+    case .For_Each: return coll_for_each(vm, this, args)
+    case .Keys: return coll_keys(vm, c, args)
+    case .Values: return coll_values(vm, c, args)
+    case .Entries: return coll_entries(vm, c, args)
+    case .Size: return f64(c.size)
+    }
+    return nil
+}
+
+@(private = "file")
+coll_receiver :: proc(this: Value) -> ^Collection {
+    if c, ok := this.(^Collection); ok do return c
+    if o, ok := this.(^Object); ok && proxy_state(this) == nil {
+        if c, has := o.prim.(^Collection); has do return c
+    }
+    return nil
+}
 
 Coll_Entry :: struct {
     dead: bool,
@@ -222,8 +265,8 @@ coll_clear :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 coll_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     // brand-check e callback-check da spec: forEach em receiver sem [[MapData]]/
     // [[SetData]] ou com callback não-chamável lança TypeError (antes: no-op silencioso).
-    c, ok := this.(^Collection)
-    if !ok { throw_type_error(vm, "Method Map.prototype.forEach called on incompatible receiver"); return nil }
+    c := coll_receiver(this)
+    if c == nil { throw_type_error(vm, "Collection forEach called on incompatible receiver"); return nil }
     cb, cok := arg(args, 0).(^Function)
     if !cok { throw_type_error(vm, "callback is not a function"); return nil }
     this_arg := arg(args, 1)
@@ -251,13 +294,6 @@ coll_values :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_array(vm)
     if c, ok := this.(^Collection); ok do for e in c.entries do if !e.dead do append(&out.items, e.val)
     return make_array_iterator(vm, out)
-}
-
-// [Symbol.iterator] de uma coleção: Set/WeakSet iteram valores; Map/WeakMap, pares.
-@(private = "file")
-coll_iterator :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if c, ok := this.(^Collection); ok && coll_is_set(c) do return coll_values(vm, this, args)
-    return coll_entries(vm, this, args)
 }
 
 @(private = "file")
@@ -481,42 +517,54 @@ weakset_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return coll_construct(vm, this, args, .Weak_Set)
 }
 
-// get_member de ^Collection consulta este mapa (após tratar "size").
+// Each prototype owns functions with its own brand. The flat method registry
+// roots the functions and identifies native methods of builtin subclasses.
 install_collections :: proc(vm: ^Interp) {
     vm.iter_next_fn = mk_native(vm, iter_next)
     vm.iter_next_fn.name = "next"
     vm.collection_methods = make(map[string]^Function)
-    m := &vm.collection_methods
-    m["set"]     = mk_native(vm, map_set)
-    m["get"]     = mk_native(vm, coll_get)
-    m["add"]     = mk_native(vm, set_add)
-    m["has"]     = mk_native(vm, coll_has)
-    m["delete"]  = mk_native(vm, coll_delete)
-    m["clear"]   = mk_native(vm, coll_clear)
-    m["forEach"] = mk_native(vm, coll_for_each)
-    m["keys"]    = mk_native(vm, coll_keys)
-    m["values"]  = mk_native(vm, coll_values)
-    m["entries"] = mk_native(vm, coll_entries)
     install_set_operations(vm)
-    // [Symbol.iterator]: Map/WeakMap → entries; Set/WeakSet → values (default do JS).
-    // Exposto p/ `coll[Symbol.iterator]()` explícito (getIterator do core-js), não só for-of.
-    if vm.sym_iterator_key != "" do m[vm.sym_iterator_key] = mk_native(vm, coll_iterator)
-
-    // o nome é usado pelo `instanceof` p/ casar a coleção com seu construtor.
-    // Cada ctor ganha um `.prototype` REAL populado com os métodos de coleção:
-    // construtores nativos (o.native != nil) NÃO recebem o auto-proto de get_member,
-    // então `Map.prototype` era undefined e o core-js estourava em
-    // `Map.prototype.forEach` ("reading 'forEach' of undefined"). O dispatch normal
-    // (`map.forEach()`) continua indo direto no collection_methods (get_member de
-    // ^Collection); este proto é p/ o probe/uncurryThis do core-js e `instanceof`.
     reg :: proc(vm: ^Interp, name: string, fn: Native_Fn, kind: Coll_Kind) {
         f := mk_native(vm, fn)
         f.name = name
         proto := new_object(vm)
         proto.proto = vm.object_proto
-        for k, mf in vm.collection_methods {
-            if name != "Set" && set_operation_name(k) do continue
-            proto.props[k] = mf
+        method :: proc(vm: ^Interp, proto: ^Object, owner: string, kind: Coll_Kind, op: Coll_Method, name: string, arity: int) {
+            f := mk_builtin_method(vm, coll_method_dispatch, name, arity)
+            f.bound = f64(int(kind)*COLL_METHOD_STRIDE + int(op))
+            key := own_str(vm, strings.concatenate({owner, ".", name}, context.temp_allocator)).(string)
+            vm.collection_methods[key] = f
+            if op == .Size {
+                if proto.getters == nil do proto.getters = make(map[string]^Function)
+                proto.getters["size"] = f
+            } else {
+                proto.props[name] = f
+            }
+            mark_non_enumerable(proto, "size" if op == .Size else name)
+        }
+        method(vm, proto, name, kind, .Has, "has", 1)
+        method(vm, proto, name, kind, .Delete, "delete", 1)
+        if kind == .Map || kind == .Weak_Map {
+            method(vm, proto, name, kind, .Set, "set", 2)
+            method(vm, proto, name, kind, .Get, "get", 1)
+        } else {
+            method(vm, proto, name, kind, .Add, "add", 1)
+        }
+        if kind == .Map || kind == .Set {
+            method(vm, proto, name, kind, .Clear, "clear", 0)
+            method(vm, proto, name, kind, .For_Each, "forEach", 1)
+            method(vm, proto, name, kind, .Values, "values", 0)
+            method(vm, proto, name, kind, .Entries, "entries", 0)
+            method(vm, proto, name, kind, .Size, "get size", 0)
+            if kind == .Map {
+                method(vm, proto, name, kind, .Keys, "keys", 0)
+                proto.props[vm.sym_iterator_key] = proto.props["entries"]
+            } else {
+                proto.props["keys"] = proto.props["values"]
+                mark_non_enumerable(proto, "keys")
+                proto.props[vm.sym_iterator_key] = proto.props["values"]
+                for k, f in vm.collection_methods do if set_operation_name(k) do proto.props[k] = f
+            }
         }
         proto.props["constructor"] = f
         if f.props == nil do f.props = make(map[string]Value)
