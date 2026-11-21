@@ -264,9 +264,10 @@ obj_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // era a MESMA lista de tipos escrita duas vezes, e a cópia de lá tinha ficado só no
 // `^Object` (M220).
 own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string, all: bool = false) {
+    if p := proxy_state(v); p != nil { proxy_keys(vm, p, out, all); return }
     #partial switch x in v {
     case ^Object:
-        own_enum_keys(x, out)
+        own_string_keys(vm, x, out, all)
     case ^Function:
         // `prototype`/`name`/`length` são próprias mas NÃO-enumeráveis (spec) —
         // só as que o autor pôs devem aparecer. ⚠️ isso esconde um `f.length = 5`
@@ -573,6 +574,15 @@ obj_get_own_property_descriptors :: proc(vm: ^Interp, this: Value, args: []Value
 @(private = "file")
 obj_get_own_property_symbols :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_array(vm)
+    if p := proxy_state(arg(args, 0)); p != nil {
+        keys: [dynamic]string
+        defer delete(keys)
+        proxy_keys(vm, p, &keys, true)
+        for k in keys {
+            if sym, ok := vm.symbol_keys[k]; ok do append(&out.items, sym)
+        }
+        return out
+    }
     o, ok := arg(args, 0).(^Object)
     if !ok || vm.symbol_keys == nil do return out
     seen: map[string]bool
@@ -780,6 +790,13 @@ obj_define_properties :: proc(vm: ^Interp, this: Value, args: []Value) -> Value 
 // Object.getOwnPropertyDescriptor(obj, key) — descritor ou undefined (nil).
 // package-visible: Reflect.getOwnPropertyDescriptor (proxy.odin) delega aqui.
 obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if p := proxy_state(arg(args, 0)); p != nil {
+        if trap, ok := proxy_trap(vm, p, "getOwnPropertyDescriptor"); ok {
+            return call_function(vm, trap, p.px_handler, []Value{p.px_target, arg(args, 1)})
+        }
+        if vm.throwing do return nil
+        return obj_get_own_property_descriptor(vm, nil, []Value{p.px_target, arg(args, 1)})
+    }
     if fn, fok := arg(args, 0).(^Function); fok {
         key := key_string(vm, arg(args, 1))
         _, data := fn.props[key]; _, getter := fn.getters[key]; _, setter := fn.setters[key]
@@ -875,6 +892,15 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
 @(private = "file")
 obj_get_own_property_names :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_array(vm)
+    if p := proxy_state(arg(args, 0)); p != nil {
+        keys: [dynamic]string
+        defer delete(keys)
+        proxy_keys(vm, p, &keys, true)
+        for k in keys {
+            if !is_non_enumerable_key(k) do append(&out.items, own_str(vm, k))
+        }
+        return out
+    }
     seen: map[string]bool
     defer delete(seen)
     #partial switch o in arg(args, 0) {
@@ -883,7 +909,7 @@ obj_get_own_property_names :: proc(vm: ^Interp, this: Value, args: []Value) -> V
         // ordem nenhuma, e esquecia chave que só tem setter
         keys: [dynamic]string
         defer delete(keys)
-        own_string_keys(o, &keys, true)
+        own_string_keys(vm, o, &keys, true)
         for k in keys do if !seen[k] { seen[k] = true; append(&out.items, k) }
     case ^Function:
         // aqui as NÃO-enumeráveis contam (é o propósito desta função), então

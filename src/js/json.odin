@@ -202,7 +202,7 @@ json_object :: proc(st: ^Json_Out, x: Value, depth: int) {
     if st.has_plist {
         for k in st.plist do append(&keys, k)
     } else if o, isobj := x.(^Object); isobj {
-        own_enum_keys(o, &keys)
+        own_enum_keys(vm, o, &keys)
     } else {
         own_keys_any(vm, x, &keys)
     }
@@ -319,7 +319,7 @@ json_revive :: proc(vm: ^Interp, key: string, val: Value, fn: ^Function) -> Valu
     case ^Object:
         keys: [dynamic]string
         defer delete(keys)
-        own_enum_keys(o, &keys)
+        own_enum_keys(vm, o, &keys)
         for k in keys {
             pv, has := o.props[k]
             if !has do continue

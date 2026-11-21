@@ -59,8 +59,10 @@ Object :: struct {
     set:    Prop_Set,  // hook opcional de escrita
     geti:   Prop_Get_Idx, // hook opcional de leitura por índice inteiro (atalho do `get`)
     gen:    ^Generator, // != nil se este objeto é uma INSTÂNCIA de generator (generator.odin)
+    px_revoked: bool,
+    px_self: Value,
     px_target:  Value,   // Proxy: o alvo envolvido (nil se não é proxy — ver px_handler)
-    px_handler: ^Object, // Proxy: o handler com os traps (get/set/has/...). != nil ⇒ este Object É um proxy
+    px_handler: Value, // Proxy: o handler com os traps (get/set/has/...). != nil ⇒ este Object É um proxy
     ab:      ^Array_Buffer, // ArrayBuffer/TypedArray/DataView: buffer de bytes compartilhado (nil senão)
     ta_kind: TA_Kind,      // TypedArray: tipo do elemento; .None p/ ArrayBuffer; .DataView p/ DataView (typedarray.odin)
     ta_off:  int,          // TypedArray/DataView: offset em bytes dentro de ab.data
@@ -274,6 +276,7 @@ Function :: struct {
     getters:  map[string]^Function, // getters STATIC de classe (static get x(){}); nil até ter algum
     setters:  map[string]^Function, // setters STATIC de classe (static set x(v){})
     // ── Function.prototype.bind ──
+    proxy: ^Object, // callable proxy state; shared with its revoker
     bind_target: ^Function,   // se != nil, esta é uma função LIGADA de bind_target
     bind_this:   Value,       // `this` fixado pelo bind
     bind_args:   [dynamic]Value, // args pré-fixados (prepended nas chamadas)
@@ -1948,6 +1951,7 @@ private_in :: proc(key: string, r: Value) -> bool {
 
 js_in :: proc(vm: ^Interp, l, r: Value) -> bool {
     key := key_string(vm, l)
+    if p := proxy_state(r); p != nil do return proxy_has(vm, p, key)
     #partial switch o in r {
     case ^Object:
         if o.px_handler != nil do return proxy_has(vm, o, key) // trap `has` (ou default no alvo)
@@ -2129,18 +2133,14 @@ is_index_key :: proc(k: string) -> bool {
 // Chaves próprias enumeráveis na ordem da spec (OrdinaryOwnPropertyKeys):
 // índices inteiros em ordem numérica crescente, depois as demais strings na
 // ordem de inserção (korder), depois sobras de escritas nativas diretas.
-own_enum_keys :: proc(o: ^Object, out: ^[dynamic]string) {
-    own_string_keys(o, out, false)
+own_enum_keys :: proc(vm: ^Interp, o: ^Object, out: ^[dynamic]string) {
+    own_string_keys(vm, o, out, false)
 }
 
 // Mesma ordem, com `all` = inclui as NÃO-enumeráveis (Object.getOwnPropertyNames).
-own_string_keys :: proc(o: ^Object, out: ^[dynamic]string, all: bool) {
-    // Proxy: enumera as chaves do ALVO (aproximação do trap ownKeys — devolve o
-    // conjunto certo p/ Object.keys/for-in; os VALORES ainda passam pelo trap get
-    // porque obj_values/for-in leem via get_member(proxy,k)). O efeito colateral
-    // de rastreio do ownKeys do Vue é pulado — ok p/ a 1ª renderização.
+own_string_keys :: proc(vm: ^Interp, o: ^Object, out: ^[dynamic]string, all: bool) {
     if o.px_handler != nil {
-        if t, ok := o.px_target.(^Object); ok do own_string_keys(t, out, all)
+        proxy_keys(vm, o, out, all)
         return
     }
     if o.get == storage_get { // localStorage/sessionStorage: só as chaves armazenadas, em ordem
@@ -2284,6 +2284,7 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
             obj == nil ? "undefined" : "null", name))
         return nil
     }
+    if p := proxy_state(obj); p != nil { v, _ := proxy_get(vm, p, name); return v }
     #partial switch o in obj {
     case ^Object:
         if o.get != nil {
@@ -2532,6 +2533,7 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
             obj == nil ? "undefined" : "null", name))
         return true // já lançou: o chamador não deve lançar de novo
     }
+    if p := proxy_state(obj); p != nil { proxy_set(vm, p, name, val); return true }
     #partial switch o in obj {
     case ^Object:
         if o.set != nil {
@@ -3128,7 +3130,7 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
                 if src, ok := val.(^Object); ok {
                     keys: [dynamic]string
                     defer delete(keys)
-                    own_enum_keys(src, &keys)
+                    own_enum_keys(vm, src, &keys)
                     for k in keys {
                         if !pattern_has_key(pat, k) && !computed_consumed[k] do oput(rest, k, get_member(vm, src, k))
                     }
@@ -3462,9 +3464,9 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             // props não-enumeráveis via defineProperty não aparecem)
             keys: [dynamic]string
             defer delete(keys)
-            own_enum_keys(o, &keys)
+            own_enum_keys(vm, o, &keys)
             for k in keys do append(&values, own_str(vm, k))
-        case ^Array:
+        case ^Array, ^Function:
             keys: [dynamic]string
             defer delete(keys)
             own_keys_any(vm, o, &keys)
@@ -3595,6 +3597,11 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             } else {
                 kv = eval(vm, t.right, env)
                 if vm.throwing do return nil
+            }
+            if p := proxy_state(obj); p != nil {
+                if t.kind == .Index do k = key_string(vm, kv)
+                proxy_delete(vm, p, k)
+                return true
             }
             ok := true
             #partial switch o in obj {
@@ -4755,6 +4762,7 @@ wrapper_value :: proc(v: Value) -> (Value, bool) {
 // new_target != nil só via Reflect.construct(alvo, args, newTarget): o corpo que
 // roda é o do `fn`, mas o prototype da instância e o `new.target` vêm do newTarget.
 construct_object :: proc(vm: ^Interp, fn: ^Function, args: []Value, new_target: ^Function = nil) -> Value {
+    if fn.proxy != nil do return proxy_construct(vm, fn.proxy, args, new_target)
     // `new (f.bind(t, a))(b)` = `new f(a, b)` (spec §10.4.1.2): prototype, campos de
     // classe e new.target vêm do ALVO; o boundThis é ignorado.
     if fn.bind_target != nil {
@@ -5358,6 +5366,7 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
 // escopo filho do CLOSURE (não do chamador), liga params + `this`, roda o corpo.
 call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) -> Value {
     if fn == nil do return nil
+    if fn.proxy != nil do return proxy_apply(vm, fn.proxy, this, args)
     when JSPROF { g_prof.chamadas += 1; if fn.native != nil do g_prof.chamadas_nat += 1 }
     // async function (não-generator): roda como CORROTINA — cada await suspende.
     // O corpo é iniciado por run_generator_body; toda chamada JS, inclusive

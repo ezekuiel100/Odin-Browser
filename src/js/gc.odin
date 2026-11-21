@@ -60,6 +60,7 @@ gc_drain :: proc(gp: ^GC_State) {
             gc_push(&g, x.gen)
             gc_push(&g, x.px_target)
             gc_push(&g, x.px_handler)
+            gc_push(&g, x.px_self)
             gc_push(&g, x.ab)
             gc_push(&g, x.prim)
         case ^Array:
@@ -89,6 +90,7 @@ gc_drain :: proc(gp: ^GC_State) {
             for _, v in x.setters {
                 gc_push(&g, v)
             }
+            gc_push(&g, x.proxy)
             gc_push(&g, x.bind_target)
             gc_push(&g, x.bind_this)
             for v in x.bind_args {

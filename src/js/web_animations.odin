@@ -87,11 +87,11 @@ anim_apply_end :: proc(vm: ^Interp, anim: ^Object) {
         frame, fok := kf.items[first ? 0 : len(kf.items) - 1].(^Object)
         if !fok do return
         ks := make([dynamic]string, context.temp_allocator)
-        own_enum_keys(frame, &ks)
+        own_enum_keys(vm, frame, &ks)
         for k in ks do put(vm, style, k, frame.props[k])
     case ^Object:
         ks := make([dynamic]string, context.temp_allocator)
-        own_enum_keys(kf, &ks)
+        own_enum_keys(vm, kf, &ks)
         for k in ks {
             v := kf.props[k]
             if arr, aok := v.(^Array); aok {

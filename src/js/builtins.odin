@@ -2801,7 +2801,7 @@ structured_clone_val :: proc(vm: ^Interp, v: Value, memo: ^map[rawptr]Value) -> 
         no := new_object(vm) // objeto simples: props próprias enumeráveis, em ordem
         memo[rawptr(x)] = no
         keys := make([dynamic]string, context.temp_allocator)
-        own_enum_keys(x, &keys)
+        own_enum_keys(vm, x, &keys)
         for k in keys {
             pv := get_member(vm, x, k) // invoca getters (spec-ish: lê via Get)
             if vm.throwing do return nil

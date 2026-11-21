@@ -181,12 +181,12 @@ headers_fill :: proc(vm: ^Interp, h: ^Object, init: Value) {
     case ^Object:
         if inner, ok := src.props["_h"].(^Object); ok { // outro Headers
             keys: [dynamic]string; defer delete(keys)
-            own_enum_keys(inner, &keys)
+            own_enum_keys(vm, inner, &keys)
             for k in keys do oput(h, k, get_member(vm, inner, k))
             return
         }
         keys: [dynamic]string; defer delete(keys)
-        own_enum_keys(src, &keys)
+        own_enum_keys(vm, src, &keys)
         for k in keys do oput(h, strings.to_lower(k, context.temp_allocator), web_str(vm, get_member(vm, src, k)))
     case ^Array:
         for it in src.items {
@@ -255,7 +255,7 @@ headers_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     cb, ok := arg(args, 0).(^Function); if !ok do return nil
     h := headers_store(vm, this)
     keys: [dynamic]string; defer delete(keys)
-    own_enum_keys(h, &keys)
+    own_enum_keys(vm, h, &keys)
     for k in keys {
         call_function(vm, cb, nil, []Value{h.props[k], own_str(vm, k), this}) // cb(value, name, headers)
         if vm.throwing do break
@@ -268,7 +268,7 @@ headers_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 headers_entries :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     h := headers_store(vm, this)
     keys: [dynamic]string; defer delete(keys)
-    own_enum_keys(h, &keys)
+    own_enum_keys(vm, h, &keys)
     out := new_array(vm)
     for k in keys {
         pair := new_array(vm)
@@ -282,7 +282,7 @@ headers_entries :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 headers_keys :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     h := headers_store(vm, this)
     keys: [dynamic]string; defer delete(keys)
-    own_enum_keys(h, &keys)
+    own_enum_keys(vm, h, &keys)
     out := new_array(vm)
     for k in keys do append(&out.items, own_str(vm, k))
     return make_array_iterator(vm, out)
@@ -292,7 +292,7 @@ headers_keys :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 headers_values :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     h := headers_store(vm, this)
     keys: [dynamic]string; defer delete(keys)
-    own_enum_keys(h, &keys)
+    own_enum_keys(vm, h, &keys)
     out := new_array(vm)
     for k in keys do append(&out.items, h.props[k])
     return make_array_iterator(vm, out)
@@ -419,7 +419,7 @@ usp_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         usp_parse_query(vm, a, init)
     case ^Object:
         keys: [dynamic]string; defer delete(keys)
-        own_enum_keys(init, &keys)
+        own_enum_keys(vm, init, &keys)
         for k in keys do usp_push(vm, a, own_str(vm, k), web_str(vm, get_member(vm, init, k)))
     }
     return o
