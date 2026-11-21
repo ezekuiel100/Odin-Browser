@@ -109,6 +109,7 @@ Scope :: struct {
     is_catch: bool, // parâmetro de catch simples: Annex B permite `var e` dentro
     lexical:  map[string]u8, // 1 = let/const/class, 2 = function em bloco, 3 = param de catch
     vars:     map[string]bool,
+    annex_functions: [dynamic]^Node, // descendant candidates checked after all declarations
     params:   map[string]bool, // só no escopo de função: nomes de parâmetro
 }
 
@@ -513,6 +514,13 @@ push_scope :: proc(p: ^Parser, is_fn: bool) -> ^Scope {
 
 @(private = "file")
 pop_scope :: proc(p: ^Parser, s: ^Scope) {
+    // Later lexical declarations must also suppress the synthetic var.
+    for n in s.annex_functions {
+        if kind, conflict := s.lexical[n.name]; (conflict && kind != 2 && kind != 3) || (s.is_fn && (s.params[n.name] || (n.name == "arguments" && s.parent != nil))) {
+            n.annex_b = false
+        }
+    }
+    delete(s.annex_functions)
     p.ctx.scope = s.parent
     delete(s.lexical)
     delete(s.vars)
@@ -589,7 +597,8 @@ declare_pattern :: proc(p: ^Parser, pat: ^Node, is_var: bool, kind: u8 = 1) {
 // Declaração de função no ponto corrente: no topo de função/script é como `var`;
 // dentro de bloco é LÉXICA (kind 2 = sloppy simples, que o Annex B deixa repetir).
 @(private = "file")
-declare_function :: proc(p: ^Parser, name: string, simple: bool) {
+declare_function :: proc(p: ^Parser, n: ^Node, simple: bool) {
+    name := n.name
     if name == "" do return
     s := p.ctx.scope
     if p.is_module && s != nil && s.parent == nil && !p.ctx.in_function {
@@ -605,6 +614,13 @@ declare_function :: proc(p: ^Parser, name: string, simple: bool) {
         return
     }
     declare_lexical(p, name, 2 if simple else 1)
+    if simple && !p.ctx.strict && s != nil {
+        n.annex_b = true
+        for outer := s.parent; outer != nil; outer = outer.parent {
+            append(&outer.annex_functions, n)
+            if outer.is_fn do break
+        }
+    }
 }
 
 // ── statements ────────────────────────────────────────────────────────────────
@@ -653,7 +669,10 @@ parse_sub_statement :: proc(p: ^Parser, is_if_body := false) -> ^Node {
             // o `function` do corpo de if (Annex B) ganha um bloco implícito próprio
             sc := push_scope(p, false)
             defer pop_scope(p, sc)
-            return parse_statement(p)
+            block := new(Node)
+            block.kind = .Block
+            append(&block.body, parse_statement(p))
+            return block
         case "async":
             if nx.kind == .Ident && nx.text == "function" && !nx.nl_before {
                 syntax_error(p, "Async functions can only be declared at the top level or inside a block.")
@@ -1232,7 +1251,7 @@ parse_function :: proc(p: ^Parser, is_decl := false, is_async := false, anon_ok 
     } else if is_decl && !anon_ok {
         syntax_error(p, "Function statements require a function name")
     }
-    if is_decl do declare_function(p, n.name, !n.is_generator && !is_async)
+    if is_decl do declare_function(p, n, !n.is_generator && !is_async)
     saved_args := fn_args_enter(p)
     saved := enter_fn(p, .Normal, is_async, n.is_generator)
     // nome de EXPRESSÃO: julgado no contexto da própria função (`function* yield(){}`)

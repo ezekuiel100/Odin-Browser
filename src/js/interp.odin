@@ -836,7 +836,9 @@ subtree_has_func :: proc(n: ^Node) -> bool {
 // içadas), evitando recriar a função. Declaração posterior de mesmo nome vence.
 @(private = "file")
 hoist_functions :: proc(vm: ^Interp, stmts: []^Node, env: ^Env) {
-    for s in stmts {
+    for statement in stmts {
+        s := statement
+        for s.kind == .Labeled do s = s.left
         if s.kind == .Func && s.name != "" {
             eval(vm, s, env) // cria a ^Function e a define em env
         }
@@ -853,7 +855,20 @@ hoist_functions :: proc(vm: ^Interp, stmts: []^Node, env: ^Env) {
 // pula para não recriar a mesma função ao alcançar a linha.
 @(private = "file")
 is_hoisted_func :: proc(s: ^Node) -> bool {
-    return s.kind == .Func && s.name != ""
+    n := s
+    for n.kind == .Labeled do n = n.left
+    return n.kind == .Func && n.name != ""
+}
+
+// Copy the current block binding only when execution reaches the declaration.
+@(private = "file")
+execute_hoisted_func :: proc(vm: ^Interp, s: ^Node, env: ^Env) {
+    n := s
+    for n.kind == .Labeled do n = n.left
+    if n.annex_b {
+        target := fn_scope_env(env)
+        env_assign(vm, target, n.name, env.vars[n.name])
+    }
 }
 
 // ── Hoisting de `var` (function-scoped) ──────────────────────────────────────
@@ -890,6 +905,7 @@ hoist_vars :: proc(node: ^Node, env: ^Env) {
     if node == nil do return
     #partial switch node.kind {
     case .Func:
+        if node.annex_b do hoist_declare(env, node.name)
         return // função aninhada: escopo próprio, não desce
     case .VarDecl:
         if node.aux { // só var; let/const são block-scoped
@@ -4148,7 +4164,10 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         hoist_functions(vm, n.body[:], child)
         result: Value = nil // valor de conclusão (o eval() do topo o usa)
         for s in n.body {
-            if is_hoisted_func(s) do continue // já içada
+            if is_hoisted_func(s) {
+                execute_hoisted_func(vm, s, child)
+                continue
+            }
             result = eval(vm, s, child)
             if vm.returning || vm.breaking || vm.continuing || vm.throwing do break
         }
@@ -4196,6 +4215,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         my_label := vm.pending_label; vm.pending_label = ""
         d := eval(vm, n.left, env)
         senv := new_env(vm, env)
+        for c in n.body do hoist_functions(vm, c.body[:], senv)
         matched := false
         // 1ª fase: procura um case que case (===); uma vez casado, executa TUDO
         // dali em diante (fallthrough) até um break
@@ -4206,7 +4226,8 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 matched = true
             }
             for s in c.body {
-                eval(vm, s, senv)
+                if is_hoisted_func(s) do execute_hoisted_func(vm, s, senv)
+                else do eval(vm, s, senv)
                 if vm.breaking { loop_take_break(vm, my_label); break exec } // break do switch (ou `break label`); label externo propaga
                 if vm.returning || vm.throwing || vm.continuing do break exec
             }
@@ -4220,7 +4241,8 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                     in_default = true
                 }
                 for s in c.body {
-                    eval(vm, s, senv)
+                    if is_hoisted_func(s) do execute_hoisted_func(vm, s, senv)
+                    else do eval(vm, s, senv)
                     if vm.breaking { loop_take_break(vm, my_label); break exec2 }
                     if vm.returning || vm.throwing || vm.continuing do break exec2
                 }
