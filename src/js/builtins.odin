@@ -2331,6 +2331,92 @@ global_atob :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 @(private = "file") math_atan   :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return math.atan(as_number(arg(a, 0))) }
 @(private = "file") math_atan2  :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return math.atan2(as_number(arg(a, 0)), as_number(arg(a, 1))) }
 
+// exp(x)-1 perde os digitos significativos perto de zero. A serie neste
+// intervalo converge antes de 18 termos, sem subtrair numeros quase iguais.
+@(private = "file")
+math_expm1_number :: proc(x: f64) -> f64 {
+    if x == 0 do return x // preserva -0
+    if abs(x) >= 0.5 || math.is_nan(x) do return math.exp(x) - 1
+    term, sum := x, x
+    for n := 2; n <= 18; n += 1 {
+        term *= x / f64(n)
+        sum += term
+    }
+    return sum
+}
+
+@(private = "file")
+math_expm1 :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    return math_expm1_number(x)
+}
+
+@(private = "file")
+math_log1p :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    return math.log1p(x)
+}
+
+@(private = "file")
+math_cosh :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    // exp(x) pode transbordar antes de cosh(x); exp(x/2) ainda cabe.
+    e := math.exp(abs(x) * 0.5)
+    return (0.5 * e) * e + (0.5 / e) / e
+}
+
+@(private = "file")
+math_sinh :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    if x == 0 do return x
+    z := abs(x)
+    if z < 1 {
+        t := math_expm1_number(z)
+        return math.copy_sign(0.5 * (t + t / (t + 1)), x)
+    }
+    e := math.exp(z * 0.5)
+    return math.copy_sign((0.5 * e) * e - (0.5 / e) / e, x)
+}
+
+@(private = "file")
+math_tanh :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    return math.tanh(x)
+}
+
+@(private = "file")
+math_acosh :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    return math.acosh(x)
+}
+
+@(private = "file")
+math_asinh :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    return math.asinh(x)
+}
+
+@(private = "file")
+math_atanh :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    return math.atanh(x)
+}
+
+@(private = "file")
+math_fround :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    x := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
+    return f64(f32(x)) // IEEE 754 binary32, empate para o par
+}
+
 // Math.clz32(x): número de zeros à esquerda em ToUint32(x) (0 → 32). CRÍTICO:
 // o scheduler do React usa isto p/ escolher a "lane" de prioridade — sem ele o
 // laço de lanes nunca converge (loop infinito).
@@ -2930,6 +3016,15 @@ install_builtins :: proc(vm: ^Interp) {
     m.props["acos"]   = mk_native(vm, math_acos)
     m.props["atan"]   = mk_native(vm, math_atan)
     m.props["atan2"]  = mk_native(vm, math_atan2)
+    m.props["cosh"]   = mk_native(vm, math_cosh)
+    m.props["sinh"]   = mk_native(vm, math_sinh)
+    m.props["tanh"]   = mk_native(vm, math_tanh)
+    m.props["acosh"]  = mk_native(vm, math_acosh)
+    m.props["asinh"]  = mk_native(vm, math_asinh)
+    m.props["atanh"]  = mk_native(vm, math_atanh)
+    m.props["expm1"]  = mk_native(vm, math_expm1)
+    m.props["log1p"]  = mk_native(vm, math_log1p)
+    m.props["fround"] = mk_native(vm, math_fround)
     m.props["PI"]     = f64(math.PI)
     m.props["E"]      = f64(math.E)
     m.props["LN2"]    = f64(math.LN2)
