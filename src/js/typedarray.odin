@@ -73,7 +73,7 @@ wr_u64 :: proc(d: []u8, o: int, v: u64) {
 @(private = "file")
 to_u32 :: proc(v: f64) -> u32 {
     if v != v do return 0
-    if v > 1e300 || v < -1e300 do return 0 // ±Inf e enormes
+    if v == math.inf_f64(1) || v == math.inf_f64(-1) do return 0
     t := math.trunc(v)
     m := math.mod(t, 4294967296.0)
     if m < 0 do m += 4294967296.0
@@ -85,11 +85,14 @@ to_u8_clamped :: proc(v: f64) -> u8 {
     if v != v do return 0 // NaN
     if v <= 0 do return 0
     if v >= 255 do return 255
-    return u8(math.round(v)) // spec arredonda p/ par; round comum é boa aproximação
+    f := math.floor(v)
+    if v > f + 0.5 || (v == f + 0.5 && int(f) % 2 != 0) do f += 1
+    return u8(f)
 }
 
 // lê o elemento i como f64.
 ta_read :: proc(o: ^Object, i: int) -> f64 {
+    if o.ab.detached || i < 0 || i >= o.ta_len do return math.nan_f64()
     d := o.ab.data[:]
     off := o.ta_off + i * ta_bpe(o.ta_kind)
     #partial switch o.ta_kind {
@@ -107,6 +110,7 @@ ta_read :: proc(o: ^Object, i: int) -> f64 {
 
 // escreve v (já ToNumber) no elemento i, com a semântica do tipo.
 ta_write :: proc(o: ^Object, i: int, v: f64) {
+    if o.ab.detached || i < 0 || i >= o.ta_len do return
     d := o.ab.data[:]
     off := o.ta_off + i * ta_bpe(o.ta_kind)
     #partial switch o.ta_kind {
@@ -139,6 +143,10 @@ parse_ta_index :: proc(name: string) -> (int, bool) {
 // ── hooks de índice ──────────────────────────────────────────────────────────
 
 typedarray_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
+    if o.ab.detached {
+        if name == "length" || name == "byteLength" || name == "byteOffset" do return f64(0), true
+        if _, ok := parse_ta_index(name); ok do return nil, true
+    }
     if i, ok := parse_ta_index(name); ok {
         if i >= 0 && i < o.ta_len do return ta_read(o, i), true
         return nil, true // fora do range → undefined (mas "handled": não é prop)
@@ -148,7 +156,8 @@ typedarray_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
 
 typedarray_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> bool {
     if i, ok := parse_ta_index(name); ok {
-        if i >= 0 && i < o.ta_len do ta_write(o, i, as_number(val))
+        n := ta_number(vm, val)
+        if !vm.throwing && i >= 0 && i < o.ta_len do ta_write(o, i, n)
         return true // dentro ou fora do range: TypedArray nunca cria prop numérica
     }
     return false
@@ -194,48 +203,159 @@ make_view :: proc(vm: ^Interp, kind: TA_Kind, ab: ^Array_Buffer, buf_obj: ^Objec
     return o
 }
 
-// new <Kind>Array(len | array | typedarray | buffer[, off, len])
+// Coerce before accessing backing storage; numeric TypedArrays reject BigInt.
+@(private = "file")
+ta_number :: proc(vm: ^Interp, value: Value) -> f64 {
+    v := to_primitive(vm, value, true)
+    if vm.throwing do return math.nan_f64()
+    #partial switch _ in v {
+    case ^Symbol, ^BigInt:
+        throw_type_error(vm, "Cannot convert value to a TypedArray number")
+        return math.nan_f64()
+    }
+    return as_number(v)
+}
+
+@(private = "file")
+ta_range_error :: proc(vm: ^Interp) {
+    vm.thrown = mk_error(vm, "RangeError", "TypedArray offset or length is out of bounds")
+    vm.throwing = true
+}
+
+@(private = "file")
+ta_integer :: proc(vm: ^Interp, v: Value) -> f64 {
+    n := ta_number(vm, v)
+    if n != n || n == 0 do return 0
+    return math.trunc(n)
+}
+
+@(private = "file")
+ta_index :: proc(vm: ^Interp, v: Value) -> int {
+    n := ta_integer(vm, v)
+    if vm.throwing do return 0
+    if n < 0 || n > 9007199254740991.0 {
+        ta_range_error(vm)
+        return 0
+    }
+    return int(n)
+}
+
+@(private = "file")
+ta_length :: proc(vm: ^Interp, src: Value) -> int {
+    v := get_member(vm, src, "length")
+    if vm.throwing do return 0
+    n := ta_integer(vm, v)
+    if vm.throwing || n <= 0 do return 0
+    return int(min(n, 9007199254740991.0))
+}
+
+@(private = "file")
+ta_allocate :: proc(vm: ^Interp, kind: TA_Kind, length: int) -> ^Object {
+    // Backing-store implementation limit: check before multiplication/allocation.
+    if length > 2147483647 / ta_bpe(kind) {
+        ta_range_error(vm)
+        return nil
+    }
+    ab := new_buffer(vm, length * ta_bpe(kind))
+    return make_view(vm, kind, ab, wrap_buffer(vm, ab), 0, length)
+}
+
+// GetMethod(@@iterator) and IterableToList, including observable getters.
+@(private = "file")
+ta_iterable_list :: proc(vm: ^Interp, src: Value, items: ^[dynamic]Value) -> bool {
+    method := get_member(vm, src, vm.sym_iterator_key)
+    if vm.throwing do return true
+    if is_nullish(method) do return false
+    fn, ok := method.(^Function)
+    if !ok { throw_type_error(vm, "Symbol.iterator is not callable"); return true }
+    iter := call_function(vm, fn, src, nil)
+    if vm.throwing do return true
+    if is_primitive(iter) { throw_type_error(vm, "Iterator is not an object"); return true }
+    next := get_member(vm, iter, "next")
+    if vm.throwing do return true
+    next_fn, callable := next.(^Function)
+    if !callable { throw_type_error(vm, "Iterator next is not callable"); return true }
+    for {
+        if step_guard(vm) do return true
+        step := call_function(vm, next_fn, iter, nil)
+        if vm.throwing do return true
+        if is_primitive(step) { throw_type_error(vm, "Iterator result is not an object"); return true }
+        done := get_member(vm, step, "done")
+        if vm.throwing || truthy(done) do return true
+        value := get_member(vm, step, "value")
+        if vm.throwing do return true
+        append(items, value)
+    }
+}
+
+// new <Kind>Array(length | iterable | array-like | buffer[, offset, length])
 make_typed_array :: proc(vm: ^Interp, kind: TA_Kind, args: []Value) -> Value {
     bpe := ta_bpe(kind)
-    a0 := arg(args, 0)
-    #partial switch src in a0 {
-    case f64: // comprimento
-        length := int(src); if length < 0 do length = 0
-        ab := new_buffer(vm, length * bpe)
-        return make_view(vm, kind, ab, wrap_buffer(vm, ab), 0, length)
-    case ^Array: // copia de um Array JS
-        length := len(src.items)
-        ab := new_buffer(vm, length * bpe)
-        vo := make_view(vm, kind, ab, wrap_buffer(vm, ab), 0, length)
-        for it, i in src.items do ta_write(vo, i, as_number(it))
-        return vo
-    case ^Object:
-        if src.ab != nil && src.ta_kind == .None { // é um ArrayBuffer → VIEW compartilhada
-            byte_off := 0
-            if len(args) >= 2 do byte_off = int(as_number(args[1]))
-            length := (len(src.ab.data) - byte_off) / bpe
-            if len(args) >= 3 do length = int(as_number(args[2]))
-            if length < 0 do length = 0
-            return make_view(vm, kind, src.ab, src, byte_off, length)
-        }
-        if src.ab != nil && src.ta_kind != .None && src.ta_kind != .DataView { // copia de outra TypedArray
-            length := src.ta_len
-            ab := new_buffer(vm, length * bpe)
-            vo := make_view(vm, kind, ab, wrap_buffer(vm, ab), 0, length)
-            for i in 0 ..< length do ta_write(vo, i, ta_read(src, i))
-            return vo
-        }
-        // objeto array-like com .length
-        length := int(as_number(get_member(vm, src, "length")))
-        if length < 0 do length = 0
-        ab := new_buffer(vm, length * bpe)
-        vo := make_view(vm, kind, ab, wrap_buffer(vm, ab), 0, length)
-        for i in 0 ..< length do ta_write(vo, i, as_number(get_member(vm, src, int_key(vm, i))))
-        return vo
+    src := arg(args, 0)
+    if is_primitive(src) {
+        length := ta_index(vm, src)
+        if vm.throwing do return nil
+        return ta_allocate(vm, kind, length)
     }
-    // sem args → view vazia
-    ab := new_buffer(vm, 0)
-    return make_view(vm, kind, ab, wrap_buffer(vm, ab), 0, 0)
+    if o, ok := src.(^Object); ok && o.ab != nil {
+        if o.ta_kind == .None {
+            off := ta_index(vm, arg(args, 1))
+            if vm.throwing do return nil
+            if off % bpe != 0 { ta_range_error(vm); return nil }
+            length := 0
+            explicit_length := arg(args, 2) != nil
+            if explicit_length {
+                length = ta_index(vm, args[2])
+                if vm.throwing do return nil
+            }
+            if o.ab.detached { throw_type_error(vm, "ArrayBuffer is detached"); return nil }
+            byte_len := len(o.ab.data)
+            if off > byte_len { ta_range_error(vm); return nil }
+            if !explicit_length {
+                if byte_len % bpe != 0 { ta_range_error(vm); return nil }
+                length = (byte_len - off) / bpe
+            }
+            if length > (byte_len - off) / bpe { ta_range_error(vm); return nil }
+            return make_view(vm, kind, o.ab, o, off, length)
+        }
+        if o.ta_kind != .DataView {
+            if o.ab.detached { throw_type_error(vm, "ArrayBuffer is detached"); return nil }
+            out := ta_allocate(vm, kind, o.ta_len)
+            if vm.throwing do return nil
+            if kind == o.ta_kind {
+                copy(out.ab.data[:], o.ab.data[o.ta_off:o.ta_off + o.ta_len * bpe])
+            } else {
+                for i in 0 ..< o.ta_len do ta_write(out, i, ta_read(o, i))
+            }
+            return out
+        }
+    }
+    items: [dynamic]Value
+    defer delete(items)
+    if ta_iterable_list(vm, src, &items) {
+        if vm.throwing do return nil
+        out := ta_allocate(vm, kind, len(items))
+        if vm.throwing do return nil
+        for v, i in items {
+            n := ta_number(vm, v)
+            if vm.throwing do return nil
+            ta_write(out, i, n)
+        }
+        return out
+    }
+    if vm.throwing do return nil
+    length := ta_length(vm, src)
+    if vm.throwing do return nil
+    out := ta_allocate(vm, kind, length)
+    if vm.throwing do return nil
+    for i in 0 ..< length {
+        v := array_like_get(vm, src, i)
+        if vm.throwing do return nil
+        n := ta_number(vm, v)
+        if vm.throwing do return nil
+        ta_write(out, i, n)
+    }
+    return out
 }
 
 // chave-string de um índice (owned), p/ get_member(src, "3").
@@ -266,31 +386,53 @@ rel_index :: proc(v: Value, length: int, def: int) -> int {
 
 @(private = "file")
 ta_set_method :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    o, ok := this_ta(this); if !ok do return nil
-    off := 0
-    // ToInteger: NaN/undefined/objeto-sem-valueOf → 0 (não `int(NaN)`, que é UB em
-    // Odin e virava lixo negativo → RangeError espúrio em `set([x], {})`).
-    if len(args) >= 2 do off = as_int(args[1])
-    // offset negativo → RangeError (spec: SetTypedArrayFromArrayLike/…TypedArray,
-    // passo "If targetOffset < 0, throw a RangeError"). Sem isto, off+i vira um
-    // índice de byte NEGATIVO e o wr_u32 escreve fora do buffer (OOB / crash).
-    if off < 0 {
-        vm.thrown = mk_error(vm, "RangeError", "offset is out of bounds")
-        vm.throwing = true
+    o, ok := this_ta(this)
+    if !ok { throw_type_error(vm, "Receiver is not a TypedArray"); return nil }
+    offset := ta_integer(vm, arg(args, 1))
+    if vm.throwing do return nil
+    if offset < 0 { ta_range_error(vm); return nil }
+    if o.ab.detached { throw_type_error(vm, "ArrayBuffer is detached"); return nil }
+    src := arg(args, 0)
+    if s2, sok := this_ta(src); sok {
+        if s2.ab.detached { throw_type_error(vm, "ArrayBuffer is detached"); return nil }
+        if offset > f64(o.ta_len) || s2.ta_len > o.ta_len - int(offset) {
+            ta_range_error(vm); return nil
+        }
+        off := int(offset)
+        // Snapshot aliased views; identical element types preserve NaN payloads.
+        data := s2.ab.data[s2.ta_off:s2.ta_off + s2.ta_len * ta_bpe(s2.ta_kind)]
+        snapshot: []u8
+        if s2.ab == o.ab {
+            snapshot = make([]u8, len(data))
+            copy(snapshot, data)
+            data = snapshot
+        }
+        defer if snapshot != nil do delete(snapshot)
+        if s2.ta_kind == o.ta_kind {
+            start := o.ta_off + off * ta_bpe(o.ta_kind)
+            copy(o.ab.data[start:start + len(data)], data)
+        } else {
+            buffer := Array_Buffer{}
+            buffer.data = make([dynamic]u8)
+            defer delete(buffer.data)
+            append(&buffer.data, ..data)
+            view := Object{ab = &buffer, ta_kind = s2.ta_kind, ta_len = s2.ta_len}
+            for i in 0 ..< s2.ta_len do ta_write(o, off+i, ta_read(&view, i))
+        }
         return nil
     }
-    // guarda `off+i >= 0` também em cada escrita: defesa em profundidade (off é
-    // não-negativo aqui, mas mantém a invariante local óbvia p/ o ta_write).
-    #partial switch src in arg(args, 0) {
-    case ^Array:
-        for it, i in src.items do if off+i >= 0 && off+i < o.ta_len do ta_write(o, off+i, as_number(it))
-    case ^Object:
-        if s2, sok := this_ta(src); sok {
-            for i in 0 ..< s2.ta_len do if off+i >= 0 && off+i < o.ta_len do ta_write(o, off+i, ta_read(s2, i))
-        } else {
-            n := int(as_number(get_member(vm, src, "length")))
-            for i in 0 ..< n do if off+i >= 0 && off+i < o.ta_len do ta_write(o, off+i, as_number(get_member(vm, src, int_key(vm, i))))
-        }
+    if is_nullish(src) { throw_type_error(vm, "Cannot convert null or undefined to object"); return nil }
+    n := ta_length(vm, src)
+    if vm.throwing do return nil
+    // LengthOfArrayLike (including side effects) precedes the range check.
+    if offset > f64(o.ta_len) || n > o.ta_len - int(offset) { ta_range_error(vm); return nil }
+    off := int(offset)
+    for i in 0 ..< n {
+        v := array_like_get(vm, src, i)
+        if vm.throwing do return nil
+        value := ta_number(vm, v)
+        if vm.throwing do return nil
+        ta_write(o, off+i, value)
     }
     return nil
 }
@@ -331,8 +473,9 @@ ta_fill :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 @(private = "file")
 ta_require :: proc(vm: ^Interp, this: Value) -> (^Object, bool) {
     o, ok := this_ta(this)
-    if !ok do throw_type_error(vm, "Receiver is not a TypedArray")
-    return o, ok
+    if !ok { throw_type_error(vm, "Receiver is not a TypedArray"); return nil, false }
+    if o.ab.detached { throw_type_error(vm, "ArrayBuffer is detached"); return nil, false }
+    return o, true
 }
 
 @(private = "file")
@@ -794,8 +937,9 @@ ctor_kind_of :: proc(vm: ^Interp, ctor: Value) -> TA_Kind {
 
 @(private = "file")
 array_buffer_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    n := int(as_number(arg(args, 0)))
-    if n < 0 do n = 0
+    n := ta_index(vm, arg(args, 0))
+    if vm.throwing do return nil
+    if n > 2147483647 { ta_range_error(vm); return nil }
     return wrap_buffer(vm, new_buffer(vm, n))
 }
 
@@ -838,6 +982,7 @@ dataview_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // helpers de leitura DataView com endianness (le=true → little-endian).
 @(private = "file")
 dv_bytes :: proc(o: ^Object, byte_off, n: int) -> (int, bool) {
+    if o == nil || o.ab == nil || o.ab.detached do return 0, false
     base := o.ta_off + byte_off
     if byte_off < 0 || base + n > o.ta_off + o.ta_len do return 0, false
     return base, true

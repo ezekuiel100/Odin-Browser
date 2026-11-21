@@ -36,6 +36,9 @@ Js262_Result :: struct {
 run_js262 :: proc(sources: []string) -> Js262_Result {
     vm := vm_create()
     defer vm_free(vm)
+    host := new_object(vm)
+    host.props["detachArrayBuffer"] = mk_native(vm, js262_detach_buffer)
+    env_define(vm.global, "$262", host)
 
     failed_source := -1
     phase := "runtime"
@@ -61,6 +64,18 @@ run_js262 :: proc(sources: []string) -> Js262_Result {
         vm.thrown   = nil
     }
     return res
+}
+
+// Test262 host operation: invalidate all views sharing the backing store.
+js262_detach_buffer :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := arg(args, 0).(^Object)
+    if !ok || o.ab == nil || o.ta_kind != .None {
+        throw_type_error(vm, "Expected an ArrayBuffer")
+        return nil
+    }
+    o.ab.detached = true
+    o.props["byteLength"] = f64(0)
+    return nil
 }
 
 // Extrai (nome, mensagem) do valor lançado. Usa get_member para atravessar a

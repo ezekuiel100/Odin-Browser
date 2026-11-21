@@ -77,6 +77,7 @@ Object :: struct {
 // Rastreado em vm.all_buffers e liberado no vm_destroy.
 Array_Buffer :: struct {
     data: [dynamic]u8,
+    detached: bool,
 }
 
 Array :: struct {
@@ -485,11 +486,11 @@ Interp :: struct {
     session_storage: Storage, // sessionStorage
     pending_fetches: [dynamic]^Fetch_Req, // fetches em voo (threads; ver fetch.odin)
     base_url:        string,              // URL da página (owned) p/ resolver fetch relativo
-    current_script:  rawptr,              // ^dom.Node do <script> em execução AGORA (document.currentScript);
     nav_request:     string,              // navegação pedida pela PÁGINA (location.href=/assign/replace,
                                           // envio de <form>); URL ABSOLUTA, owned. O host (ui) consome
                                           // e zera: vm_take_nav_request. Última escrita vence.
     nav_replace:     bool,                // location.replace: não empilha no histórico
+    current_script:  rawptr,              // ^dom.Node do <script> em execução AGORA (document.currentScript);
                                           // rawptr pois interp.odin não importa `dom`. Setado por
                                           // load_page_scripts (por script) e maybe_run_injected_script.
     // document.write: PONTO DE INSERÇÃO. `write_owner` é o <script> a que a
