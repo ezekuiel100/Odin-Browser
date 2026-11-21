@@ -22,7 +22,7 @@ arg :: proc(args: []Value, i: int) -> Value {
 
 // Clona `s` para memória do vm (para views/fatias de strings existentes).
 own_str :: proc(vm: ^Interp, s: string) -> Value {
-    c := strings.clone(s)
+    c := clone_js_string(s)
     append(&vm.owned_strings, c)
     return c
 }
@@ -30,13 +30,19 @@ own_str :: proc(vm: ^Interp, s: string) -> Value {
 // Igual, mas devolvendo `string` — para quem guarda a cópia num campo TIPADO
 // (o `text` de um Canvas_Cmd), onde um `Value` não serve.
 own_str_raw :: proc(vm: ^Interp, s: string) -> string {
-    c := strings.clone(s)
+    c := clone_js_string(s)
     append(&vm.owned_strings, c)
     return c
 }
 
 // Assume posse de uma string JÁ alocada (ex.: resultado de strings.to_upper).
 own_taken :: proc(vm: ^Interp, s: string) -> Value {
+    if js_has_surrogate_pair(s) {
+        c := clone_js_string(s)
+        delete(s)
+        append(&vm.owned_strings, c)
+        return c
+    }
     append(&vm.owned_strings, s)
     return s
 }
@@ -57,18 +63,12 @@ mk_native :: proc(vm: ^Interp, fn: Native_Fn) -> ^Function {
 // UTF-16 ele é um PAR SURROGATE. Era contado como 1 até o M166 ("😀".length dava
 // 1 em vez de 2).
 //
-// ⚠️ DEGRADAÇÃO ANOTADA: um índice que cai NO MEIO de um par surrogate não tem
-// offset de byte correspondente — a metade de um par não é representável em UTF-8.
-// Nesses casos o par é tratado ATOMICAMENTE: o índice arredonda para a fronteira
-// SEGUINTE. O efeito é que `s.slice(0,1)` de um emoji devolve o emoji inteiro em
-// vez do high surrogate solto. A propriedade que isso preserva, e que importa na
-// prática, é `s.slice(0,i) + s.slice(i) === s` para todo i. `charCodeAt` NÃO
-// depende disso e devolve o surrogate correto (ver str_code_unit_at).
+// Cortes no meio de um par preservam a metade em WTF-8. A concatenação
+// recombina pares adjacentes, mantendo igualdade e chaves de objetos estáveis.
 
 // Largura em bytes de um code point pelo seu PRIMEIRO byte. Percorrer com isto
 // evita decodificar a rune inteira quando só precisamos avançar — decodificar em
 // todo passo custou 4,4× no `length` de uma string de 2 KB (medido).
-@(private = "file")
 utf8_width :: proc(b: u8) -> int {
     if b < 0x80 do return 1
     if b < 0xE0 do return 2 // (bytes de continuação soltos caem aqui; string inválida só desalinha o passo, não estoura)
@@ -116,31 +116,32 @@ str_rindex :: proc(s: string, bo: int) -> int {
 
 // fatia por índices de code unit [lo, hi)
 str_rslice :: proc(s: string, lo, hi: int) -> string {
-    bl := str_rbyte(s, lo)
-    bh := str_rbyte(s, hi)
-    if bh < bl do bh = bl
-    return s[bl:bh]
+    if hi <= lo do return ""
+    bl, split_lo := js_unit_boundary(s, lo)
+    bh, split_hi := js_unit_boundary(s, hi)
+    if !split_lo && !split_hi do return s[bl:max(bl,bh)]
+    sb := strings.builder_make(context.temp_allocator)
+    if split_lo {
+        r, w := decode_js_rune(s[bl:])
+        write_js_rune(&sb, 0xDC00 + ((r-0x10000) & 1023))
+        bl += w
+    }
+    if bh > bl do strings.write_string(&sb, s[bl:bh])
+    if split_hi {
+        r, _ := decode_js_rune(s[bh:])
+        write_js_rune(&sb, 0xD800 + ((r-0x10000) >> 10))
+    }
+    return strings.to_string(sb)
 }
 
-// o "caractere" no índice `ui` como fatia de s ("" se fora do range). Para um
-// astral devolve o code point INTEIRO no índice do seu 1º unit, e "" no 2º —
-// consequência do par ser atômico aqui.
+// A unidade UTF-16 no índice ui, preservada em WTF-8; vazio fora do intervalo.
 str_rune_at :: proc(s: string, ui: int) -> string {
     if ui < 0 do return ""
-    k := 0
-    for i := 0; i < len(s); {
-        w := utf8_width(s[i])
-        if k == ui do return s[i:min(i + w, len(s))]
-        k += 2 if s[i] >= 0xF0 else 1
-        if k > ui do return "" // `ui` era a 2ª metade de um par surrogate
-        i += w
-    }
-    return ""
+    return str_rslice(s, ui, ui+1)
 }
 
 // O CODE UNIT UTF-16 no índice `ui` — para um astral devolve o high surrogate no
-// 1º índice e o low no 2º, que é o que charCodeAt tem de reportar. Este caminho
-// não sofre a limitação do str_rune_at porque devolve um NÚMERO, não uma fatia.
+// 1º índice e o low no 2º, como exige charCodeAt.
 str_code_unit_at :: proc(s: string, ui: int) -> (u16, bool) {
     if ui < 0 do return 0, false
     k := 0
@@ -475,7 +476,7 @@ sort_after :: proc(vm: ^Interp, cmp: ^Function, x, y: Value) -> bool {
     write_text_spec(&sbx, vm, x)
     if vm.throwing do return false
     write_text_spec(&sby, vm, y)
-    return strings.to_string(sbx) > strings.to_string(sby)
+    return js_string_compare(strings.to_string(sbx), strings.to_string(sby)) > 0
 }
 
 // sort in-place (insertion sort — arrays de página são pequenos), devolve o array.
@@ -832,7 +833,7 @@ arr_splice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 }
 
 // ── métodos de String ───────────────────────────────────────────────────────
-// (indexação por CODE POINT — ver helpers str_r* no topo; M58)
+// Índices e comprimentos em unidades UTF-16; iteração em code points.
 
 @(private = "file")
 str_char_at :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
@@ -859,34 +860,27 @@ str_char_code_at :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 str_code_point_at :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     s, ok := this.(string); if !ok do return nil
     i := as_int(arg(args, 0))
-    if ch := str_rune_at(s, i); ch != "" {
-        r, _ := utf8.decode_rune(ch)
-        return f64(r)
-    }
-    // índice na 2ª metade de um par: a spec devolve o low surrogate isolado
     u, in_range := str_code_unit_at(s, i)
     if !in_range do return nil
+    if u >= 0xD800 && u <= 0xDBFF {
+        lo, ok := str_code_unit_at(s, i+1)
+        if ok && lo >= 0xDC00 && lo <= 0xDFFF do return f64(0x10000 + ((u32(u)-0xD800) << 10) + u32(lo)-0xDC00)
+    }
     return f64(u)
 }
 
 @(private = "file")
 str_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return f64(-1)
-    sub, _ := arg(args, 0).(string)
-    from := 0 // índice de RUNE
-    if len(args) >= 2 && args[1] != nil { // fromIndex (clamp [0,n]; negativo→0)
-        from = idx_from(as_number(args[1]), str_rlen(s))
-        if as_number(args[1]) < 0 do from = 0 // indexOf NÃO conta do fim
-    }
-    bfrom := str_rbyte(s, from)
-    i := strings.index(s[bfrom:], sub)
-    return f64(i < 0 ? -1 : str_rindex(s, i + bfrom))
+    if is_nullish(this) { throw_type_error(vm, "String.prototype.indexOf requires a receiver"); return nil }
+    s := to_js_string(vm, this); if vm.throwing do return nil
+    sub := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    pos := to_number(vm, arg(args, 1)); if vm.throwing do return nil
+    return f64(js_string_find(s, sub, clamp_index(pos, str_rlen(s))))
 }
 
 // ToString(v) da spec p/ os métodos de String que coagem argumentos: primitivos
 // direto; um objeto invoca o seu toString() (próprio ou herdado de Object.prototype).
 // Sem isto, `"a1".replace(1,"x")` ou `"x".includes({toString:()=>"x"})` viravam no-op.
-@(private = "file")
 to_js_string :: proc(vm: ^Interp, v: Value) -> string {
     if s, ok := v.(string); ok do return s
     val := v
@@ -920,15 +914,10 @@ to_js_string :: proc(vm: ^Interp, v: Value) -> string {
 // aceitava string, quebrando `"word".includes("o",3)` (→ false) e coerção.
 @(private = "file")
 str_includes :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return false
-    sub := to_js_string(vm, arg(args, 0))
-    if vm.throwing do return false
-    n := str_rlen(s)
-    pos := as_int(arg(args, 1)) // ToInteger; NaN/undefined → 0, true → 1
-    if pos < 0 do pos = 0
-    if pos > n do pos = n
-    bpos := str_rbyte(s, pos)
-    return strings.contains(s[bpos:], sub)
+    s, sub, ok := str_search_args(vm, this, args, "includes")
+    if !ok do return nil
+    pos := to_number(vm, arg(args, 1)); if vm.throwing do return nil
+    return js_string_find(s, sub, clamp_index(pos, str_rlen(s))) >= 0
 }
 
 @(private = "file")
@@ -973,7 +962,7 @@ str_substring :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // substr(start, length) — Annex B, legado mas MUITO comum: `Math.random().toString(36).substr(2)`
 // (geração de ID; sem ele ge/g1.globo e outros caíam em ".substr is not a function", gap #1
 // tratável do gap-miner). Difere de substring/slice: o 2º arg é COMPRIMENTO, não índice final;
-// start negativo conta do fim uma vez. Índices em CODE POINTS (convenção da engine).
+// start negativo conta do fim uma vez. Índices em unidades UTF-16.
 @(private = "file")
 str_substr :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     s, ok := this.(string); if !ok do return own_str(vm, "")
@@ -1067,15 +1056,15 @@ write_replacement :: proc(sb: ^strings.Builder, repl: string, s: string, m: Re_M
                 strings.write_byte(sb, '$'); i += 2
             case next == '&':
                 gs, ge := m.groups[0], m.groups[1]
-                if gs >= 0 do strings.write_string(sb, s[gs:ge])
+                if gs >= 0 do strings.write_string(sb, str_rslice(s, gs, ge))
                 i += 2
             case next == '`':
                 gs := m.groups[0]
-                if gs > 0 do strings.write_string(sb, s[:gs])
+                if gs > 0 do strings.write_string(sb, str_rslice(s, 0, gs))
                 i += 2
             case next == '\'':
                 ge := m.groups[1]
-                if ge >= 0 && ge <= len(s) do strings.write_string(sb, s[ge:])
+                if ge >= 0 && ge <= str_rlen(s) do strings.write_string(sb, str_rslice(s, ge, str_rlen(s)))
                 i += 2
             case next >= '1' && next <= '9':
                 idx := int(next - '0')
@@ -1086,7 +1075,7 @@ write_replacement :: proc(sb: ^strings.Builder, repl: string, s: string, m: Re_M
                 }
                 if idx <= re.ngroups {
                     gs2, ge2 := m.groups[2 * idx], m.groups[2 * idx + 1]
-                    if gs2 >= 0 do strings.write_string(sb, s[gs2:ge2])
+                    if gs2 >= 0 do strings.write_string(sb, str_rslice(s, gs2, ge2))
                 }
             case next == '<' && len(re.gnames) > 0:
                 // $<nome>: grupo nomeado (spec GetSubstitution). Sem `>` de fechamento
@@ -1097,7 +1086,7 @@ write_replacement :: proc(sb: ^strings.Builder, repl: string, s: string, m: Re_M
                 name := repl[i + 2:][:close]
                 if gi, found := re.gnames[name]; found && 2 * gi + 1 < len(m.groups) {
                     gs2, ge2 := m.groups[2 * gi], m.groups[2 * gi + 1]
-                    if gs2 >= 0 do strings.write_string(sb, s[gs2:ge2])
+                    if gs2 >= 0 do strings.write_string(sb, str_rslice(s, gs2, ge2))
                 }
                 i += 2 + close + 1
             case:
@@ -1114,12 +1103,12 @@ write_replacer_result :: proc(vm: ^Interp, sb: ^strings.Builder, fn: ^Function, 
     fargs: [dynamic]Value
     defer delete(fargs)
     gs, ge := m.groups[0], m.groups[1]
-    append(&fargs, gs >= 0 ? own_str(vm, s[gs:ge]) : Value(nil))
+    append(&fargs, gs >= 0 ? own_str(vm, str_rslice(s, gs, ge)) : Value(nil))
     for g in 1 ..= re.ngroups {
         gs2, ge2 := m.groups[2 * g], m.groups[2 * g + 1]
-        append(&fargs, gs2 >= 0 ? own_str(vm, s[gs2:ge2]) : Value(nil))
+        append(&fargs, gs2 >= 0 ? own_str(vm, str_rslice(s, gs2, ge2)) : Value(nil))
     }
-    append(&fargs, f64(str_rindex(s, gs))) // offset em runes, como os índices do JS
+    append(&fargs, f64(gs)) // offset em unidades UTF-16
     append(&fargs, Value(s))
     // com grupos nomeados, o callback recebe o objeto `groups` por último (spec)
     if len(re.gnames) > 0 do append(&fargs, regex_groups_object(vm, re, s, m))
@@ -1144,7 +1133,7 @@ regex_replace_impl :: proc(vm: ^Interp, s: string, re: ^Regex, replacement: Valu
         if !m.ok do break
         defer delete(m.groups)
         gs, ge := m.groups[0], m.groups[1]
-        strings.write_string(&sb, s[last:gs])
+        strings.write_string(&sb, str_rslice(s, last, gs))
         if is_fn {
             write_replacer_result(vm, &sb, repl_fn, s, m, re)
         } else {
@@ -1152,13 +1141,10 @@ regex_replace_impl :: proc(vm: ^Interp, s: string, re: ^Regex, replacement: Valu
         }
         last = ge
         if !all do break
-        if ge == gs { // casamento vazio: avança 1 byte
-            if ge < len(s) { strings.write_byte(&sb, s[ge]); last = ge + 1; start = ge + 1 }
-            else do break
-        } else { start = ge }
-        if start > len(s) do break
+        start = js_advance_index(s, ge, re.unicode || re.unicode_sets) if ge == gs else ge
+        if start > str_rlen(s) do break
     }
-    strings.write_string(&sb, s[last:])
+    strings.write_string(&sb, str_rslice(s, last, str_rlen(s)))
     return own_str(vm, strings.to_string(sb))
 }
 
@@ -1179,32 +1165,7 @@ str_replace :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     old := to_js_string(vm, pattern) // ToString(searchValue): `.replace(1,"x")`, {toString}
     if vm.throwing do return own_str(vm, s)
 
-    if repl_fn, is_fn := replacement.(^Function); is_fn {
-        idx := strings.index(s, old)
-        if idx < 0 do return own_str(vm, s)
-        rsb: strings.Builder
-        strings.builder_init(&rsb); defer strings.builder_destroy(&rsb)
-        strings.write_string(&rsb, s[:idx])
-        result := call_function(vm, repl_fn, nil, []Value{own_str(vm, old), f64(idx), Value(s)})
-        to_text(&rsb, result)
-        strings.write_string(&rsb, s[idx + len(old):])
-        return own_str(vm, strings.to_string(rsb))
-    }
-
-    nw := to_js_string(vm, replacement) // ToString(replaceValue): número/bool viram texto
-    if vm.throwing do return own_str(vm, s)
-    if strings.contains(nw, "$") { // $-refs ($& $$ $` $') com pattern string
-        idx := strings.index(s, old)
-        if idx < 0 do return own_str(vm, s)
-        sb: strings.Builder
-        strings.builder_init(&sb); defer strings.builder_destroy(&sb)
-        strings.write_string(&sb, s[:idx])
-        write_str_replacement(&sb, nw, s, idx, len(old))
-        strings.write_string(&sb, s[idx + len(old):])
-        return own_str(vm, strings.to_string(sb))
-    }
-    res, allocated := strings.replace(s, old, nw, 1)
-    return allocated ? own_taken(vm, res) : own_str(vm, res)
+    return string_replace_impl(vm, s, old, replacement, false)
 }
 
 @(private = "file")
@@ -1222,16 +1183,15 @@ str_custom_replace :: proc(vm: ^Interp, receiver, pattern, replacement: Value) -
 
 // $-refs de replacement com pattern STRING (sem grupos): $$ → $, $& → casado,
 // $` → antes, $' → depois; $1..$9 ficam LITERAIS (spec: sem capturas).
-@(private = "file")
 write_str_replacement :: proc(sb: ^strings.Builder, repl: string, s: string, idx: int, old_len: int) {
     i := 0
     for i < len(repl) {
         if repl[i] == '$' && i + 1 < len(repl) {
             switch repl[i + 1] {
             case '$':  strings.write_byte(sb, '$');                    i += 2; continue
-            case '&':  strings.write_string(sb, s[idx:idx + old_len]); i += 2; continue
-            case '`':  strings.write_string(sb, s[:idx]);              i += 2; continue
-            case '\'': strings.write_string(sb, s[idx + old_len:]);    i += 2; continue
+            case '&':  strings.write_string(sb, str_rslice(s, idx, idx+old_len)); i += 2; continue
+            case '`':  strings.write_string(sb, str_rslice(s, 0, idx));              i += 2; continue
+            case '\'': strings.write_string(sb, str_rslice(s, idx+old_len, str_rlen(s)));    i += 2; continue
             }
         }
         strings.write_byte(sb, repl[i])
@@ -1259,11 +1219,7 @@ str_replace_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
     old := to_js_string(vm, pattern) // ToString(searchValue)
     if vm.throwing do return own_str(vm, s)
-    if old == "" do return own_str(vm, s)
-    nw := to_js_string(vm, arg(args, 1)) // ToString(replaceValue)
-    if vm.throwing do return own_str(vm, s)
-    res, allocated := strings.replace_all(s, old, nw)
-    return allocated ? own_taken(vm, res) : own_str(vm, res)
+    return string_replace_impl(vm, s, old, arg(args, 1), true)
 }
 
 @(private = "file")
@@ -1276,7 +1232,7 @@ str_starts_with :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         pv := to_number(vm, args[1]); if vm.throwing do return nil
         pos = clamp_index(pv, n)
     }
-    return strings.has_prefix(s[str_rbyte(s, pos):], sub)
+    return js_string_find(s, sub, pos) == pos
 }
 
 // endsWith(sub, endPosition): a busca termina em endPosition (padrão: o fim).
@@ -1291,7 +1247,8 @@ str_ends_with :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         pv := to_number(vm, args[1]); if vm.throwing do return nil
         end = clamp_index(pv, n)
     }
-    return strings.has_suffix(s[:str_rbyte(s, end)], sub)
+    start := end - str_rlen(sub)
+    return start >= 0 && js_string_find(s, sub, start) == start
 }
 
 // Comum a startsWith/endsWith: `this` string e ToString do 1º argumento, que NÃO
@@ -1320,22 +1277,22 @@ clamp_index :: proc(v: f64, n: int) -> int {
     return int(v)
 }
 
-// padStart/padEnd (por bytes; pad padrão = espaço).
+// padStart/padEnd: comprimento e truncamento em unidades UTF-16.
 @(private = "file")
 str_pad :: proc(vm: ^Interp, this: Value, args: []Value, at_start: bool) -> Value {
     s, ok := this.(string); if !ok do return own_str(vm, "")
-    want := as_int(arg(args, 0)) // comprimento-alvo em RUNES
+    want := as_int(arg(args, 0)) // comprimento-alvo em unidades UTF-16
     pad := " "
-    if p, pok := arg(args, 1).(string); pok && p != "" do pad = p
+    if p := arg(args, 1); p != nil { pad = to_js_string(vm, p); if vm.throwing do return nil }
     n := str_rlen(s)
-    if want <= n do return own_str(vm, s)
+    if want <= n || pad == "" do return own_str(vm, s)
     sb: strings.Builder
     strings.builder_init(&sb)
     defer strings.builder_destroy(&sb)
     fill := want - n
-    pr := utf8.string_to_runes(pad, context.temp_allocator)
+    pr := js_string_chars(pad, false)
     if !at_start do strings.write_string(&sb, s)
-    for i := 0; i < fill; i += 1 do strings.write_rune(&sb, pr[i % len(pr)])
+    for i := 0; i < fill; i += 1 do write_js_rune(&sb, pr[i % len(pr)])
     if at_start do strings.write_string(&sb, s)
     return own_str(vm, strings.to_string(sb))
 }
@@ -1353,61 +1310,62 @@ str_pad_end :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 @(private = "file")
 str_split :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     res := new_array(vm)
-    s, ok := this.(string); if !ok do return res
+    if is_nullish(this) { throw_type_error(vm, "String.prototype.split requires a receiver"); return nil }
+    s := to_js_string(vm, this); if vm.throwing do return nil
     sep_val := arg(args, 0)
-    limit := -1
-    if len(args) >= 2 { if lv, lok := args[1].(f64); lok do limit = int(lv) }
-
+    limit := int(0xFFFFFFFF)
+    if v := arg(args, 1); v != nil {
+        number := to_number(vm, v); if vm.throwing do return nil
+        limit = int(to_uint32(Value(number)))
+    }
+    if limit == 0 do return res
+    n := str_rlen(s)
     if re, rok := sep_val.(^Regex); rok {
-        // string vazia (spec 21.1.3.21 passo 12): se o regex casa "" → []; senão [""]
-        if len(s) == 0 {
-            m := regex_run(re, s, 0)
+        points := re.unicode || re.unicode_sets
+        if n == 0 {
+            m := regex_run(re, s, 0, true)
             defer delete(m.groups)
             if !m.ok do append(&res.items, own_str(vm, ""))
             return res
         }
-        last := 0  // p: início do segmento não-casado
-        start := 0 // q: posição de busca
-        // laço só ENQUANTO start < len(s) (spec: q < size — não processa match em len(s))
-        for (limit < 0 || len(res.items) < limit) && start < len(s) {
-            m := regex_run(re, s, start)
-            if !m.ok do break
-            defer delete(m.groups)
-            gs, ge := m.groups[0], m.groups[1]
-            // match VAZIO no início do segmento (e == p): pula sem cortar (spec)
-            if gs == ge && gs == last { start = gs + 1; continue }
-            append(&res.items, own_str(vm, s[last:gs]))
-            for g in 1 ..= re.ngroups {
-                gs2, ge2 := m.groups[2 * g], m.groups[2 * g + 1]
-                if gs2 >= 0 { append(&res.items, own_str(vm, s[gs2:ge2])) } else { append(&res.items, nil) }
+        last, start := 0, 0
+        for start < n {
+            m := regex_run(re, s, start, true)
+            if !m.ok { start = js_advance_index(s, start, points); continue }
+            end := m.groups[1]
+            if end == last {
+                delete(m.groups)
+                start = js_advance_index(s, start, points)
+                continue
             }
-            last = ge
-            start = ge == gs ? ge + 1 : ge // match vazio: avança 1 p/ não travar
+            append(&res.items, own_str(vm, str_rslice(s, last, start)))
+            if len(res.items) == limit { delete(m.groups); return res }
+            for g in 1 ..= re.ngroups {
+                lo, hi := m.groups[2*g], m.groups[2*g+1]
+                append(&res.items, own_str(vm, str_rslice(s, lo, hi)) if lo >= 0 else Value(nil))
+                if len(res.items) == limit { delete(m.groups); return res }
+            }
+            delete(m.groups)
+            last = end; start = end
         }
-        if limit < 0 || len(res.items) < limit do append(&res.items, own_str(vm, s[last:]))
+        append(&res.items, own_str(vm, str_rslice(s, last, n)))
         return res
     }
-
-    sep, has_sep := sep_val.(string)
-    if !has_sep {
-        append(&res.items, own_str(vm, s))
+    if sep_val == nil { append(&res.items, own_str(vm, s)); return res }
+    sep := to_js_string(vm, sep_val); if vm.throwing do return nil
+    if sep == "" {
+        for i in 0 ..< min(n,limit) do append(&res.items, own_str(vm, str_rslice(s, i, i+1)))
         return res
     }
-    if sep == "" { // separa por CODE POINTS ('café' → c,a,f,é)
-        for i := 0; i < len(s); {
-            if limit >= 0 && len(res.items) >= limit do break
-            _, w := utf8.decode_rune(s[i:])
-            append(&res.items, own_str(vm, s[i:i + w]))
-            i += w
-        }
-        return res
+    last := 0
+    for {
+        found := js_string_find(s, sep, last)
+        if found < 0 do break
+        append(&res.items, own_str(vm, str_rslice(s, last, found)))
+        if len(res.items) == limit do return res
+        last = found + str_rlen(sep)
     }
-    parts := strings.split(s, sep)
-    defer delete(parts)
-    for p in parts {
-        if limit >= 0 && len(res.items) >= limit do break
-        append(&res.items, own_str(vm, p))
-    }
+    append(&res.items, own_str(vm, str_rslice(s, last, n)))
     return res
 }
 
@@ -1433,9 +1391,9 @@ str_match :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
             if !m.ok do break
             defer delete(m.groups)
             gs, ge := m.groups[0], m.groups[1]
-            append(&arr.items, own_str(vm, s[gs:ge]))
-            if ge == gs { start = ge + 1 } else { start = ge }
-            if start > len(s) do break
+            append(&arr.items, own_str(vm, str_rslice(s, gs, ge)))
+            start = js_advance_index(s, ge, re.unicode || re.unicode_sets) if ge == gs else ge
+            if start > str_rlen(s) do break
         }
         return len(arr.items) > 0 ? Value(arr) : Value(JS_Null{})
     }
@@ -1462,7 +1420,7 @@ str_search :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     m := regex_run(re, s, 0)
     if !m.ok do return f64(-1)
     defer delete(m.groups)
-    return f64(str_rindex(s, m.groups[0])) // índice em runes
+    return f64(m.groups[0]) // índice em unidades UTF-16
 }
 
 // matchAll(regex) — iterador de TODOS os matches, cada um com grupos/.index/
@@ -1490,21 +1448,15 @@ str_match_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         re = re2
     }
     out := new_array(vm)
-    start := 0
+    start := max(0, re.last_index)
     for {
         m := regex_run(re, s, start)
         if !m.ok do break
         defer delete(m.groups)
         append(&out.items, regex_result_array(vm, re, s, m))
         gs, ge := m.groups[0], m.groups[1]
-        if ge == gs { // casamento vazio: avança uma RUNE inteira
-            if ge >= len(s) do break
-            _, w := utf8.decode_rune(s[ge:])
-            start = ge + w
-        } else {
-            start = ge
-        }
-        if start > len(s) do break
+        start = js_advance_index(s, ge, re.unicode || re.unicode_sets) if ge == gs else ge
+        if start > str_rlen(s) do break
     }
     return make_array_iterator(vm, out)
 }
@@ -1532,10 +1484,13 @@ str_normalize :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // lastIndexOf(sub)
 @(private = "file")
 str_last_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return f64(-1)
-    sub, _ := arg(args, 0).(string)
-    b := strings.last_index(s, sub)
-    return f64(b < 0 ? -1 : str_rindex(s, b))
+    if is_nullish(this) { throw_type_error(vm, "String.prototype.lastIndexOf requires a receiver"); return nil }
+    s := to_js_string(vm, this); if vm.throwing do return nil
+    sub := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    pos := to_number(vm, arg(args, 1)); if vm.throwing do return nil
+    n := str_rlen(s)
+    start := n if pos != pos else clamp_index(pos,n)
+    return f64(js_string_find(s, sub, start, true))
 }
 
 // trimStart / trimEnd
@@ -1789,8 +1744,7 @@ str_values_iter :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if s, ok := this.(string); ok {
         starts: [dynamic]int
         defer delete(starts)
-        for _, i in s do append(&starts, i)
-        append(&starts, len(s))
+        js_code_point_offsets(s, &starts)
         for k := 0; k + 1 < len(starts); k += 1 {
             append(&arr.items, own_str(vm, s[starts[k]:starts[k + 1]]))
         }

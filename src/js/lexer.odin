@@ -631,6 +631,11 @@ decode_escapes :: proc(s: string, owned: ^[dynamic]string, octal: ^bool = nil, b
         }
     }
     out := strings.to_string(sb) // fica dona do buffer do builder
+    if js_has_surrogate_pair(out) {
+        canonical := clone_js_string(out)
+        delete(out)
+        out = canonical
+    }
     append(owned, out)
     return out
 }

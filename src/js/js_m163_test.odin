@@ -103,16 +103,11 @@ m163_sem_flag_u_mantem_sentido_antigo :: proc(t: ^testing.T) {
 }
 
 @(test)
-m163_nome_desconhecido_casa_nada :: proc(t: ^testing.T) {
-    // DEGRADAÇÃO ANOTADA: `Script=...` precisaria de tabelas de script que o
-    // core:unicode não expõe. Casa NADA — não lança (derrubaria o script) e não
-    // casa o literal "p{Script=Han}" (que era o comportamento antigo, absurdo).
-    testing.expect_value(t, run(`/\p{Script=Han}/u.test("中")`).(bool), false)
+m163_scripts_unicode_sao_reconhecidos :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`/\p{Script=Han}/u.test("中")`).(bool), true)
     testing.expect_value(t, run(`/\p{Script=Han}/u.test("p{Script=Han}")`).(bool), false)
     testing.expect_value(t, run(`/\p{Bidi_Control}/u.test("a")`).(bool), false)
-    // e a regex COMPILA (não lança) — é o que impede o bundle inteiro de morrer
-    testing.expect_value(t, run(`(function(){ try { new RegExp("\\p{Script=Han}","u"); return "ok" } catch(e){ return e.name } })()`).(string), "ok")
-    // `\P{desconhecido}` é o complemento de "nada" = casa qualquer char
+    testing.expect_value(t, run(`/\p{Bidi_Control}/u.test("\u200E")`).(bool), true)
     testing.expect_value(t, run(`/\P{Script=Han}/u.test("a")`).(bool), true)
 }
 

@@ -5,8 +5,7 @@ package js
 // Backtracking VM ao estilo Russ Cox: o padrão é parseado numa AST e compilado
 // para um programa de instruções (Char/Any/Class/Split/Jmp/Save/âncoras/Match).
 // O casamento é recursivo com desfazimento (Save guarda/restaura no backtrack).
-// Opera sobre RUNES (1 char = 1 code point); as capturas viram offsets de BYTE
-// da string original para fatiar sem quebrar UTF-8.
+// Opera sobre code units sem u/v e code points com u/v; capturas usam UTF-16.
 //
 // Suporta: literais, `.`, classes `[...]` (ranges, negação, \d\w\s e negados),
 // âncoras `^ $`, `\b \B`, quantificadores `* + ? {n} {n,} {n,m}` (greedy e lazy),
@@ -22,13 +21,14 @@ package js
 //
 // Flag v: classe com operações de CONJUNTO (`[\p{L}--[a-z]]`, `[\w&&\d]`),
 // classes aninhadas e strings `\q{abc|de}`. A classe vira uma árvore (Re_CSet)
-// avaliada por code point; as strings de mais de 1 char viram uma alternância
-// (da mais longa para a mais curta) na frente da classe. `\p{...}` de STRINGS
-// (RGI_Emoji etc.) não tem tabela: casa nada, como os nomes não reconhecidos.
+// avaliada por code point; candidatos de strings são tentados do mais longo
+// ao mais curto sem expandir milhares de instruções. Propriedades Unicode,
+// inclusive RGI_Emoji, usam unicode_tables_gen.odin (Unicode versionado).
 
 import "core:strings"
 import "core:unicode"
 import "core:unicode/utf8"
+import "core:sort"
 
 REGEX_STEP_LIMIT :: 2_000_000 // trava contra backtracking catastrófico
 
@@ -57,6 +57,7 @@ Re_Inst :: struct {
     op:     Re_Op,
     mods:   Re_Mods,      // i/m/s em vigor nesta instrução (Char/Class/BackRef/Any/Begin/End)
     set:    ^Re_CSet,     // Class da flag v (nil nas classes comuns); owned pela instrução
+    strings: [][]rune,    // candidatos por tamanho; referenciam strings owned pelo set
     ch:     rune,         // Char
     x, y:   int,          // Split (x,y) / Jmp (x) / Save (x = slot) / BackRef (x = grupo)
     ranges: []Re_Range,   // Class: conjuntos POSITIVOS (c casa se estiver em algum)
@@ -101,29 +102,10 @@ Re_Kind :: enum {
 // Uma categoria Unicode não cabe em ranges (seriam milhares), então a classe
 // carrega PREDICADOS ao lado dos ranges e o matcher os consulta. As tabelas vêm
 // do `core:unicode` do Odin — geradas do UCD, não escritas à mão aqui.
-Re_Prop_Kind :: enum u8 {
-    Letter,      // L, Letter, Alphabetic, Alpha
-    Upper,       // Lu, Uppercase_Letter, Uppercase
-    Lower,       // Ll, Lowercase_Letter, Lowercase
-    Title,       // Lt, Titlecase_Letter
-    Number,      // N, Number
-    Digit,       // Nd, Decimal_Number, digit
-    Punct,       // P, Punctuation, punct
-    Symbol,      // S, Symbol
-    Space,       // Z, Zs, Separator, Space_Separator, White_Space, space
-    Control,     // C, Cc, Control, Other
-    Mark,        // M, Mark, Combining_Mark
-    Mark_NS,     // Mn, Nonspacing_Mark
-    Mark_SP,     // Mc, Spacing_Mark
-    Mark_EN,     // Me, Enclosing_Mark
-    Ascii,       // ASCII
-    Any,         // Any
-    Never,       // nome NÃO reconhecido (ex.: Script=Han): não casa nada. Ver re_parse_prop.
-}
-
 Re_Prop :: struct {
-    kind:   Re_Prop_Kind,
-    negate: bool, // veio de `\P{...}`
+    id: int,
+    negate: bool,
+    fold_before_negation: bool, // v complements the case-folded property; u folds its complement.
 }
 
 Re_Node :: struct {
@@ -452,74 +434,70 @@ rp_hex_escape :: proc(p: ^Re_Parser, kind: rune) -> rune {
         v = v * 16 + d
     }
     p.pos += n
+    if kind == 'u' && p.unicode && v >= 0xD800 && v <= 0xDBFF &&
+       p.pos+6 <= len(p.pat) && p.pat[p.pos] == '\\' && p.pat[p.pos+1] == 'u' {
+        save := p.pos
+        p.pos += 2
+        lo := rp_hex_escape(p, 'u')
+        if lo >= 0xDC00 && lo <= 0xDFFF { return rune(0x10000 + ((v-0xD800) << 10) + int(lo)-0xDC00) }
+        p.pos = save
+    }
     return rune(v)
 }
 
-// Lê `{Nome}` logo depois de um `\p`/`\P` e devolve o predicado correspondente.
-// `ok=false` quando não há chaves (aí o chamador trata o `\p` como literal, que é
-// o que a spec manda SEM a flag `u` e o que este motor já fazia).
-//
-// Nome NÃO reconhecido (o caso típico é `Script=Han`, que exigiria tabelas de
-// script que o core:unicode não expõe) vira .Never: a classe não casa NADA.
-// É a degradação HONESTA — melhor que lançar SyntaxError (derruba o script
-// inteiro por um regex de enfeite) e melhor que o comportamento antigo, em que
-// `/\p{L}/` casava a string literal "p{L}".
+// Property names and aliases are exact, case-sensitive ECMAScript spellings.
+// Invalid properties are syntax errors, including in literals (before execution).
 @(private="file")
 re_parse_prop :: proc(p: ^Re_Parser, negated: bool) -> (prop: Re_Prop, ok: bool) {
-    if p.pos >= len(p.pat) || p.pat[p.pos] != '{' do return {}, false
-    j := p.pos + 1
-    start := j
-    for j < len(p.pat) && p.pat[j] != '}' do j += 1
-    if j >= len(p.pat) do return {}, false // sem fechar: trata como literal
-    name := utf8.runes_to_string(p.pat[start:j], context.temp_allocator)
-    p.pos = j + 1 // consome o '}'
-
-    kind := Re_Prop_Kind.Never
-    switch name {
-    case "L", "Letter", "Alphabetic", "Alpha":              kind = .Letter
-    case "Lu", "Uppercase_Letter", "Uppercase":             kind = .Upper
-    case "Ll", "Lowercase_Letter", "Lowercase":             kind = .Lower
-    case "Lt", "Titlecase_Letter":                          kind = .Title
-    case "N", "Number":                                     kind = .Number
-    case "Nd", "Decimal_Number", "digit":                   kind = .Digit
-    case "P", "Punctuation", "punct":                       kind = .Punct
-    case "S", "Symbol":                                     kind = .Symbol
-    case "Z", "Zs", "Separator", "Space_Separator",
-         "White_Space", "space":                            kind = .Space
-    case "C", "Cc", "Control", "Other":                     kind = .Control
-    case "M", "Mark", "Combining_Mark":                     kind = .Mark
-    case "Mn", "Nonspacing_Mark":                           kind = .Mark_NS
-    case "Mc", "Spacing_Mark":                              kind = .Mark_SP
-    case "Me", "Enclosing_Mark":                            kind = .Mark_EN
-    case "ASCII":                                           kind = .Ascii
-    case "Any":                                             kind = .Any
+    prop.id = -1
+    if p.pos < len(p.pat) && p.pat[p.pos] == '{' {
+        start := p.pos + 1
+        j := start
+        for j < len(p.pat) && p.pat[j] != '}' do j += 1
+        if j < len(p.pat) {
+            name := utf8.runes_to_string(p.pat[start:j], context.temp_allocator)
+            p.pos = j+1
+            id := re_unicode_lookup(name)
+            if id >= 0 {
+                data := RE_UNICODE_PROPERTIES[id]
+                if !data.strings || (p.vmode && !negated) {
+                    return Re_Prop{id = id, negate = negated, fold_before_negation = p.vmode}, true
+                }
+            }
+        }
     }
-    return Re_Prop{kind = kind, negate = negated}, true
+    p.ok = false
+    p.spec_err = true
+    return prop, false
 }
 
-// O predicado em si. As tabelas são as do core:unicode (geradas do UCD).
 @(private="file")
-re_prop_match :: proc(k: Re_Prop_Kind, c: rune) -> bool {
-    switch k {
-    case .Letter:  return unicode.is_letter(c)
-    case .Upper:   return unicode.is_upper(c)
-    case .Lower:   return unicode.is_lower(c)
-    case .Title:   return unicode.is_title(c)
-    case .Number:  return unicode.is_number(c)
-    case .Digit:   return unicode.is_digit(c)
-    case .Punct:   return unicode.is_punct(c)
-    case .Symbol:  return unicode.is_symbol(c)
-    case .Space:   return unicode.is_space(c)
-    case .Control: return unicode.is_control(c)
-    case .Mark:    return unicode.is_combining(c)
-    case .Mark_NS: return unicode.is_nonspacing_mark(c)
-    case .Mark_SP: return unicode.is_spacing_mark(c)
-    case .Mark_EN: return unicode.is_enclosing_mark(c)
-    case .Ascii:   return c <= 0x7F
-    case .Any:     return true
-    case .Never:   return false
+re_prop_match :: proc(id: int, c: rune) -> bool {
+    if id < 0 || c < 0 || c > 0x10FFFF do return false
+    data := RE_UNICODE_PROPERTIES[id]
+    lo, hi := data.start, data.start + data.count
+    for lo < hi {
+        mid := lo + (hi-lo)/2
+        r := RE_UNICODE_RANGES[mid]
+        if c < r.lo { hi = mid } else if c > r.hi { lo = mid+1 } else { return true }
     }
     return false
+}
+
+@(private="file")
+re_property_set :: proc(pr: Re_Prop) -> ^Re_CSet {
+    leaf := new(Re_CSet)
+    leaf.op = .Leaf
+    leaf.leaf.props = make([]Re_Prop, 1)
+    leaf.leaf.props[0] = pr
+    data := RE_UNICODE_PROPERTIES[pr.id]
+    for str in RE_UNICODE_STRINGS[data.string_start:][:data.string_count] {
+        chars := js_string_chars(str, true)
+        copy_of_chars := make([]rune, len(chars))
+        copy(copy_of_chars, chars)
+        append(&leaf.strs, copy_of_chars)
+    }
+    return leaf
 }
 
 // Valor de um dígito hexadecimal, ou -1 se não for um.
@@ -552,7 +530,8 @@ re_parse_escape :: proc(p: ^Re_Parser) -> ^Re_Node {
         if p.unicode {
             if pr, ok := re_parse_prop(p, c == 'P'); ok {
                 n := rp_new(p, .Class)
-                append(&n.props, pr)
+                if RE_UNICODE_PROPERTIES[pr.id].strings { n.set = re_property_set(pr) }
+                else { append(&n.props, pr) }
                 return n
             }
         }
@@ -790,9 +769,8 @@ re_parse_vclass_operand :: proc(p: ^Re_Parser, allow_range: bool) -> (^Re_CSet, 
             p.pos += 2
             pr, ok := re_parse_prop(p, e == 'P')
             if !ok { p.ok = false; return leaf, false } // na v, `\p` sem `{}` é erro
-            leaf.leaf.props = make([]Re_Prop, 1)
-            leaf.leaf.props[0] = pr
-            return leaf, false
+            free(leaf)
+            return re_property_set(pr), false
         case 'q':
             p.pos += 2
             re_parse_class_strings(p, leaf)
@@ -1077,50 +1055,15 @@ re_compile_node :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
     }
 }
 
-// Classe da flag v. Sem strings: UMA instrução Class com a árvore (clonada — o
-// mesmo nó é compilado várias vezes por `{n,m}`). Com strings: alternância
-// `str_longa | ... | str_curta | [chars] | ""` — a spec casa a string MAIS LONGA
-// primeiro e a vazia por último.
+// Keep string-set alternatives in one instruction. Expanding thousands of
+// RGI emoji sequences into nested Split instructions exhausts the native stack.
 @(private="file")
 re_compile_vclass :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
-    icase := .I in n.mods
-    all := make([dynamic][]rune, context.temp_allocator)
-    cset_collect_strs(n.set, &all)
-    strs := make([dynamic][]rune, context.temp_allocator)
-    has_empty := false
-    outer: for st in all {
-        for o in strs do if re_runes_eq(o, st, false, true) do continue outer
-        if len(st) == 0 && has_empty do continue
-        if !cset_has_str(n.set, st, icase, true) do continue
-        if len(st) == 0 { has_empty = true; continue }
-        append(&strs, st)
-    }
-    for i := 1; i < len(strs); i += 1 { // estável, da mais longa p/ a mais curta
-        for j := i; j > 0 && len(strs[j]) > len(strs[j-1]); j -= 1 do strs[j], strs[j-1] = strs[j-1], strs[j]
-    }
-    if len(strs) == 0 && !has_empty {
-        re_emit(prog, Re_Inst{op = .Class, set = cset_clone(n.set), mods = n.mods})
-        return
-    }
-    jmps := make([dynamic]int, context.temp_allocator)
-    for st in strs {
-        sp := re_emit(prog, Re_Inst{op = .Split})
-        prog[sp].x = len(prog)
-        for ch in st do re_emit(prog, Re_Inst{op = .Char, ch = ch, mods = n.mods})
-        append(&jmps, re_emit(prog, Re_Inst{op = .Jmp}))
-        prog[sp].y = len(prog)
-    }
-    if has_empty {
-        sp := re_emit(prog, Re_Inst{op = .Split})
-        prog[sp].x = len(prog)
-        re_emit(prog, Re_Inst{op = .Class, set = cset_clone(n.set), mods = n.mods})
-        append(&jmps, re_emit(prog, Re_Inst{op = .Jmp}))
-        prog[sp].y = len(prog) // a vazia: não consome nada
-    } else {
-        re_emit(prog, Re_Inst{op = .Class, set = cset_clone(n.set), mods = n.mods})
-    }
-    end := len(prog)
-    for j in jmps do prog[j].x = end
+    set := cset_clone(n.set)
+    candidates: [dynamic][]rune
+    cset_collect_strs(set, &candidates)
+    sort.quick_sort_proc(candidates[:], proc(a, b: []rune) -> int { return len(b) - len(a) })
+    re_emit(prog, Re_Inst{op = .Class, set = set, strings = candidates[:], mods = n.mods})
 }
 
 // Flags válidas: d g i m s u v y, sem repetir, `u` e `v` exclusivas. Devolve a
@@ -1142,13 +1085,14 @@ regex_canonical_flags :: proc(flags: string) -> (string, bool) {
 
 // Early error de um LITERAL `/.../flags` que o parser de JS deve reportar já no
 // parse (o script nem roda). Só conta o que as gramáticas implementadas à risca
-// rejeitam — modificadores `(?ims-ims:)` e a classe da flag v —, porque o resto do
+// rejeitam — modificadores, propriedades Unicode e classes v —, porque o resto do
 // motor é leniente/incompleto e um padrão válido-mas-não-suportado não pode matar
 // o script inteiro (ver check_regex_literal no parser).
 regex_early_error :: proc(pattern, flags: string) -> bool {
     vmode := strings.contains(flags, "v")
-    if !vmode && !strings.contains(pattern, "(?") do return false
-    p := Re_Parser{pat = utf8.string_to_runes(pattern, context.temp_allocator), ok = true,
+    has_property := strings.contains(flags, "u") && (strings.contains(pattern, "\\p") || strings.contains(pattern, "\\P"))
+    if !vmode && !has_property && !strings.contains(pattern, "(?") do return false
+    p := Re_Parser{pat = js_string_chars(pattern, vmode || strings.contains(flags, "u")), ok = true,
                    unicode = vmode || strings.contains(flags, "u"), vmode = vmode}
     root := re_parse_alt(&p)
     re_free(root)
@@ -1161,8 +1105,8 @@ regex_early_error :: proc(pattern, flags: string) -> bool {
 regex_compile :: proc(vm: ^Interp, pattern, flags_in: string) -> (^Regex, bool) {
     flags, fok := regex_canonical_flags(flags_in)
     if !fok do return nil, false
-    pat_runes := utf8.string_to_runes(pattern, context.temp_allocator)
     vmode := strings.contains(flags, "v")
+    pat_runes := js_string_chars(pattern, vmode || strings.contains(flags, "u"))
     p := Re_Parser{pat = pat_runes, ok = true, unicode = vmode || strings.contains(flags, "u"), vmode = vmode}
     if strings.contains(flags, "i") do p.mods += {.I}
     if strings.contains(flags, "m") do p.mods += {.M}
@@ -1230,13 +1174,13 @@ re_canon :: proc(c: rune, uni: bool) -> rune {
         return c
     }
     if uni {
-        // singletons do CaseFolding que o to_lower do core:unicode não mapeia
-        switch c {
-        case 0x212A: return 'k'   // KELVIN SIGN
-        case 0x2126: return 0x3C9 // OHM SIGN → ω
-        case 0x212B: return 0xE5  // ANGSTROM SIGN → å
+        lo, hi := 0, len(RE_UNICODE_FOLDS)
+        for lo < hi {
+            mid := lo + (hi-lo)/2
+            pair := RE_UNICODE_FOLDS[mid]
+            if c < pair[0] { hi = mid } else if c > pair[0] { lo = mid+1 } else { return pair[1] }
         }
-        return unicode.to_lower(unicode.to_upper(c))
+        return c
     }
     u := unicode.to_upper(c)
     if u < 128 do return c
@@ -1263,16 +1207,25 @@ re_is_word_m :: proc(c: rune, mods: Re_Mods, uni: bool) -> bool {
 // letras e não-letras — `[0-Z]` com i casava `_`.)
 @(private="file")
 re_class_match :: proc(inst: Re_Inst, c: rune, icase, uni: bool) -> bool {
-    hit := re_class_raw(inst, c)
+    hit := re_class_raw(inst, c, icase, uni)
     if !hit && icase {
         k := re_canon(c, uni)
+        if uni {
+            hit = re_class_raw(inst, k, icase, uni)
+            i := re_fold_inverse_start(k)
+            for !hit && i < len(RE_UNICODE_FOLD_INVERSE) && RE_UNICODE_FOLD_INVERSE[i][0] == k {
+                hit = re_class_raw(inst, RE_UNICODE_FOLD_INVERSE[i][1], icase, uni)
+                i += 1
+            }
+            return hit != inst.negate
+        }
         lo := c < 128 ? ((c >= 'A' && c <= 'Z') ? c + 32 : c) : unicode.to_lower(c)
         up := c < 128 ? ((c >= 'a' && c <= 'z') ? c - 32 : c) : unicode.to_upper(c)
-        if lo != c && re_canon(lo, uni) == k && re_class_raw(inst, lo) {
+        if lo != c && re_canon(lo, uni) == k && re_class_raw(inst, lo, icase, uni) {
             hit = true
-        } else if up != c && re_canon(up, uni) == k && re_class_raw(inst, up) {
+        } else if up != c && re_canon(up, uni) == k && re_class_raw(inst, up, icase, uni) {
             hit = true
-        } else if k != c && k != lo && k != up && re_class_raw(inst, k) {
+        } else if k != c && k != lo && k != up && re_class_raw(inst, k, icase, uni) {
             hit = true // o próprio canônico (Kelvin → k, que o to_lower não dá)
         }
     }
@@ -1295,7 +1248,7 @@ re_is_lt :: proc(c: rune) -> bool {
 
 // A classe contém `c` (sem a negação da classe e sem case folding)?
 @(private="file")
-re_class_raw :: proc(inst: Re_Inst, c: rune) -> bool {
+re_class_raw :: proc(inst: Re_Inst, c: rune, icase, uni: bool) -> bool {
     hit := false
     for r in inst.ranges {
         if c >= r.lo && c <= r.hi { hit = true; break }
@@ -1304,7 +1257,16 @@ re_class_raw :: proc(inst: Re_Inst, c: rune) -> bool {
     // a sua). Consultadas depois dos ranges — em `[a-z\p{L}]` qualquer um serve.
     if !hit {
         for pr in inst.props {
-            m := re_prop_match(pr.kind, c)
+            m := re_prop_match(pr.id, c)
+            if !m && pr.negate && pr.fold_before_negation && icase && uni {
+                k := re_canon(c, true)
+                m = re_prop_match(pr.id, k)
+                i := re_fold_inverse_start(k)
+                for !m && i < len(RE_UNICODE_FOLD_INVERSE) && RE_UNICODE_FOLD_INVERSE[i][0] == k {
+                    m = re_prop_match(pr.id, RE_UNICODE_FOLD_INVERSE[i][1])
+                    i += 1
+                }
+            }
             if pr.negate do m = !m
             if m { hit = true; break }
         }
@@ -1320,6 +1282,16 @@ re_class_raw :: proc(inst: Re_Inst, c: rune) -> bool {
         hit = !in_neg
     }
     return hit
+}
+
+@(private="file")
+re_fold_inverse_start :: proc(c: rune) -> int {
+    lo, hi := 0, len(RE_UNICODE_FOLD_INVERSE)
+    for lo < hi {
+        mid := lo + (hi-lo)/2
+        if RE_UNICODE_FOLD_INVERSE[mid][0] < c { lo = mid+1 } else { hi = mid }
+    }
+    return lo
 }
 
 @(private="file")
@@ -1340,7 +1312,21 @@ re_backtrack :: proc(prog: []Re_Inst, pc, sp: int, ctx: ^Re_Ctx) -> bool {
         if sp < n && (.S in inst.mods || !re_is_lt(ctx.s[sp])) do return re_backtrack(prog, pc+1, sp+1, ctx)
         return false
     case .Class:
-        if sp < n && re_inst_class_match(inst, ctx.s[sp], ctx.uni) do return re_backtrack(prog, pc+1, sp+1, ctx)
+        if inst.set != nil {
+            for str in inst.strings {
+                if len(str) == 0 || sp+len(str) > n do continue
+                if re_runes_eq(str, ctx.s[sp:sp+len(str)], .I in inst.mods, ctx.uni) &&
+                   cset_has_str(inst.set, str, .I in inst.mods, ctx.uni) {
+                    if re_backtrack(prog, pc+1, sp+len(str), ctx) do return true
+                }
+            }
+        }
+        if sp < n && re_inst_class_match(inst, ctx.s[sp], ctx.uni) {
+            if re_backtrack(prog, pc+1, sp+1, ctx) do return true
+        }
+        if inst.set != nil do for str in inst.strings {
+            if len(str) == 0 && cset_has_str(inst.set, str, .I in inst.mods, ctx.uni) do return re_backtrack(prog, pc+1, sp, ctx)
+        }
         return false
     case .Split:
         if re_backtrack(prog, inst.x, sp, ctx) do return true
@@ -1412,47 +1398,30 @@ re_backtrack :: proc(prog: []Re_Inst, pc, sp: int, ctx: ^Re_Ctx) -> bool {
     return false
 }
 
-// Resultado de um casamento: offsets de BYTE na string original. groups[0..1] é o
-// casamento inteiro; grupos i em [2i, 2i+1]. -1 = grupo não capturado.
+// Captures and start positions are UTF-16 code-unit indices, like JS APIs.
 Re_Match :: struct { ok: bool, groups: []int }
 
-// Procura o padrão em `subject` a partir do byte `start`. O chamador deve liberar
-// m.groups (context.allocator). Índices de byte; use com subject[a:b].
-// `anchored` (flag y): tenta casar SÓ na posição inicial, sem varrer adiante.
 regex_run :: proc(re: ^Regex, subject: string, start: int, anchored := false) -> Re_Match {
-    // decodifica em runes + offsets de byte (boff[i] = byte da rune i; boff[n]=len)
-    runes := make([dynamic]rune, context.temp_allocator)
-    boff  := make([dynamic]int, context.temp_allocator)
-    i := 0
-    for i < len(subject) {
-        r, w := utf8.decode_rune(subject[i:])
-        append(&runes, r); append(&boff, i)
-        i += w
-    }
-    append(&boff, len(subject))
-    n := len(runes)
-
-    // índice de rune inicial correspondente ao byte `start`
-    start_ri := n
-    for k in 0 ..< n do if boff[k] >= start { start_ri = k; break }
-    if start <= 0 do start_ri = 0
-
+    points := re.unicode || re.unicode_sets
+    runes := js_string_chars(subject, points)
+    offsets := make([]int, len(runes)+1, context.temp_allocator)
+    for r, i in runes do offsets[i+1] = offsets[i] + (2 if r > 0xFFFF else 1)
+    if start > offsets[len(runes)] do return Re_Match{}
+    start_ri := 0
+    for start_ri < len(runes) && offsets[start_ri+1] <= start do start_ri += 1
     nslots := 2 * (re.ngroups + 1)
-    ctx := Re_Ctx{s = runes[:], uni = re.unicode || re.unicode_sets, lb_target = -1, caps = make([]int, nslots, context.temp_allocator)}
-
-    for sp := start_ri; sp <= n; sp += 1 {
+    ctx := Re_Ctx{s = runes, uni = points, lb_target = -1, caps = make([]int, nslots, context.temp_allocator)}
+    for sp := start_ri; sp <= len(runes); sp += 1 {
         for j in 0 ..< nslots do ctx.caps[j] = -1
         ctx.steps = 0
         if re_backtrack(re.prog, 0, sp, &ctx) {
-            g := make([]int, nslots) // byte offsets; caller libera
-            for j in 0 ..< nslots {
-                g[j] = ctx.caps[j] < 0 ? -1 : boff[ctx.caps[j]]
-            }
-            return Re_Match{ok = true, groups = g}
+            groups := make([]int, nslots)
+            for j in 0 ..< nslots do groups[j] = -1 if ctx.caps[j] < 0 else offsets[ctx.caps[j]]
+            return Re_Match{ok = true, groups = groups}
         }
-        if anchored do break // flag y: só a posição inicial
+        if anchored do break
     }
-    return Re_Match{ok = false}
+    return Re_Match{}
 }
 
 // Libera o programa e as strings de um Regex (chamado por vm_destroy).
@@ -1476,6 +1445,7 @@ regex_destroy :: proc(re: ^Regex) {
 re_free_prog :: proc(prog: []Re_Inst) {
     for inst in prog {
         if inst.op == .Class {
+            delete(inst.strings)
             delete(inst.ranges); delete(inst.nranges); delete(inst.props)
             if inst.set != nil do cset_free(inst.set)
         }
@@ -1591,8 +1561,8 @@ regexp_ctor_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 // re.test(str) -> bool. Com flag g, avança lastIndex a cada chamada.
 @(private="file")
-// lastIndex é mantido em RUNES (a unidade dos índices do JS); converte p/ byte
-// na hora de rodar. Casamento vazio avança 1 RUNE (não 1 byte).
+// lastIndex usa unidades UTF-16. exec/test não avançam um casamento vazio;
+// os consumidores globais usam AdvanceStringIndex conforme as flags u/v.
 regex_test_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     re, ok := this.(^Regex)
     if !ok do return false
@@ -1600,15 +1570,14 @@ regex_test_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     stateful := re.global || re.sticky // ambos usam/atualizam lastIndex
     start := stateful ? re.last_index : 0
     if start > str_rlen(s) { re.last_index = 0; return false }
-    m := regex_run(re, s, str_rbyte(s, start), re.sticky)
+    m := regex_run(re, s, start, re.sticky)
     if !m.ok {
         if stateful do re.last_index = 0
         return false
     }
     defer delete(m.groups)
     if stateful {
-        re.last_index = str_rindex(s, m.groups[1])
-        if m.groups[1] == m.groups[0] do re.last_index += 1 // casamento vazio: avança
+        re.last_index = m.groups[1]
     }
     return true
 }
@@ -1620,23 +1589,22 @@ regex_exec_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if !ok do return JS_Null{}
     s := to_string_value(vm, arg(args, 0))
     stateful := re.global || re.sticky
-    start := stateful ? re.last_index : 0 // em RUNES (ver test)
+    start := stateful ? re.last_index : 0 // em unidades UTF-16
     if start > str_rlen(s) { re.last_index = 0; return JS_Null{} }
-    m := regex_run(re, s, str_rbyte(s, start), re.sticky)
+    m := regex_run(re, s, start, re.sticky)
     if !m.ok {
         if stateful do re.last_index = 0
         return JS_Null{}
     }
     defer delete(m.groups)
     if stateful {
-        re.last_index = str_rindex(s, m.groups[1])
-        if m.groups[1] == m.groups[0] do re.last_index += 1
+        re.last_index = m.groups[1]
     }
     return regex_result_array(vm, re, s, m)
 }
 
 // Monta o array [casamento inteiro, grupo1, grupo2, ...] (grupo ausente =
-// undefined), com .index (offset do casamento, em BYTES como o resto do motor)
+// undefined), com .index em unidades UTF-16
 // e .input (a string inteira) — usado por exec e str_match sem /g, como na spec.
 regex_result_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> Value {
     arr := new_array(vm)
@@ -1645,11 +1613,11 @@ regex_result_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> V
         if gs < 0 {
             append(&arr.items, nil) // grupo não capturado => undefined
         } else {
-            append(&arr.items, own_str(vm, s[gs:ge]))
+            append(&arr.items, own_str(vm, str_rslice(s, gs, ge)))
         }
     }
     arr.props = make(map[string]Value)
-    arr.props["index"] = f64(str_rindex(s, m.groups[0])) // em RUNES (consistente com slice etc.)
+    arr.props["index"] = f64(m.groups[0]) // em unidades UTF-16
     arr.props["input"] = own_str(vm, s)
     if len(re.gnames) > 0 do arr.props["groups"] = regex_groups_object(vm, re, s, m) // m.groups.nome
     if re.has_indices do arr.props["indices"] = regex_indices_array(vm, re, s, m)
@@ -1666,7 +1634,7 @@ regex_indices_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> 
         gs, ge := m.groups[2*g], m.groups[2*g+1]
         if gs < 0 do return nil
         a := new_array(vm)
-        append(&a.items, f64(str_rindex(s, gs)), f64(str_rindex(s, ge)))
+        append(&a.items, f64(gs), f64(ge))
         return a
     }
     ind := new_array(vm)
@@ -1706,7 +1674,7 @@ regex_groups_object :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> 
         v: Value = nil
         if 2 * p.gi + 1 < len(m.groups) {
             gs, ge := m.groups[2 * p.gi], m.groups[2 * p.gi + 1]
-            if gs >= 0 do v = own_str(vm, s[gs:ge])
+            if gs >= 0 do v = own_str(vm, str_rslice(s, gs, ge))
         }
         oput(gobj, own_str_raw(vm, p.name), v)
     }

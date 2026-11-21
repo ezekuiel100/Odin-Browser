@@ -1795,10 +1795,8 @@ concat :: proc(vm: ^Interp, a, b: Value) -> Value {
     strings.builder_init(&sb)
     write_text_spec(&sb, vm, a) // ToString da spec: respeita toString/@@toPrimitive
     write_text_spec(&sb, vm, b)
-    s := strings.clone(strings.to_string(sb))
-    strings.builder_destroy(&sb)
-    append(&vm.owned_strings, s)
-    return s
+    defer strings.builder_destroy(&sb)
+    return own_str(vm, strings.to_string(sb))
 }
 
 @(private = "file")
@@ -1917,19 +1915,19 @@ binop :: proc(vm: ^Interp, op: Token_Kind, l, r: Value) -> Value {
     case .EqEqEq:  return l == r
     case .NotEqEq: return l != r
     // relacionais: DUAS strings comparam lexicograficamente (spec: por code
-    // units — byte a byte em UTF-8 dá a mesma ordem p/ quase tudo); senão, numérico.
+    // units, inclusive para caracteres astrais); senão, numérico.
     // 'b' > 'a', '2024-06' < '2024-07' (datas ISO) etc.
     case .Lt:
-        if ls, lok := l.(string); lok { if rs, rok := r.(string); rok do return ls < rs }
+        if ls, lok := l.(string); lok { if rs, rok := r.(string); rok do return js_string_compare(ls, rs) < 0 }
         return as_number(l) <  as_number(r)
     case .Gt:
-        if ls, lok := l.(string); lok { if rs, rok := r.(string); rok do return ls > rs }
+        if ls, lok := l.(string); lok { if rs, rok := r.(string); rok do return js_string_compare(ls, rs) > 0 }
         return as_number(l) >  as_number(r)
     case .LtEq:
-        if ls, lok := l.(string); lok { if rs, rok := r.(string); rok do return ls <= rs }
+        if ls, lok := l.(string); lok { if rs, rok := r.(string); rok do return js_string_compare(ls, rs) <= 0 }
         return as_number(l) <= as_number(r)
     case .GtEq:
-        if ls, lok := l.(string); lok { if rs, rok := r.(string); rok do return ls >= rs }
+        if ls, lok := l.(string); lok { if rs, rok := r.(string); rok do return js_string_compare(ls, rs) >= 0 }
         return as_number(l) >= as_number(r)
     case .Instanceof: return js_instanceof(vm, l, r)
     case .In: return js_in(vm, l, r)
@@ -2745,7 +2743,7 @@ get_index :: proc(vm: ^Interp, obj: Value, key: Value) -> Value {
         // e hook de host — igual ao acesso por ponto.
         return get_member(vm, o, key_string(vm, key))
     case string:
-        // s[i]: a rune no índice i (code point; 'café'[3] = 'é')
+        // s[i]: uma unidade UTF-16, inclusive metades isoladas de surrogates.
         if kn := as_number(key); kn == kn && math.trunc(kn) == kn {
             ch := str_rune_at(o, int(kn))
             if ch == "" do return nil
@@ -2944,8 +2942,7 @@ eval_args :: proc(vm: ^Interp, nodes: [dynamic]^Node, env: ^Env) -> [dynamic]Val
                 // ...str = um item por code point (strings são iteráveis)
                 starts: [dynamic]int
                 defer delete(starts)
-                for _, i in s do append(&starts, i)
-                append(&starts, len(s))
+                js_code_point_offsets(s, &starts)
                 for k := 0; k + 1 < len(starts); k += 1 {
                     append(&out, own_str(vm, s[starts[k]:starts[k + 1]]))
                 }
@@ -3388,8 +3385,7 @@ collect_sync_values :: proc(vm: ^Interp, it: Value, out: ^[dynamic]Value) {
     case string:
         starts: [dynamic]int
         defer delete(starts)
-        for _, i in o do append(&starts, i)
-        append(&starts, len(o))
+        js_code_point_offsets(o, &starts)
         for k := 0; k + 1 < len(starts); k += 1 {
             append(out, own_str(vm, o[starts[k]:starts[k + 1]]))
         }
@@ -3526,8 +3522,7 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             // um valor por code point (fatias válidas da string, clonadas ao vm)
             starts: [dynamic]int
             defer delete(starts)
-            for _, i in o do append(&starts, i)
-            append(&starts, len(o))
+            js_code_point_offsets(o, &starts)
             for k := 0; k + 1 < len(starts); k += 1 {
                 append(&values, own_str(vm, o[starts[k]:starts[k + 1]]))
             }
@@ -5310,8 +5305,7 @@ eval_yield_star :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     case string:
         starts: [dynamic]int
         defer delete(starts)
-        for _, i in s do append(&starts, i)
-        append(&starts, len(s))
+        js_code_point_offsets(s, &starts)
         for k := 0; k + 1 < len(starts); k += 1 {
             generator_yield(vm, own_str(vm, s[starts[k]:starts[k + 1]]))
             if vm.throwing || vm.returning || vm.gen_hard_kill do return nil

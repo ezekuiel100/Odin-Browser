@@ -33,6 +33,7 @@ invariantes/CRC que a própria spec publica e se recusa a escrever se divergir.
 | `src/brotli/dict.bin`, tabelas de transformação e LUTs | [RFC 7932](https://www.rfc-editor.org/rfc/rfc7932.txt) (Brotli) | `tools/brotli-tables.py` |
 | `src/woff2/*` — `W2_TRIPLET`, `W2_KNOWN_TAGS` | [WOFF2, W3C](https://www.w3.org/TR/WOFF2/) | `tools/woff2-tables.py` |
 | `src/html/entities_gen.odin` | tabela de entidades do WHATWG HTML | `tools/gen-entities.ps1` |
+| `src/js/unicode_tables_gen.odin` | UCD e sequências emoji do [Unicode 17.0.0](https://www.unicode.org/Public/17.0.0/), sob [Unicode License v3](src/js/unicode-LICENSE.txt) | `tools/gen-js-unicode.py` (versão e SHA-256 dos dados fixados) |
 
 `src/woff2/testdata/roboto.woff2` é a fonte **Roboto** (Google Fonts), sob
 Apache License 2.0 — está aqui porque um teste afirma que ela declara 18 tabelas.

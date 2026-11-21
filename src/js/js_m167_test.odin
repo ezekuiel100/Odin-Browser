@@ -8,12 +8,8 @@ package js
 // tradução, então `length`, `s[i]`, slice/substring/indexOf, `.index` de regex e
 // `lastIndex` acertaram todos de uma vez.
 //
-// ⚠️ DEGRADAÇÃO ANOTADA (testada em m167_par_surrogate_e_atomico): metade de um par
-// surrogate não é representável em UTF-8, então um índice que cai NO MEIO de um par
-// arredonda para a fronteira seguinte e o par é tratado atomicamente. `slice(0,1)`
-// de um emoji devolve o emoji, não o high surrogate solto. O que isso preserva — e
-// é o que importa na prática — é `s.slice(0,i) + s.slice(i) === s` para todo i.
-// `charCodeAt` NÃO sofre disso: devolve um número, e o surrogate correto.
+// Cortes no meio de pares agora preservam os surrogates isolados em WTF-8.
+// A concatenação recompõe os pares, mantendo a identidade UTF-16.
 //
 // Os literais de emoji são montados por String.fromCodePoint para o FONTE deste
 // arquivo ficar ASCII puro (char invisível/astral no fonte é armadilha recorrente).
@@ -106,11 +102,9 @@ m167_slice_em_fronteiras_normais :: proc(t: ^testing.T) {
 }
 
 @(test)
-m167_par_surrogate_e_atomico :: proc(t: ^testing.T) {
-    // A degradação: um índice no meio do par arredonda p/ a fronteira seguinte,
-    // então slice(0,1) devolve o emoji inteiro em vez do high surrogate solto.
-    testing.expect_value(t, run(EMOJI + `.slice(0,1) === ` + EMOJI).(bool), true)
-    // MAS a propriedade que importa se mantém para TODO índice:
+m167_par_surrogate_pode_ser_fatiado :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(EMOJI + `.slice(0,1) === "\uD83D"`).(bool), true)
+    // Reconstrução para TODO índice, inclusive no meio do par.
     src := `
         var s = "ab" + String.fromCodePoint(0x1F600) + "cd";
         var ruins = [];
@@ -145,8 +139,8 @@ m167_metodos_que_usam_length :: proc(t: ^testing.T) {
     // padStart/repeat/at/split contam pelo mesmo str_rlen
     testing.expect_value(t, as_number(run(`String.fromCodePoint(0x1F600).padStart(4, "-").length`)), f64(4))
     testing.expect_value(t, as_number(run(`String.fromCodePoint(0x1F600).repeat(2).length`)), f64(4))
-    testing.expect_value(t, run(`String.fromCodePoint(0x1F600).at(0) === String.fromCodePoint(0x1F600)`).(bool), true)
+    testing.expect_value(t, run(`String.fromCodePoint(0x1F600).at(0) === "\uD83D"`).(bool), true)
     testing.expect_value(t, run_s(`"abc".at(-1)`), "c")
-    testing.expect_value(t, as_number(run(`("a" + String.fromCodePoint(0x1F600)).split("").length`)), f64(2)) // split por code point
+    testing.expect_value(t, as_number(run(`("a" + String.fromCodePoint(0x1F600)).split("").length`)), f64(3)) // split por code unit
     testing.expect_value(t, as_number(run(`JSON.stringify(String.fromCodePoint(0x1F600)).length`)), f64(4)) // 2 aspas + 2 units
 }
