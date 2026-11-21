@@ -186,10 +186,6 @@ m219_iterador_ainda_e_iteravel_de_si_mesmo :: proc(t: ^testing.T) {
 // herdadas também. Foi o que impediu o envenenamento de aparecer em enumeração (só em
 // `in` e em leitura). Mexer nisso afeta todo `for-in` do corpus e é marco próprio.
 //
-// DEGRADAÇÃO CONHECIDA: os iteradores de Map/Set/string compartilham o MESMO
-// %ArrayIteratorPrototype% (a spec tem um %MapIteratorPrototype%, um
-// %SetIteratorPrototype% e um %StringIteratorPrototype% distintos, cada um com o seu
-// Symbol.toStringTag). Isso é observável por `Object.prototype.toString.call(m.keys())`
-// — que aqui não diz "[object Map Iterator]" — e por quem comparar os protótipos entre
-// si. Nenhum dos dois aparece no corpus; o que importava era existir o degrau, porque é
-// ELE que os polyfills procuram.
+// Map/Set agora possuem prototypes próprios, ambos sobre %IteratorPrototype%,
+// com next e Symbol.toStringTag distintos (js_collection_iterator_test.odin).
+// Iteradores de string ainda compartilham %ArrayIteratorPrototype%.

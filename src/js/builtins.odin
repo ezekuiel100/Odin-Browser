@@ -3241,6 +3241,7 @@ install_builtins :: proc(vm: ^Interp) {
     vm.array_iter_proto = new_object(vm)
     vm.array_iter_proto.proto = vm.iter_proto
     vm.array_iter_proto.props["next"] = vm.iter_next_fn
+    install_collection_iterators(vm)
     install_proxy(vm)  // Proxy + Reflect (proxy.odin)
     install_typed_arrays(vm) // ArrayBuffer / Uint8Array / ... / DataView (typedarray.odin)
     install_bigint(vm) // BigInt (bigint.odin)

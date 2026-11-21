@@ -17,6 +17,14 @@ Coll_Kind :: enum { Map, Set, Weak_Map, Weak_Set }
 Coll_Method :: enum { Set, Get, Add, Has, Delete, Clear, For_Each, Keys, Values, Entries, Size }
 COLL_METHOD_STRIDE :: 16
 
+Coll_Iterator :: struct {
+    collection: ^Collection,
+    source: Value, // retain subclass receiver identity as well as its backing
+    cursor: int,
+    method: Coll_Method,
+    kind: Coll_Kind, // retained after exhaustion for next()'s brand check
+}
+
 // Shared storage does not imply shared internal slots. The function's bound
 // tag records its required collection kind independently of the receiver.
 coll_method_dispatch :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
@@ -40,9 +48,9 @@ coll_method_dispatch :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     case .Delete: return coll_delete(vm, c, args)
     case .Clear: return coll_clear(vm, c, args)
     case .For_Each: return coll_for_each(vm, this, args)
-    case .Keys: return coll_keys(vm, c, args)
-    case .Values: return coll_values(vm, c, args)
-    case .Entries: return coll_entries(vm, c, args)
+    case .Keys: return coll_keys(vm, this, args)
+    case .Values: return coll_values(vm, this, args)
+    case .Entries: return coll_entries(vm, this, args)
     case .Size: return f64(c.size)
     }
     return nil
@@ -284,31 +292,95 @@ coll_for_each :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 coll_keys :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    out := new_array(vm)
-    if c, ok := this.(^Collection); ok do for e in c.entries do if !e.dead do append(&out.items, e.key)
-    return make_array_iterator(vm, out) // Map/Set.keys() → ITERADOR (não array), como no JS
+    return make_collection_iterator(vm, coll_receiver(this), this, .Keys)
 }
 
 @(private = "file")
 coll_values :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    out := new_array(vm)
-    if c, ok := this.(^Collection); ok do for e in c.entries do if !e.dead do append(&out.items, e.val)
-    return make_array_iterator(vm, out)
+    return make_collection_iterator(vm, coll_receiver(this), this, .Values)
 }
 
 @(private = "file")
 coll_entries :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    out := new_array(vm)
-    if c, ok := this.(^Collection); ok {
-        for e in c.entries {
-            if e.dead do continue
-            pair := new_array(vm)
-            append(&pair.items, e.key)
-            append(&pair.items, e.val)
-            append(&out.items, pair)
-        }
+    return make_collection_iterator(vm, coll_receiver(this), this, .Entries)
+}
+
+@(private = "file")
+make_collection_iterator :: proc(vm: ^Interp, c: ^Collection, source: Value, method: Coll_Method) -> Value {
+    o := new_object(vm)
+    o.proto = vm.collection_iter_protos[c.kind]
+    o.coll_iter = new(Coll_Iterator)
+    o.coll_iter^ = Coll_Iterator{collection = c, source = source, method = method, kind = c.kind}
+    // Slots must stay stable until next() reports done or GC discards the
+    // iterator. This also makes clear() preserve cursors into the old slots.
+    c.iterating += 1
+    return o
+}
+
+@(private = "file")
+coll_iterator_release :: proc(it: ^Coll_Iterator) {
+    if it.collection != nil {
+        it.collection.iterating -= 1
+        it.collection = nil
+        it.source = nil
     }
-    return make_array_iterator(vm, out)
+}
+
+// Object sweeping/destruction runs before collection storage is freed.
+coll_iterator_destroy :: proc(o: ^Object) {
+    if o.coll_iter == nil do return
+    coll_iterator_release(o.coll_iter)
+    free(o.coll_iter)
+    o.coll_iter = nil
+}
+
+@(private = "file")
+coll_iterator_next :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := this.(^Object)
+    kind := Coll_Kind(int(vm.native_bound.(f64)))
+    if !ok || o.coll_iter == nil || o.coll_iter.kind != kind || proxy_state(this) != nil {
+        throw_type_error(vm, "Collection iterator next called on incompatible receiver")
+        return nil
+    }
+    it := o.coll_iter
+    result := new_object(vm)
+    result.props["done"] = true
+    result.props["value"] = nil
+    if c := it.collection; c != nil {
+        for it.cursor < len(c.entries) {
+            e := c.entries[it.cursor]
+            it.cursor += 1
+            if e.dead do continue
+            value := e.val
+            if it.method == .Keys do value = e.key
+            if it.method == .Entries {
+                pair := new_array(vm)
+                append(&pair.items, e.key, e.val)
+                value = pair
+            }
+            result.props["done"] = false
+            result.props["value"] = value
+            return result
+        }
+        coll_iterator_release(it)
+    }
+    return result
+}
+
+// Called after the shared %IteratorPrototype% is installed.
+install_collection_iterators :: proc(vm: ^Interp) {
+    for kind in ([]Coll_Kind{.Map, .Set}) {
+        proto := new_object(vm)
+        proto.proto = vm.iter_proto
+        next := mk_builtin_method(vm, coll_iterator_next, "next", 0)
+        next.bound = f64(kind)
+        proto.props["next"] = next
+        mark_non_enumerable(proto, "next")
+        proto.props[vm.sym_tostring_tag_key] = "Map Iterator" if kind == .Map else "Set Iterator"
+        mark_non_enumerable(proto, vm.sym_tostring_tag_key)
+        proto.attrs[vm.sym_tostring_tag_key] = {.Configurable}
+        vm.collection_iter_protos[kind] = proto
+    }
 }
 
 // Iterador simples: objeto com `next()` que percorre um array + cursor, devolvendo

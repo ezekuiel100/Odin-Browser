@@ -59,6 +59,7 @@ Object :: struct {
     set:    Prop_Set,  // hook opcional de escrita
     geti:   Prop_Get_Idx, // hook opcional de leitura por índice inteiro (atalho do `get`)
     gen:    ^Generator, // != nil se este objeto é uma INSTÂNCIA de generator (generator.odin)
+    coll_iter: ^Coll_Iterator, // private state for live Map/Set iterators
     px_revoked: bool,
     px_self: Value,
     px_target:  Value,   // Proxy: o alvo envolvido (nil se não é proxy — ver px_handler)
@@ -403,6 +404,7 @@ Interp :: struct {
     object_methods: map[string]^Function, // métodos de todo objeto (hasOwnProperty, ...)
     collection_methods: map[string]^Function, // métodos de Map/Set/WeakMap/WeakSet (set, get, has, ...)
     collection_protos: [Coll_Kind]^Object, // intrinsic prototypes, independent of replaced globals
+    collection_iter_protos: [Coll_Kind]^Object,
     regex_test_fn:  ^Function,             // RegExp.prototype.test/exec (regex.odin)
     regex_exec_fn:  ^Function,
     regex_tostring_fn: ^Function,          // RegExp.prototype.toString ("/fonte/flags")
@@ -1194,6 +1196,7 @@ vm_destroy :: proc(vm: ^Interp) {
     delete(vm.all_modules)
     if vm.module_stubs != nil do delete(vm.module_stubs)
     for o in vm.all_objects {
+        coll_iterator_destroy(o)
         delete(o.props)
         delete(o.korder)
         if o.getters != nil do delete(o.getters)
@@ -2906,7 +2909,10 @@ write_target :: proc(vm: ^Interp, t: ^Node, val: Value, env: ^Env, strict := fal
 // cai nos caminhos nativos Array/string/Collection).
 get_iterator :: proc(vm: ^Interp, v: Value) -> (Value, bool) {
     if is_iterator_obj(v) do return v, true
-    if _, ok := v.(^Object); !ok do return nil, false
+    #partial switch _ in v {
+    case ^Object, ^Collection:
+    case: return nil, false
+    }
     m := get_member(vm, v, vm.sym_iterator_key)
     fn, fok := m.(^Function)
     if !fok do return nil, false
@@ -2976,25 +2982,6 @@ eval_args :: proc(vm: ^Interp, nodes: [dynamic]^Node, env: ^Env) -> [dynamic]Val
         if vm.throwing do break
     }
     return out
-}
-
-// Materializa um Set/Map nativo num ^Array p/ destructuring posicional `[a,b] = s`
-// (finito e sem efeito colateral: dá no mesmo que iterá-lo). Iteráveis por
-// PROTOCOLO não passam por aqui — são puxados um a um (pattern_iter_step).
-@(private = "file")
-materialize_collection :: proc(vm: ^Interp, c: ^Collection) -> ^Array {
-    arr := new_array(vm)
-    if c.kind == .Set || c.kind == .Weak_Set {
-        for e in c.entries do if !e.dead do append(&arr.items, e.key)
-    } else {
-        for e in c.entries {
-            if e.dead do continue // Map: pares [k,v] (como o for-of)
-            pair := new_array(vm)
-            append(&pair.items, e.key); append(&pair.items, e.val)
-            append(&arr.items, pair)
-        }
-    }
-    return arr
 }
 
 // Um passo do iterador de um padrão de array (IteratorStepValue, spec 7.4.8): devolve
@@ -3129,7 +3116,7 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
     computed_consumed: map[string]bool
     defer delete(computed_consumed)
     // destructuring de ARRAY sobre um iterável não-array. Array e string seguem o
-    // caminho rápido (get_index os cobre por índice); Set/Map nativos materializam.
+    // caminho rápido (get_index os cobre por índice); Set/Map usam iteradores vivos.
     // Iterável por PROTOCOLO (generator, iterador, objeto com Symbol.iterator) é
     // PUXADO um next() por elemento — `[a] = gen()` puxa UM valor, não drena o
     // gerador — e fechado (return()) no fim se não terminou (spec 8.6.2/13.15.5.5).
@@ -3159,9 +3146,7 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
     if !pat.bval {
         #partial switch v in val {
         case ^Array, string: // caminho rápido posicional
-        case ^Collection:
-            val = materialize_collection(vm, v)
-        case ^Object:
+        case ^Object, ^Collection:
             if it, ok := get_iterator(vm, v); ok {
                 iter, iter_next, by_protocol = it, iterator_next_fn(it), true
             } else if vm.throwing {

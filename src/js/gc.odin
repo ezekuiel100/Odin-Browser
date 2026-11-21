@@ -63,6 +63,10 @@ gc_drain :: proc(gp: ^GC_State) {
             gc_push(&g, x.px_self)
             gc_push(&g, x.ab)
             gc_push(&g, x.prim)
+            if x.coll_iter != nil {
+                gc_push(&g, x.coll_iter.collection)
+                gc_push(&g, x.coll_iter.source)
+            }
         case ^Array:
             for v in x.items {
                 gc_push(&g, v)
@@ -221,6 +225,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
         gc_push(&g, v)
     }
     for proto in vm.collection_protos do gc_push(&g, proto)
+    for proto in vm.collection_iter_protos do gc_push(&g, proto)
     gc_push(&g, vm.regex_test_fn)
     gc_push(&g, vm.regex_exec_fn)
     gc_push(&g, vm.regex_tostring_fn)
@@ -366,6 +371,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
     for o in vm.all_objects {
         if g.seen[rawptr(o)] { vm.all_objects[live_all_objects] = o; live_all_objects += 1; continue }
 
+        coll_iterator_destroy(o)
         delete(o.props)
         delete(o.korder)
         if o.getters != nil do delete(o.getters)
