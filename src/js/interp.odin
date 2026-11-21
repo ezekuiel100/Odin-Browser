@@ -2840,7 +2840,7 @@ set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) -> bool {
 ref_read :: proc(vm: ^Interp, t: ^Node, env: ^Env, obj: Value, key: Value) -> Value {
     #partial switch t.kind {
     case .Ident:
-        v, _ := env_get(env, t.name)
+        v, _ := env_get(env, t.name, vm)
         return v
     case .Member:
         return get_member(vm, obj, t.name)
@@ -2871,7 +2871,7 @@ ref_write :: proc(vm: ^Interp, t: ^Node, env: ^Env, obj: Value, key: Value, val:
 read_target :: proc(vm: ^Interp, t: ^Node, env: ^Env) -> Value {
     #partial switch t.kind {
     case .Ident:
-        v, _ := env_get(env, t.name)
+        v, _ := env_get(env, t.name, vm)
         return v
     case .Member:
         return get_member(vm, eval(vm, t.left, env), t.name)
@@ -3724,6 +3724,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     case .Update:
         // ++x / x++ / --x / x--
         old := read_target(vm, n.left, env)
+        if vm.throwing do return nil
         if ob, ok := old.(^BigInt); ok { // BigInt: ++ soma 1n (não Number 1)
             one := bigint_from_i64(vm, 1)
             nb := n.op == .PlusPlus ? bigint_add(vm, ob, one) : bigint_sub(vm, ob, one)

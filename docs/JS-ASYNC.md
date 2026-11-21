@@ -47,6 +47,9 @@ antes do callback. Mutações durante callbacks agendam outra notificação no f
 da FIFO; não há limite de quatro rodadas. `takeRecords` e `disconnect` esvaziam
 records sem remover ou reposicionar a microtask já agendada.
 
+As leituras em `+=`, `&&=`, `||=`, `??=` e `++` verificam a TDZ antes
+de avaliar o lado direito ou escrever no binding.
+
 ## Limites atuais
 
 - Não há espera bloqueante nem timeout artificial para `await`. Uma Promise

@@ -438,3 +438,23 @@ test_mo_disconnect_before_notify_allows_later_observe :: proc(t: ^testing.T) {
     vm_run(vm, `mo.observe(el, {attributes:true}); el.setAttribute('x', '2');`)
     testing.expect_value(t, as_number(vm_run(vm, `count`)), 1)
 }
+
+@(test)
+test_mo_callback_mutates_pending_observer_before_await :: proc(t: ^testing.T) {
+    root := build_mo_dom(); defer dom.free_tree(root)
+    vm := vm_create_with_dom(root); defer vm_free(vm)
+    vm_run(vm, `
+        var order = '', el = document.getElementById('s');
+        var first = new MutationObserver(function(){
+            order += 'a,';
+            el.setAttribute('y', '2');
+            queueMicrotask(function(){order += 'q,';});
+            first.disconnect();
+        });
+        var second = new MutationObserver(function(records){order += 'b' + records.length + ',';});
+        first.observe(el, {attributes:true}); second.observe(el, {attributes:true});
+        el.setAttribute('x', '1');
+        (async function(){await 0; order += 'await,';})();
+    `)
+    testing.expect_value(t, vm_run(vm, `order`).(string), "a,b2,await,q,")
+}

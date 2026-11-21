@@ -330,3 +330,22 @@ ciclo_default_arrow_permanece_na_tdz :: proc(t: ^testing.T) {
     vm_run_module(vm, `import f from "a.js"; result += ',' + f();`)
     testing.expect_value(t, vm_run(vm, `result`).(string), "ReferenceError,5")
 }
+
+@(test)
+ciclo_tdz_atribuicoes_leem_antes_do_rhs :: proc(t: ^testing.T) {
+    vm := ciclo_vm(); defer vm_free(vm)
+    vm_run(vm, `var result = '', effects = 0;`)
+    vm.module_stubs["a.js"] = `import "b.js"; export let x = 7;`
+    vm.module_stubs["b.js"] = `
+        import {x} from "a.js";
+        try {x &&= ++effects;} catch(e) {result += e.name + ',';}
+        try {x ||= ++effects;} catch(e) {result += e.name + ',';}
+        try {x ??= ++effects;} catch(e) {result += e.name + ',';}
+        try {x += ++effects;} catch(e) {result += e.name + ',';}
+        try {x++;} catch(e) {result += e.name + ',';}
+    `
+    vm_run_module(vm, `import "a.js";`)
+    testing.expect_value(t, vm_run(vm, `result`).(string),
+        "ReferenceError,ReferenceError,ReferenceError,ReferenceError,ReferenceError,")
+    testing.expect_value(t, as_number(vm_run(vm, `effects`)), 0)
+}
