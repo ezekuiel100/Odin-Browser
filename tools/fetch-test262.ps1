@@ -93,7 +93,25 @@ $areas = @(
     # destructuring (binding e atribuicao): baixadas INTEIRAS com -PerDir 1000
     # (79 + 338 arquivos); com o -PerDir padrao so os 25 primeiros (array-*) entram.
     "language/statements/variable/dstr",
-    "language/expressions/assignment/dstr"
+    "language/expressions/assignment/dstr",
+    # RegExp (21/11/2026: modificadores, flags d/v): tambem INTEIRAS (-PerDir 1000).
+    # O fetcher nao desce em subpasta, por isso cada uma vai listada. O filtro de
+    # features abaixo ainda pula parte delas (regexp-unicode-property-escapes: 66 dos
+    # unicodeSets/generated, varios com \p de STRING/rgi-emoji, que nao tem tabela;
+    # regexp-named-groups: 7 de match-indices). literals/regexp/named-groups (56,
+    # todos named-groups) nem esta listada.
+    "built-ins/RegExp",
+    "built-ins/RegExp/prototype",
+    "built-ins/RegExp/prototype/flags",
+    "built-ins/RegExp/prototype/hasIndices",
+    "built-ins/RegExp/prototype/source",
+    "built-ins/RegExp/prototype/toString",
+    "built-ins/RegExp/prototype/unicodeSets",
+    "built-ins/RegExp/match-indices",
+    "built-ins/RegExp/regexp-modifiers",
+    "built-ins/RegExp/regexp-modifiers/syntax/valid",
+    "built-ins/RegExp/unicodeSets/generated",
+    "language/literals/regexp"
 )
 
 # Features que o motor NAO suporta -> pula qualquer teste que as exija (frontmatter
@@ -101,7 +119,7 @@ $areas = @(
 $unsupportedFeatures = @(
     "BigInt", "async-iteration", "generators", "async-functions",
     "class-static-block", "new.target", "regexp-lookbehind",
-    "regexp-match-indices", "regexp-named-groups", "regexp-unicode-property-escapes",
+    "regexp-named-groups", "regexp-unicode-property-escapes",
     "Array.prototype.flat", "SharedArrayBuffer", "Atomics", "Temporal",
     "tail-call-optimization", "IsHTMLDDA", "decorators", "import-assertions",
     "resizable-arraybuffer", "array-grouping", "Array.fromAsync"

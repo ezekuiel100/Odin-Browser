@@ -112,6 +112,7 @@ gc_drain :: proc(gp: ^GC_State) {
                 }
             }
         case ^Regex:
+            for _, v in x.props do gc_push(&g, v) // expandos (re.toString = ...)
         case ^BigInt:
         case ^Symbol:
         case ^Module:
@@ -219,6 +220,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
     }
     gc_push(&g, vm.regex_test_fn)
     gc_push(&g, vm.regex_exec_fn)
+    gc_push(&g, vm.regex_tostring_fn)
     gc_push(&g, vm.dom_element_ctor)
     gc_push(&g, vm.dom_element_proto)
     gc_push(&g, vm.dom_htmlcollection_proto)

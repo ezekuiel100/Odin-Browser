@@ -397,7 +397,8 @@ Interp :: struct {
     collection_methods: map[string]^Function, // métodos de Map/Set/WeakMap/WeakSet (set, get, has, ...)
     regex_test_fn:  ^Function,             // RegExp.prototype.test/exec (regex.odin)
     regex_exec_fn:  ^Function,
-    dom_element_ctor:      ^Function,             // constructor compartilhado dos elementos DOM (node.constructor.prototype — inputValueTracking do React); é o HTMLElement da hierarquia de interfaces
+    regex_tostring_fn: ^Function,          // RegExp.prototype.toString ("/fonte/flags")
+    dom_element_ctor:     ^Function,             // constructor compartilhado dos elementos DOM (node.constructor.prototype — inputValueTracking do React); é o HTMLElement da hierarquia de interfaces
     dom_element_proto:     ^Object,               // HTMLElement.prototype (proto dos wrappers de elemento; base p/ instanceof + polyfills em Element/Node/HTMLElement.prototype)
     dom_htmlcollection_proto: ^Object,            // HTMLCollection.prototype (el.children — dom_collection.odin)
     dom_nodelist_proto:       ^Object,            // NodeList.prototype (el.childNodes)
@@ -1528,7 +1529,7 @@ to_text :: proc(sb: ^strings.Builder, v: Value) {
         strings.write_byte(sb, ']')
     case ^Regex:
         strings.write_byte(sb, '/')
-        strings.write_string(sb, x.source)
+        regex_write_source(sb, x.source) // `(?:)` p/ vazia, `/` escapado
         strings.write_byte(sb, '/')
         strings.write_string(sb, x.flags)
     case ^Collection:
@@ -2488,19 +2489,22 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         if fn, ok := vm.object_methods[name]; ok do return fn
         return nil
     case ^Regex:
+        if v, has := o.props[name]; has do return v // expando própria (ver set_member)
         switch name {
-        case "source":     return o.source
+        case "source":     return regex_source_text(vm, o)
         case "flags":      return o.flags
         case "global":     return o.global
         case "ignoreCase": return o.icase
         case "multiline":  return o.multiline
         case "dotAll":     return o.dotall
         case "sticky":     return o.sticky
-        case "unicode":    return strings.contains(o.flags, "u")
-        case "hasIndices": return strings.contains(o.flags, "d")
+        case "unicode":    return o.unicode
+        case "unicodeSets": return o.unicode_sets
+        case "hasIndices": return o.has_indices
         case "lastIndex":  return f64(o.last_index)
         case "test":       return vm.regex_test_fn
         case "exec":       return vm.regex_exec_fn
+        case "toString":   return vm.regex_tostring_fn // antes caía no de Object: "[object RegExp]"
         case "constructor": return global_ctor(vm, "RegExp")
         }
         if fn, ok := vm.object_methods[name]; ok do return fn
@@ -2580,8 +2584,16 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
         o.props[name] = val
         return true
     case ^Regex:
-        if name == "lastIndex" do o.last_index = as_int(val) // p/ loops de exec global
-        return true // demais props: o ^Regex não as guarda (limitação, não rejeição)
+        if name == "lastIndex" { o.last_index = as_int(val); return true } // p/ loops de exec global
+        // demais props: expando PRÓPRIA da instância (`re.toString = ...`, marcas de
+        // libs) — sombreia os métodos no get_member, como numa propriedade própria.
+        if o.props == nil do o.props = make(map[string]Value)
+        if _, has := o.props[name]; has {
+            o.props[name] = val
+        } else {
+            o.props[strings.clone(name)] = val
+        }
+        return true
     case ^Array:
         // prop não-índice num array (m.index custom, marcações de libs); índices
         // inteiros passam por set_index.

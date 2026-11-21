@@ -3436,6 +3436,7 @@ check_regex_literal :: proc(p: ^Parser, pattern, flags: string) {
     }
     depth := 0
     in_class := false
+    class_depth := 0 // flag v: classes ANINHAM (`[[a-z]--[aeiou]]`)
     prev_atom := false // há algo p/ o quantificador repetir
     i := 0
     for i < len(pattern) {
@@ -3446,13 +3447,19 @@ check_regex_literal :: proc(p: ^Parser, pattern, flags: string) {
             continue
         }
         if in_class {
-            if c == ']' { in_class = false; prev_atom = true }
+            if c == '[' && seen['v'] {
+                class_depth += 1
+            } else if c == ']' {
+                class_depth -= 1
+                if class_depth == 0 { in_class = false; prev_atom = true }
+            }
             i += 1
             continue
         }
         switch c {
         case '[':
             in_class = true
+            class_depth = 1
         case '(':
             depth += 1
             prev_atom = false
@@ -3497,6 +3504,12 @@ check_regex_literal :: proc(p: ^Parser, pattern, flags: string) {
     }
     if depth > 0 {
         syntax_errorf(p, "Invalid regular expression: /%s/%s: Unterminated group", pattern, flags)
+        return
+    }
+    // modificadores (`(?ii:)`, `(?-:)`, `(?I:)`) e classe da flag v (`[(]`, `[a&&b--c]`):
+    // gramáticas que o motor implementa à risca, então o erro é early error de verdade
+    if regex_early_error(pattern, flags) {
+        syntax_errorf(p, "Invalid regular expression: /%s/%s: Invalid group or class", pattern, flags)
     }
 }
 

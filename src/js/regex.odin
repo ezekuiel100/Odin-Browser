@@ -12,8 +12,19 @@ package js
 // âncoras `^ $`, `\b \B`, quantificadores `* + ? {n} {n,} {n,m}` (greedy e lazy),
 // grupos `(...)`, `(?:...)` e nomeados `(?<nome>...)` (exec devolve .groups),
 // lookahead `(?=...)`/`(?!...)`, lookbehind `(?<=...)`/`(?<!...)`, backreferences
-// `\1`-`\99` e `\k<nome>`, alternância `|`, escapes (\uNNNN \xNN incl.).
-// Flags: g i m s (dotAll) y (sticky). NÃO suporta: classes POSIX.
+// `\1`-`\99` e `\k<nome>`, alternância `|`, escapes (\uNNNN \xNN \cX incl.),
+// modificadores `(?i:...)`/`(?-i:...)`/`(?ms-i:...)` (ES2025).
+// Flags: d (hasIndices) g i m s (dotAll) u v (unicodeSets) y (sticky).
+//
+// As flags i/m/s NÃO são do casamento inteiro: cada instrução carrega as suas
+// (`mods`), gravadas no PARSE a partir das flags e dos modificadores em volta —
+// é isso que deixa `(?i:a)b` casar "Ab" e não "AB".
+//
+// Flag v: classe com operações de CONJUNTO (`[\p{L}--[a-z]]`, `[\w&&\d]`),
+// classes aninhadas e strings `\q{abc|de}`. A classe vira uma árvore (Re_CSet)
+// avaliada por code point; as strings de mais de 1 char viram uma alternância
+// (da mais longa para a mais curta) na frente da classe. `\p{...}` de STRINGS
+// (RGI_Emoji etc.) não tem tabela: casa nada, como os nomes não reconhecidos.
 
 import "core:strings"
 import "core:unicode"
@@ -25,8 +36,27 @@ Re_Op :: enum u8 { Char, Any, Class, Split, Jmp, Save, Match, Begin, End, WordB,
 
 Re_Range :: struct { lo, hi: rune }
 
+// Flags com escopo (i/m/s), por instrução — ver o cabeçalho.
+Re_Mod :: enum u8 { I, M, S }
+Re_Mods :: bit_set[Re_Mod; u8]
+
+// Classe da flag v: árvore de operações de conjunto. Folha = ranges/props/nranges
+// de um Re_Inst .Class (mesma semântica da classe comum) + as strings de `\q{}`
+// com tamanho ≠ 1 (as de 1 char entram nos ranges).
+Re_CSet_Op :: enum u8 { Leaf, Union, Inter, Sub }
+
+Re_CSet :: struct {
+    op:      Re_CSet_Op,
+    negate:  bool,        // [^...] (só sem strings — a spec proíbe negar strings)
+    leaf:    Re_Inst,     // .Leaf: ranges/nranges/props/negate
+    strs:    [dynamic][]rune, // .Leaf: strings de \q{} com len ≠ 1
+    kids:    [dynamic]^Re_CSet,
+}
+
 Re_Inst :: struct {
     op:     Re_Op,
+    mods:   Re_Mods,      // i/m/s em vigor nesta instrução (Char/Class/BackRef/Any/Begin/End)
+    set:    ^Re_CSet,     // Class da flag v (nil nas classes comuns); owned pela instrução
     ch:     rune,         // Char
     x, y:   int,          // Split (x,y) / Jmp (x) / Save (x = slot) / BackRef (x = grupo)
     ranges: []Re_Range,   // Class: conjuntos POSITIVOS (c casa se estiver em algum)
@@ -46,10 +76,14 @@ Regex :: struct {
     multiline: bool,
     dotall:    bool,   // flag s: `.` casa também `\n`
     sticky:    bool,   // flag y: casamento ANCORADO em lastIndex (sem varredura)
+    has_indices: bool, // flag d: exec devolve .indices ([início, fim] por grupo)
+    unicode:   bool,   // flag u
+    unicode_sets: bool, // flag v
     prog:      []Re_Inst,
     ngroups:   int,     // grupos capturantes (sem o grupo 0)
     last_index: int,    // usado por exec/test com a flag g
     gnames:    map[string]int, // grupos nomeados: nome (clonado) -> índice do grupo
+    props:     map[string]Value, // expandos da instância (chave clonada); nil até a 1ª
 }
 
 // ── AST ─────────────────────────────────────────────────────────────────────
@@ -100,6 +134,8 @@ Re_Node :: struct {
     behind: bool, // Look: é lookbehind?
     nranges: [dynamic]Re_Range, // Class: atalhos negados dentro da classe (ver Re_Inst)
     kids:   [dynamic]^Re_Node,
+    mods:   Re_Mods,  // i/m/s em vigor onde o nó foi parseado
+    set:    ^Re_CSet, // Class da flag v (owned pelo nó; a compilação CLONA)
     greedy: bool,
     gmin, gmax: int, // Repeat: gmax = -1 => infinito
     group:  int,     // Group: índice (>0 capturante; 0 não-capturante)
@@ -121,7 +157,36 @@ re_free :: proc(n: ^Re_Node) {
     delete(n.ranges)
     delete(n.nranges)
     delete(n.props)
+    if n.set != nil do cset_free(n.set)
     free(n)
+}
+
+@(private="file")
+cset_free :: proc(s: ^Re_CSet) {
+    if s == nil do return
+    for k in s.kids do cset_free(k)
+    delete(s.kids)
+    for st in s.strs do delete(st)
+    delete(s.strs)
+    delete(s.leaf.ranges); delete(s.leaf.nranges); delete(s.leaf.props)
+    free(s)
+}
+
+@(private="file")
+cset_clone :: proc(s: ^Re_CSet) -> ^Re_CSet {
+    c := new(Re_CSet)
+    c.op = s.op
+    c.negate = s.negate
+    c.leaf.negate = s.leaf.negate
+    if len(s.leaf.ranges) > 0  { c.leaf.ranges = make([]Re_Range, len(s.leaf.ranges)); copy(c.leaf.ranges, s.leaf.ranges) }
+    if len(s.leaf.nranges) > 0 { c.leaf.nranges = make([]Re_Range, len(s.leaf.nranges)); copy(c.leaf.nranges, s.leaf.nranges) }
+    if len(s.leaf.props) > 0   { c.leaf.props = make([]Re_Prop, len(s.leaf.props)); copy(c.leaf.props, s.leaf.props) }
+    for st in s.strs {
+        d := make([]rune, len(st)); copy(d, st)
+        append(&c.strs, d)
+    }
+    for k in s.kids do append(&c.kids, cset_clone(k))
+    return c
 }
 
 @(private="file")
@@ -132,7 +197,21 @@ Re_Parser :: struct {
                            // SEM a flag, `\u{2}` é a spec dizendo "u repetido 2 vezes",
                            // então a forma com chaves só pode ser lida quando ela está
                            // presente — do contrário mudaríamos o sentido de padrões
-                           // legítimos que hoje funcionam.
+                           // legítimos que hoje funcionam. A flag `v` também liga.
+    vmode: bool,           // flag `v`: sintaxe de classe de CONJUNTO (re_parse_vclass)
+    mods:  Re_Mods,        // i/m/s em vigor no ponto do parse (flags + modificadores)
+    spec_err: bool,        // erro de uma gramática implementada À RISCA (modificadores,
+                           // classe da v): pode virar early error do literal — ver
+                           // regex_early_error. Os demais `ok = false` não marcam.
+}
+
+// Nó novo carimbado com os modificadores em vigor (o compilador os copia para a
+// instrução). Todo nó criado pelo PARSER passa por aqui.
+@(private="file")
+rp_new :: proc(p: ^Re_Parser, k: Re_Kind) -> ^Re_Node {
+    n := re_new(k)
+    n.mods = p.mods
+    return n
 }
 
 @(private="file")
@@ -147,7 +226,7 @@ rp_eof :: proc(p: ^Re_Parser) -> bool { return p.pos >= len(p.pat) }
 re_parse_alt :: proc(p: ^Re_Parser) -> ^Re_Node {
     first := re_parse_concat(p)
     if rp_peek(p) != '|' do return first
-    alt := re_new(.Alt)
+    alt := rp_new(p, .Alt)
     append(&alt.kids, first)
     for rp_peek(p) == '|' {
         rp_next(p)
@@ -159,7 +238,7 @@ re_parse_alt :: proc(p: ^Re_Parser) -> ^Re_Node {
 // concat := quant*
 @(private="file")
 re_parse_concat :: proc(p: ^Re_Parser) -> ^Re_Node {
-    con := re_new(.Concat)
+    con := rp_new(p, .Concat)
     for !rp_eof(p) && rp_peek(p) != '|' && rp_peek(p) != ')' {
         append(&con.kids, re_parse_quant(p))
     }
@@ -174,9 +253,9 @@ re_parse_quant :: proc(p: ^Re_Parser) -> ^Re_Node {
     c := rp_peek(p)
     wrap: ^Re_Node
     switch c {
-    case '*': rp_next(p); wrap = re_new(.Star)
-    case '+': rp_next(p); wrap = re_new(.Plus)
-    case '?': rp_next(p); wrap = re_new(.Quest)
+    case '*': rp_next(p); wrap = rp_new(p, .Star)
+    case '+': rp_next(p); wrap = rp_new(p, .Plus)
+    case '?': rp_next(p); wrap = rp_new(p, .Quest)
     case '{':
         if rep, ok := re_try_parse_repeat(p); ok {
             wrap = rep
@@ -202,7 +281,7 @@ re_try_parse_repeat :: proc(p: ^Re_Parser) -> (^Re_Node, bool) {
     }
     if rp_peek(p) != '}' { p.pos = save; return nil, false }
     rp_next(p) // }
-    rep := re_new(.Repeat)
+    rep := rp_new(p, .Repeat)
     rep.gmin = lo; rep.gmax = hi
     return rep, true
 }
@@ -233,7 +312,7 @@ re_parse_atom :: proc(p: ^Re_Parser) -> ^Re_Node {
                 capturing = false
             case '=', '!':
                 rp_next(p); rp_next(p) // ?= ou ?!
-                lk := re_new(.Look)
+                lk := rp_new(p, .Look)
                 lk.negate = nx == '!'
                 inner := re_parse_alt(p)
                 if rp_peek(p) == ')' do rp_next(p)
@@ -243,7 +322,7 @@ re_parse_atom :: proc(p: ^Re_Parser) -> ^Re_Node {
                 nx2 := p.pos+2 < len(p.pat) ? p.pat[p.pos+2] : -1
                 if nx2 == '=' || nx2 == '!' { // lookBEHIND (?<=...)/(?<!...)
                     rp_next(p); rp_next(p); rp_next(p) // ? < = / ? < !
-                    lb := re_new(.Look)
+                    lb := rp_new(p, .Look)
                     lb.negate = nx2 == '!'
                     lb.behind = true
                     inner := re_parse_alt(p)
@@ -258,11 +337,28 @@ re_parse_atom :: proc(p: ^Re_Parser) -> ^Re_Node {
                 if rp_peek(p) == '>' do rp_next(p)
                 gname = strings.to_string(nb)
                 if gname == "" do p.ok = false
+            case 'i', 'm', 's', '-':
+                // modificadores (?ims-ims:...) — grupo NÃO capturante cujo corpo é
+                // parseado com as flags ajustadas; fora dele valem as de antes.
+                rp_next(p) // ?
+                add, rem, ok := re_parse_modifiers(p)
+                if !ok { p.ok = false; p.spec_err = true; return rp_new(p, .Empty) }
+                saved := p.mods
+                p.mods = (p.mods | add) - rem
+                g := rp_new(p, .Group) // group = 0: não capturante
+                inner := re_parse_alt(p)
+                if rp_peek(p) == ')' do rp_next(p)
+                append(&g.kids, inner)
+                p.mods = saved
+                return g
             case:
-                p.ok = false // (?X desconhecido → SyntaxError
+                // (?X desconhecido → SyntaxError em qualquer modo (nem a Annex B
+                // aceita), então vale como early error do literal também
+                p.ok = false
+                p.spec_err = true
             }
         }
-        g := re_new(.Group)
+        g := rp_new(p, .Group)
         if capturing { p.ngroup += 1; g.group = p.ngroup } else { g.group = 0 }
         if gname != "" {
             if p.names == nil do p.names = make(map[string]int)
@@ -275,19 +371,50 @@ re_parse_atom :: proc(p: ^Re_Parser) -> ^Re_Node {
     case '[':
         return re_parse_class(p)
     case '.':
-        rp_next(p); return re_new(.Any)
+        rp_next(p); return rp_new(p, .Any)
     case '^':
-        rp_next(p); return re_new(.Begin)
+        rp_next(p); return rp_new(p, .Begin)
     case '$':
-        rp_next(p); return re_new(.End)
+        rp_next(p); return rp_new(p, .End)
     case '\\':
         rp_next(p)
         return re_parse_escape(p)
     case:
         rp_next(p)
-        n := re_new(.Char); n.ch = c
+        n := rp_new(p, .Char); n.ch = c
         return n
     }
+}
+
+// Lê `ims-ims:` logo depois de `(?` (o `:` é consumido). Erros da spec (early
+// errors de RegularExpressionModifiers): letra fora de i/m/s, letra repetida
+// (inclusive entre os dois lados, `(?i-i:`), `(?-:` com os dois lados vazios, e a
+// forma sem `:` (`(?i)` do PCRE não existe em JS).
+@(private="file")
+re_parse_modifiers :: proc(p: ^Re_Parser) -> (add, rem: Re_Mods, ok: bool) {
+    seen: Re_Mods
+    dash := false
+    for !rp_eof(p) {
+        c := rp_next(p)
+        m: Re_Mod
+        switch c {
+        case ':':
+            if dash && add == {} && rem == {} do return {}, {}, false
+            return add, rem, true
+        case '-':
+            if dash do return {}, {}, false
+            dash = true
+            continue
+        case 'i': m = .I
+        case 'm': m = .M
+        case 's': m = .S
+        case: return {}, {}, false
+        }
+        if m in seen do return {}, {}, false
+        seen += {m}
+        if dash { rem += {m} } else { add += {m} }
+    }
+    return {}, {}, false
 }
 
 // Consome os dígitos de \uNNNN (4 hex), \u{XXXXX} (1-6 hex, só com flag `u`) ou
@@ -410,29 +537,40 @@ rp_hex_digit :: proc(c: rune) -> int {
 // \uNNNN/\xNN viram o char; resto literal.
 @(private="file")
 re_parse_escape :: proc(p: ^Re_Parser) -> ^Re_Node {
-    if rp_eof(p) { n := re_new(.Char); n.ch = '\\'; return n }
+    if rp_eof(p) { n := rp_new(p, .Char); n.ch = '\\'; return n }
     c := rp_next(p)
     switch c {
     case 'd', 'D', 'w', 'W', 's', 'S':
-        n := re_new(.Class)
+        n := rp_new(p, .Class)
         re_add_class_shorthand(n, c)
         return n
-    case 'b': return re_new(.WordB)
-    case 'B': return re_new(.NWordB)
+    case 'b': return rp_new(p, .WordB)
+    case 'B': return rp_new(p, .NWordB)
     case 'p', 'P':
         // property escape — só COM a flag `u` (sem ela, `\p` é o literal 'p', que
         // é o que a spec manda e o que este motor já fazia).
         if p.unicode {
             if pr, ok := re_parse_prop(p, c == 'P'); ok {
-                n := re_new(.Class)
+                n := rp_new(p, .Class)
                 append(&n.props, pr)
                 return n
             }
         }
-        n := re_new(.Char); n.ch = c
+        n := rp_new(p, .Char); n.ch = c
         return n
     case 'u', 'x':
-        n := re_new(.Char); n.ch = rp_hex_escape(p, c)
+        n := rp_new(p, .Char); n.ch = rp_hex_escape(p, c)
+        return n
+    case 'c':
+        // \cX: controle (letra % 32). Sem letra, a Annex B manda ler `\` literal e
+        // deixar o `c` para o próximo átomo.
+        n := rp_new(p, .Char)
+        if pk := rp_peek(p); (pk >= 'a' && pk <= 'z') || (pk >= 'A' && pk <= 'Z') {
+            n.ch = rp_next(p) % 32
+        } else {
+            p.pos -= 1
+            n.ch = '\\'
+        }
         return n
     case '1'..='9':
         // backreference \1..\99 (2º dígito só se o grupo existir até aqui)
@@ -440,7 +578,7 @@ re_parse_escape :: proc(p: ^Re_Parser) -> ^Re_Node {
         if !rp_eof(p) && rp_peek(p) >= '0' && rp_peek(p) <= '9' && idx*10 + int(rp_peek(p)-'0') <= p.ngroup {
             idx = idx*10 + int(rp_next(p) - '0')
         }
-        n := re_new(.BackRef); n.group = idx
+        n := rp_new(p, .BackRef); n.group = idx
         return n
     case 'k':
         // \k<nome>: backreference a grupo nomeado (o nome precisa já ter aparecido)
@@ -450,16 +588,16 @@ re_parse_escape :: proc(p: ^Re_Parser) -> ^Re_Node {
             for !rp_eof(p) && rp_peek(p) != '>' do strings.write_rune(&nb, rp_next(p))
             if rp_peek(p) == '>' do rp_next(p)
             if idx, found := p.names[strings.to_string(nb)]; found {
-                n := re_new(.BackRef); n.group = idx
+                n := rp_new(p, .BackRef); n.group = idx
                 return n
             }
             p.ok = false // nome desconhecido (refs adiantadas não suportadas)
-            return re_new(.Empty)
+            return rp_new(p, .Empty)
         }
-        n := re_new(.Char); n.ch = 'k'
+        n := rp_new(p, .Char); n.ch = 'k'
         return n
     case:
-        n := re_new(.Char); n.ch = re_escape_char(c)
+        n := rp_new(p, .Char); n.ch = re_escape_char(c)
         return n
     }
 }
@@ -498,8 +636,9 @@ re_add_class_shorthand :: proc(n: ^Re_Node, c: rune) {
 // [abc] [a-z] [^...] [\d\s-]  — os atalhos dentro de classe adicionam ranges.
 @(private="file")
 re_parse_class :: proc(p: ^Re_Parser) -> ^Re_Node {
+    if p.vmode do return re_parse_vclass_node(p)
     rp_next(p) // [
-    n := re_new(.Class)
+    n := rp_new(p, .Class)
     if rp_peek(p) == '^' { rp_next(p); n.negate = true }
     for !rp_eof(p) && rp_peek(p) != ']' {
         lo := rp_next(p)
@@ -508,7 +647,7 @@ re_parse_class :: proc(p: ^Re_Parser) -> ^Re_Node {
             switch e {
             case 'd','w','s':
                 // atalho positivo dentro da classe: mescla os ranges
-                tmp := re_new(.Class); re_add_class_shorthand(tmp, e)
+                tmp := rp_new(p, .Class); re_add_class_shorthand(tmp, e)
                 for r in tmp.ranges do append(&n.ranges, r)
                 re_free(tmp)
                 continue
@@ -516,7 +655,7 @@ re_parse_class :: proc(p: ^Re_Parser) -> ^Re_Node {
                 // atalho NEGADO dentro da classe: vai p/ nranges — o char casa
                 // se NÃO estiver nesses ranges ([\s\S] = qualquer char, o idioma
                 // clássico de "qualquer coisa inclusive \n" que minifiers usam)
-                tmp := re_new(.Class); re_add_class_shorthand(tmp, e + ('a' - 'A'))
+                tmp := rp_new(p, .Class); re_add_class_shorthand(tmp, e + ('a' - 'A'))
                 for r in tmp.ranges do append(&n.nranges, r)
                 re_free(tmp)
                 continue
@@ -531,6 +670,16 @@ re_parse_class :: proc(p: ^Re_Parser) -> ^Re_Node {
                 lo = e // sem flag `u` (ou sem chaves): literal 'p'/'P'
             case 'u', 'x':
                 lo = rp_hex_escape(p, e)
+            case 'b':
+                lo = 0x08 // dentro de classe `\b` é BACKSPACE, não fronteira
+            case 'c':
+                // \cX; dentro de classe a Annex B aceita também dígito e `_`
+                if pk := rp_peek(p); (pk >= 'a' && pk <= 'z') || (pk >= 'A' && pk <= 'Z') || (pk >= '0' && pk <= '9') || pk == '_' {
+                    lo = rp_next(p) % 32
+                } else {
+                    p.pos -= 1
+                    lo = '\\'
+                }
             case: lo = re_escape_char(e)
             }
         }
@@ -551,6 +700,266 @@ re_parse_class :: proc(p: ^Re_Parser) -> ^Re_Node {
     return n
 }
 
+// ── classe da flag v (ClassSetExpression) ───────────────────────────────────
+//
+// Gramática (spec 22.2.1): dentro de `[...]` vem UMA destas formas, sem misturar:
+//   união        `[ab\d[x-z]]`        operandos e ranges lado a lado
+//   interseção   `[A&&B&&C]`          operandos sem range
+//   subtração    `[A--B--C]`          idem
+// Operando = char, `[...]` aninhada, `\q{a|bc}`, `\d \w \s` (e negados), `\p{}`.
+// Na v, `( ) [ ] { } / - |` soltos e pontuação DOBRADA (`&& !! ## ...` fora da
+// posição de operador) são SyntaxError — é o que libera esses símbolos para
+// virarem operadores no futuro, e o que a spec manda rejeitar.
+
+@(private="file")
+re_parse_vclass_node :: proc(p: ^Re_Parser) -> ^Re_Node {
+    n := rp_new(p, .Class)
+    was := p.ok
+    n.set = re_parse_vclass(p)
+    if was && !p.ok do p.spec_err = true
+    return n
+}
+
+// `[` ... `]` (consome os dois). Nunca devolve nil; erro marca p.ok = false.
+@(private="file")
+re_parse_vclass :: proc(p: ^Re_Parser) -> ^Re_CSet {
+    rp_next(p) // [
+    root := new(Re_CSet)
+    root.op = .Union
+    if rp_peek(p) == '^' { rp_next(p); root.negate = true }
+    nops := 0
+    last_range := false
+    for p.ok {
+        if rp_eof(p) { p.ok = false; break }
+        if rp_peek(p) == ']' { rp_next(p); break }
+        nx := p.pos+1 < len(p.pat) ? p.pat[p.pos+1] : -1
+        c := rp_peek(p)
+        if (c == '&' && nx == '&') || (c == '-' && nx == '-') {
+            this_op: Re_CSet_Op = c == '&' ? .Inter : .Sub
+            // operador precisa de UM operando sem range à esquerda (`[ab&&c]` e
+            // `[a-z--b]` misturam formas) e não pode trocar de operador no meio
+            if nops == 0 || last_range { p.ok = false; break }
+            if root.op == .Union {
+                if nops != 1 { p.ok = false; break }
+                root.op = this_op
+            } else if root.op != this_op { p.ok = false; break }
+            p.pos += 2
+            if this_op == .Inter && rp_peek(p) == '&' { p.ok = false; break } // `&&&`
+            k, is_range := re_parse_vclass_operand(p, false)
+            append(&root.kids, k)
+            if is_range { p.ok = false; break }
+            nops += 1
+            continue
+        }
+        // depois de `A&&B` só cabe outro operador ou o `]`
+        if root.op != .Union { p.ok = false; break }
+        k, is_range := re_parse_vclass_operand(p, true)
+        append(&root.kids, k)
+        nops += 1
+        last_range = is_range
+    }
+    // classe negada não pode conter strings (spec: MayContainStrings → SyntaxError)
+    if root.negate && cset_may_contain_strings(root) do p.ok = false
+    return root
+}
+
+// Um operando. `allow_range`: na união, `a-z` vale; na interseção/subtração não.
+@(private="file")
+re_parse_vclass_operand :: proc(p: ^Re_Parser, allow_range: bool) -> (^Re_CSet, bool) {
+    leaf := new(Re_CSet)
+    leaf.op = .Leaf
+    if rp_eof(p) { p.ok = false; return leaf, false }
+    c := rp_peek(p)
+    if c == '[' {
+        free(leaf)
+        return re_parse_vclass(p), false
+    }
+    if c == '\\' && p.pos+1 < len(p.pat) {
+        e := p.pat[p.pos+1]
+        switch e {
+        case 'd', 'D', 'w', 'W', 's', 'S':
+            p.pos += 2
+            tmp := re_new(.Class)
+            re_add_class_shorthand(tmp, e)
+            leaf.leaf.ranges = make([]Re_Range, len(tmp.ranges))
+            copy(leaf.leaf.ranges, tmp.ranges[:])
+            leaf.leaf.negate = tmp.negate
+            re_free(tmp)
+            return leaf, false
+        case 'p', 'P':
+            p.pos += 2
+            pr, ok := re_parse_prop(p, e == 'P')
+            if !ok { p.ok = false; return leaf, false } // na v, `\p` sem `{}` é erro
+            leaf.leaf.props = make([]Re_Prop, 1)
+            leaf.leaf.props[0] = pr
+            return leaf, false
+        case 'q':
+            p.pos += 2
+            re_parse_class_strings(p, leaf)
+            return leaf, false
+        }
+    }
+    lo, ok := re_vclass_char(p)
+    if !ok do return leaf, false
+    hi := lo
+    is_range := false
+    if allow_range && rp_peek(p) == '-' && !(p.pos+1 < len(p.pat) && p.pat[p.pos+1] == '-') {
+        rp_next(p) // -
+        hi, ok = re_vclass_char(p)
+        if !ok do return leaf, false
+        if hi < lo { p.ok = false; return leaf, false } // `[z-a]`: fora de ordem
+        is_range = true
+    }
+    leaf.leaf.ranges = make([]Re_Range, 1)
+    leaf.leaf.ranges[0] = Re_Range{lo, hi}
+    return leaf, is_range
+}
+
+// `\q{abc|d|}` (o `\q` já consumido): cada alternativa é uma string; as de 1 char
+// entram como char comum, as outras (inclusive a vazia) vão para `strs`.
+@(private="file")
+re_parse_class_strings :: proc(p: ^Re_Parser, leaf: ^Re_CSet) {
+    if rp_peek(p) != '{' { p.ok = false; return }
+    rp_next(p)
+    singles := make([dynamic]Re_Range)
+    cur := make([dynamic]rune, context.temp_allocator)
+    flush :: proc(leaf: ^Re_CSet, singles: ^[dynamic]Re_Range, cur: ^[dynamic]rune) {
+        if len(cur) == 1 {
+            append(singles, Re_Range{cur[0], cur[0]})
+        } else {
+            s := make([]rune, len(cur)); copy(s, cur[:])
+            append(&leaf.strs, s)
+        }
+        clear(cur)
+    }
+    for p.ok {
+        if rp_eof(p) { p.ok = false; break }
+        c := rp_peek(p)
+        if c == '}' { rp_next(p); flush(leaf, &singles, &cur); break }
+        if c == '|' { rp_next(p); flush(leaf, &singles, &cur); continue }
+        ch, ok := re_vclass_char(p)
+        if !ok do break
+        append(&cur, ch)
+    }
+    leaf.leaf.ranges = singles[:]
+}
+
+// Um ClassSetCharacter (char solto ou escape de 1 char), consumido. Erros da spec
+// marcam p.ok = false.
+@(private="file")
+re_vclass_char :: proc(p: ^Re_Parser) -> (rune, bool) {
+    if rp_eof(p) { p.ok = false; return 0, false }
+    c := rp_next(p)
+    if c == '\\' {
+        if rp_eof(p) { p.ok = false; return 0, false }
+        e := rp_next(p)
+        switch e {
+        case 'u', 'x': return rp_hex_escape(p, e), true
+        case 'b': return 0x08, true
+        case 'n', 't', 'r', 'f', 'v': return re_escape_char(e), true
+        case 'c':
+            if pk := rp_peek(p); (pk >= 'a' && pk <= 'z') || (pk >= 'A' && pk <= 'Z') do return rp_next(p) % 32, true
+        case '0':
+            if pk := rp_peek(p); !(pk >= '0' && pk <= '9') do return 0, true
+        case:
+            // IdentityEscape da v: SyntaxCharacter, `/` e ClassSetReservedPunctuator
+            if strings.contains_rune("^$\\.*+?()[]{}|/&-!#%,:;<=>@`~", e) do return e, true
+        }
+        p.ok = false
+        return 0, false
+    }
+    switch c {
+    case '(', ')', '[', ']', '{', '}', '/', '-', '|':
+        p.ok = false
+        return 0, false
+    }
+    // ClassSetReservedDoublePunctuator: `!!`, `##`, `$$`, ... são reservados
+    if strings.contains_rune("&!#$%*+,.:;<=>?@^`~", c) && rp_peek(p) == c {
+        p.ok = false
+        return 0, false
+    }
+    return c, true
+}
+
+// MayContainStrings da spec (sintático): união = algum, interseção = todos,
+// subtração = o primeiro operando.
+@(private="file")
+cset_may_contain_strings :: proc(s: ^Re_CSet) -> bool {
+    switch s.op {
+    case .Leaf: return len(s.strs) > 0
+    case .Union:
+        for k in s.kids do if cset_may_contain_strings(k) do return true
+        return false
+    case .Inter:
+        if len(s.kids) == 0 do return false
+        for k in s.kids do if !cset_may_contain_strings(k) do return false
+        return true
+    case .Sub:
+        return len(s.kids) > 0 && cset_may_contain_strings(s.kids[0])
+    }
+    return false
+}
+
+// O code point `c` está no conjunto? A folha usa a MESMA checagem da classe comum
+// (com o case folding por candidato — ver re_class_match), o que dá a semântica
+// da spec para `i` com subtração: `[\p{L}--[a-z]]` com i NÃO casa "A".
+@(private="file")
+cset_has_char :: proc(s: ^Re_CSet, c: rune, icase, uni: bool) -> bool {
+    r := false
+    switch s.op {
+    case .Leaf:
+        r = re_class_match(s.leaf, c, icase, uni)
+    case .Union:
+        for k in s.kids do if cset_has_char(k, c, icase, uni) { r = true; break }
+    case .Inter:
+        r = len(s.kids) > 0
+        for k in s.kids do if !cset_has_char(k, c, icase, uni) { r = false; break }
+    case .Sub:
+        r = len(s.kids) > 0 && cset_has_char(s.kids[0], c, icase, uni)
+        if r do for k in s.kids[1:] do if cset_has_char(k, c, icase, uni) { r = false; break }
+    }
+    return r != s.negate
+}
+
+// A string `str` (len ≠ 1) está no conjunto? Só folhas com `\q{}` contribuem.
+@(private="file")
+cset_has_str :: proc(s: ^Re_CSet, str: []rune, icase, uni: bool) -> bool {
+    if s.negate do return false
+    switch s.op {
+    case .Leaf:
+        for st in s.strs do if re_runes_eq(st, str, icase, uni) do return true
+        return false
+    case .Union:
+        for k in s.kids do if cset_has_str(k, str, icase, uni) do return true
+        return false
+    case .Inter:
+        if len(s.kids) == 0 do return false
+        for k in s.kids do if !cset_has_str(k, str, icase, uni) do return false
+        return true
+    case .Sub:
+        if len(s.kids) == 0 || !cset_has_str(s.kids[0], str, icase, uni) do return false
+        for k in s.kids[1:] do if cset_has_str(k, str, icase, uni) do return false
+        return true
+    }
+    return false
+}
+
+@(private="file")
+re_runes_eq :: proc(a, b: []rune, icase, uni: bool) -> bool {
+    if len(a) != len(b) do return false
+    for i in 0 ..< len(a) {
+        if a[i] == b[i] do continue
+        if !icase || re_canon(a[i], uni) != re_canon(b[i], uni) do return false
+    }
+    return true
+}
+
+@(private="file")
+cset_collect_strs :: proc(s: ^Re_CSet, out: ^[dynamic][]rune) {
+    for st in s.strs do append(out, st)
+    for k in s.kids do cset_collect_strs(k, out)
+}
+
 // ── compilação AST -> programa ──────────────────────────────────────────────
 
 @(private="file")
@@ -565,10 +974,14 @@ re_compile_node :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
     case .Empty:
         // nada
     case .Char:
-        re_emit(prog, Re_Inst{op = .Char, ch = n.ch})
+        re_emit(prog, Re_Inst{op = .Char, ch = n.ch, mods = n.mods})
     case .Any:
-        re_emit(prog, Re_Inst{op = .Any})
+        re_emit(prog, Re_Inst{op = .Any, mods = n.mods})
     case .Class:
+        if n.set != nil {
+            re_compile_vclass(n, prog)
+            break
+        }
         rr := make([]Re_Range, len(n.ranges))
         copy(rr, n.ranges[:])
         nr: []Re_Range
@@ -581,11 +994,11 @@ re_compile_node :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
             pp = make([]Re_Prop, len(n.props))
             copy(pp, n.props[:])
         }
-        re_emit(prog, Re_Inst{op = .Class, ranges = rr, nranges = nr, props = pp, negate = n.negate})
-    case .Begin:  re_emit(prog, Re_Inst{op = .Begin})
-    case .End:    re_emit(prog, Re_Inst{op = .End})
-    case .WordB:  re_emit(prog, Re_Inst{op = .WordB})
-    case .NWordB: re_emit(prog, Re_Inst{op = .NWordB})
+        re_emit(prog, Re_Inst{op = .Class, ranges = rr, nranges = nr, props = pp, negate = n.negate, mods = n.mods})
+    case .Begin:  re_emit(prog, Re_Inst{op = .Begin, mods = n.mods})
+    case .End:    re_emit(prog, Re_Inst{op = .End, mods = n.mods})
+    case .WordB:  re_emit(prog, Re_Inst{op = .WordB, mods = n.mods})
+    case .NWordB: re_emit(prog, Re_Inst{op = .NWordB, mods = n.mods})
     case .Concat:
         for k in n.kids do re_compile_node(k, prog)
     case .Alt:
@@ -660,14 +1073,100 @@ re_compile_node :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
         re_emit(&sub, Re_Inst{op = .Match})
         re_emit(prog, Re_Inst{op = .Look, sub = sub[:], negate = n.negate, behind = n.behind})
     case .BackRef:
-        re_emit(prog, Re_Inst{op = .BackRef, x = n.group})
+        re_emit(prog, Re_Inst{op = .BackRef, x = n.group, mods = n.mods})
     }
 }
 
-// Compila `pattern` (+flags) num ^Regex tracked no vm. ok=false em erro de sintaxe.
-regex_compile :: proc(vm: ^Interp, pattern, flags: string) -> (^Regex, bool) {
+// Classe da flag v. Sem strings: UMA instrução Class com a árvore (clonada — o
+// mesmo nó é compilado várias vezes por `{n,m}`). Com strings: alternância
+// `str_longa | ... | str_curta | [chars] | ""` — a spec casa a string MAIS LONGA
+// primeiro e a vazia por último.
+@(private="file")
+re_compile_vclass :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
+    icase := .I in n.mods
+    all := make([dynamic][]rune, context.temp_allocator)
+    cset_collect_strs(n.set, &all)
+    strs := make([dynamic][]rune, context.temp_allocator)
+    has_empty := false
+    outer: for st in all {
+        for o in strs do if re_runes_eq(o, st, false, true) do continue outer
+        if len(st) == 0 && has_empty do continue
+        if !cset_has_str(n.set, st, icase, true) do continue
+        if len(st) == 0 { has_empty = true; continue }
+        append(&strs, st)
+    }
+    for i := 1; i < len(strs); i += 1 { // estável, da mais longa p/ a mais curta
+        for j := i; j > 0 && len(strs[j]) > len(strs[j-1]); j -= 1 do strs[j], strs[j-1] = strs[j-1], strs[j]
+    }
+    if len(strs) == 0 && !has_empty {
+        re_emit(prog, Re_Inst{op = .Class, set = cset_clone(n.set), mods = n.mods})
+        return
+    }
+    jmps := make([dynamic]int, context.temp_allocator)
+    for st in strs {
+        sp := re_emit(prog, Re_Inst{op = .Split})
+        prog[sp].x = len(prog)
+        for ch in st do re_emit(prog, Re_Inst{op = .Char, ch = ch, mods = n.mods})
+        append(&jmps, re_emit(prog, Re_Inst{op = .Jmp}))
+        prog[sp].y = len(prog)
+    }
+    if has_empty {
+        sp := re_emit(prog, Re_Inst{op = .Split})
+        prog[sp].x = len(prog)
+        re_emit(prog, Re_Inst{op = .Class, set = cset_clone(n.set), mods = n.mods})
+        append(&jmps, re_emit(prog, Re_Inst{op = .Jmp}))
+        prog[sp].y = len(prog) // a vazia: não consome nada
+    } else {
+        re_emit(prog, Re_Inst{op = .Class, set = cset_clone(n.set), mods = n.mods})
+    }
+    end := len(prog)
+    for j in jmps do prog[j].x = end
+}
+
+// Flags válidas: d g i m s u v y, sem repetir, `u` e `v` exclusivas. Devolve a
+// forma CANÔNICA (a ordem do getter `flags` da spec: "dgimsuvy").
+regex_canonical_flags :: proc(flags: string) -> (string, bool) {
+    ORDER := "dgimsuvy"
+    seen: [8]bool
+    for f in flags {
+        i := strings.index_rune(ORDER, f)
+        if i < 0 || seen[i] do return "", false
+        seen[i] = true
+    }
+    if seen[5] && seen[6] do return "", false // u + v
+    buf: [8]u8
+    n := 0
+    for i in 0 ..< 8 do if seen[i] { buf[n] = ORDER[i]; n += 1 }
+    return strings.clone(string(buf[:n]), context.temp_allocator), true
+}
+
+// Early error de um LITERAL `/.../flags` que o parser de JS deve reportar já no
+// parse (o script nem roda). Só conta o que as gramáticas implementadas à risca
+// rejeitam — modificadores `(?ims-ims:)` e a classe da flag v —, porque o resto do
+// motor é leniente/incompleto e um padrão válido-mas-não-suportado não pode matar
+// o script inteiro (ver check_regex_literal no parser).
+regex_early_error :: proc(pattern, flags: string) -> bool {
+    vmode := strings.contains(flags, "v")
+    if !vmode && !strings.contains(pattern, "(?") do return false
+    p := Re_Parser{pat = utf8.string_to_runes(pattern, context.temp_allocator), ok = true,
+                   unicode = vmode || strings.contains(flags, "u"), vmode = vmode}
+    root := re_parse_alt(&p)
+    re_free(root)
+    if p.names != nil do delete(p.names)
+    return p.spec_err
+}
+
+// Compila `pattern` (+flags) num ^Regex tracked no vm. ok=false em erro de sintaxe
+// (padrão OU flags — `new RegExp("a", "gg")` é SyntaxError).
+regex_compile :: proc(vm: ^Interp, pattern, flags_in: string) -> (^Regex, bool) {
+    flags, fok := regex_canonical_flags(flags_in)
+    if !fok do return nil, false
     pat_runes := utf8.string_to_runes(pattern, context.temp_allocator)
-    p := Re_Parser{pat = pat_runes, ok = true, unicode = strings.contains(flags, "u")}
+    vmode := strings.contains(flags, "v")
+    p := Re_Parser{pat = pat_runes, ok = true, unicode = vmode || strings.contains(flags, "u"), vmode = vmode}
+    if strings.contains(flags, "i") do p.mods += {.I}
+    if strings.contains(flags, "m") do p.mods += {.M}
+    if strings.contains(flags, "s") do p.mods += {.S}
     root := re_parse_alt(&p)
     defer re_free(root)
     defer if p.names != nil do delete(p.names) // chaves em temp; só o map é nosso
@@ -695,6 +1194,9 @@ regex_compile :: proc(vm: ^Interp, pattern, flags: string) -> (^Regex, bool) {
         case 'm': re.multiline = true
         case 's': re.dotall = true
         case 'y': re.sticky = true
+        case 'd': re.has_indices = true
+        case 'u': re.unicode = true
+        case 'v': re.unicode_sets = true
         }
     }
     append(&vm.all_regexes, re)
@@ -706,18 +1208,39 @@ regex_compile :: proc(vm: ^Interp, pattern, flags: string) -> (^Regex, bool) {
 @(private="file")
 Re_Ctx :: struct {
     s:      []rune,
-    icase:  bool,
-    ml:     bool,
-    dotall: bool, // flag s: `.` casa qualquer char, inclusive `\n`
+    uni:    bool,  // flag u/v: case folding Unicode (re_canon); i/m/s vêm de cada Re_Inst
     caps:   []int, // índices de RUNE por slot; -1 = não capturado
     steps:  int,
     lb_target: int, // posição em que o sub de um lookbehind deve TERMINAR (-1 = fora)
 }
 
+// Canonicalize da spec (22.2.2.7.3) para a flag i: dois chars casam se têm o
+// mesmo canônico. Sem u/v é o toUppercase, mas um não-ASCII nunca vira ASCII
+// (`ſ` não casa `s`, o Kelvin não casa `k`); com u/v é o simple case folding,
+// aproximado por lower(upper(c)) — que acerta `ſ`→s e Kelvin→k.
+// Antes era só ASCII: `/ção/i` não casava "ÇÃO".
 @(private="file")
-re_lower :: proc(c: rune) -> rune {
-    if c >= 'A' && c <= 'Z' do return c + 32
-    return c
+re_canon :: proc(c: rune, uni: bool) -> rune {
+    if c < 128 {
+        if uni {
+            if c >= 'A' && c <= 'Z' do return c + 32
+        } else {
+            if c >= 'a' && c <= 'z' do return c - 32
+        }
+        return c
+    }
+    if uni {
+        // singletons do CaseFolding que o to_lower do core:unicode não mapeia
+        switch c {
+        case 0x212A: return 'k'   // KELVIN SIGN
+        case 0x2126: return 0x3C9 // OHM SIGN → ω
+        case 0x212B: return 0xE5  // ANGSTROM SIGN → å
+        }
+        return unicode.to_lower(unicode.to_upper(c))
+    }
+    u := unicode.to_upper(c)
+    if u < 128 do return c
+    return u
 }
 
 @(private="file")
@@ -725,15 +1248,57 @@ re_is_word :: proc(c: rune) -> bool {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 }
 
+// IsWordChar da spec para \b/\B: com i + u/v, WordCharacters inclui quem tem
+// canônico ASCII de palavra (`ſ` → s, Kelvin → k).
 @(private="file")
-re_class_match :: proc(inst: Re_Inst, c: rune, icase: bool) -> bool {
+re_is_word_m :: proc(c: rune, mods: Re_Mods, uni: bool) -> bool {
+    if re_is_word(c) do return true
+    return c >= 128 && uni && .I in mods && re_is_word(re_canon(c, true))
+}
+
+// Com a flag i, a classe casa `c` se algum membro tem o mesmo canônico. Testar
+// as variantes de caixa de `c` (lower/upper, filtradas pelo canônico) contra o
+// conjunto cru dá isso sem expandir a classe — e vale igual para \p{...}.
+// (Antes: `lower(c)` contra [lower(lo), lower(hi)], que errava ranges que cruzam
+// letras e não-letras — `[0-Z]` com i casava `_`.)
+@(private="file")
+re_class_match :: proc(inst: Re_Inst, c: rune, icase, uni: bool) -> bool {
+    hit := re_class_raw(inst, c)
+    if !hit && icase {
+        k := re_canon(c, uni)
+        lo := c < 128 ? ((c >= 'A' && c <= 'Z') ? c + 32 : c) : unicode.to_lower(c)
+        up := c < 128 ? ((c >= 'a' && c <= 'z') ? c - 32 : c) : unicode.to_upper(c)
+        if lo != c && re_canon(lo, uni) == k && re_class_raw(inst, lo) {
+            hit = true
+        } else if up != c && re_canon(up, uni) == k && re_class_raw(inst, up) {
+            hit = true
+        } else if k != c && k != lo && k != up && re_class_raw(inst, k) {
+            hit = true // o próprio canônico (Kelvin → k, que o to_lower não dá)
+        }
+    }
+    return hit != inst.negate
+}
+
+// Instrução Class: classe comum ou árvore da flag v, com o `i` da instrução.
+@(private="file")
+re_inst_class_match :: proc(inst: Re_Inst, c: rune, uni: bool) -> bool {
+    if inst.set != nil do return cset_has_char(inst.set, c, .I in inst.mods, uni)
+    return re_class_match(inst, c, .I in inst.mods, uni)
+}
+
+// LineTerminator da spec: `.` não casa nenhum deles e `^`/`$` com m param em
+// todos (antes só `\n` — `\r\n` deixava o `\r` no fim da linha com /m).
+@(private="file")
+re_is_lt :: proc(c: rune) -> bool {
+    return c == '\n' || c == '\r' || c == 0x2028 || c == 0x2029
+}
+
+// A classe contém `c` (sem a negação da classe e sem case folding)?
+@(private="file")
+re_class_raw :: proc(inst: Re_Inst, c: rune) -> bool {
     hit := false
     for r in inst.ranges {
         if c >= r.lo && c <= r.hi { hit = true; break }
-        if icase {
-            lc := re_lower(c)
-            if lc >= re_lower(r.lo) && lc <= re_lower(r.hi) { hit = true; break }
-        }
     }
     // categorias Unicode de \p{...}: casa se satisfizer ALGUMA (\P{...} inverte só
     // a sua). Consultadas depois dos ranges — em `[a-z\p{L}]` qualquer um serve.
@@ -754,7 +1319,7 @@ re_class_match :: proc(inst: Re_Inst, c: rune, icase: bool) -> bool {
         }
         hit = !in_neg
     }
-    return hit != inst.negate
+    return hit
 }
 
 @(private="file")
@@ -767,15 +1332,15 @@ re_backtrack :: proc(prog: []Re_Inst, pc, sp: int, ctx: ^Re_Ctx) -> bool {
     case .Char:
         if sp < n {
             a := ctx.s[sp]; b := inst.ch
-            eq := ctx.icase ? re_lower(a) == re_lower(b) : a == b
+            eq := a == b || (.I in inst.mods && re_canon(a, ctx.uni) == re_canon(b, ctx.uni))
             if eq do return re_backtrack(prog, pc+1, sp+1, ctx)
         }
         return false
     case .Any:
-        if sp < n && (ctx.dotall || ctx.s[sp] != '\n') do return re_backtrack(prog, pc+1, sp+1, ctx)
+        if sp < n && (.S in inst.mods || !re_is_lt(ctx.s[sp])) do return re_backtrack(prog, pc+1, sp+1, ctx)
         return false
     case .Class:
-        if sp < n && re_class_match(inst, ctx.s[sp], ctx.icase) do return re_backtrack(prog, pc+1, sp+1, ctx)
+        if sp < n && re_inst_class_match(inst, ctx.s[sp], ctx.uni) do return re_backtrack(prog, pc+1, sp+1, ctx)
         return false
     case .Split:
         if re_backtrack(prog, inst.x, sp, ctx) do return true
@@ -789,19 +1354,19 @@ re_backtrack :: proc(prog: []Re_Inst, pc, sp: int, ctx: ^Re_Ctx) -> bool {
         ctx.caps[inst.x] = old
         return false
     case .Begin:
-        if sp == 0 || (ctx.ml && ctx.s[sp-1] == '\n') do return re_backtrack(prog, pc+1, sp, ctx)
+        if sp == 0 || (.M in inst.mods && re_is_lt(ctx.s[sp-1])) do return re_backtrack(prog, pc+1, sp, ctx)
         return false
     case .End:
-        if sp == n || (ctx.ml && ctx.s[sp] == '\n') do return re_backtrack(prog, pc+1, sp, ctx)
+        if sp == n || (.M in inst.mods && re_is_lt(ctx.s[sp])) do return re_backtrack(prog, pc+1, sp, ctx)
         return false
     case .WordB:
-        before := sp > 0 && re_is_word(ctx.s[sp-1])
-        after  := sp < n && re_is_word(ctx.s[sp])
+        before := sp > 0 && re_is_word_m(ctx.s[sp-1], inst.mods, ctx.uni)
+        after  := sp < n && re_is_word_m(ctx.s[sp], inst.mods, ctx.uni)
         if before != after do return re_backtrack(prog, pc+1, sp, ctx)
         return false
     case .NWordB:
-        before := sp > 0 && re_is_word(ctx.s[sp-1])
-        after  := sp < n && re_is_word(ctx.s[sp])
+        before := sp > 0 && re_is_word_m(ctx.s[sp-1], inst.mods, ctx.uni)
+        after  := sp < n && re_is_word_m(ctx.s[sp], inst.mods, ctx.uni)
         if before == after do return re_backtrack(prog, pc+1, sp, ctx)
         return false
     case .Match:
@@ -839,7 +1404,7 @@ re_backtrack :: proc(prog: []Re_Inst, pc, sp: int, ctx: ^Re_Ctx) -> bool {
         if sp + l > n do return false
         for k in 0 ..< l {
             a := ctx.s[sp+k]; b := ctx.s[gs+k]
-            if ctx.icase { a = re_lower(a); b = re_lower(b) }
+            if .I in inst.mods { a = re_canon(a, ctx.uni); b = re_canon(b, ctx.uni) }
             if a != b do return false
         }
         return re_backtrack(prog, pc+1, sp+l, ctx)
@@ -873,7 +1438,7 @@ regex_run :: proc(re: ^Regex, subject: string, start: int, anchored := false) ->
     if start <= 0 do start_ri = 0
 
     nslots := 2 * (re.ngroups + 1)
-    ctx := Re_Ctx{s = runes[:], icase = re.icase, ml = re.multiline, dotall = re.dotall, lb_target = -1, caps = make([]int, nslots, context.temp_allocator)}
+    ctx := Re_Ctx{s = runes[:], uni = re.unicode || re.unicode_sets, lb_target = -1, caps = make([]int, nslots, context.temp_allocator)}
 
     for sp := start_ri; sp <= n; sp += 1 {
         for j in 0 ..< nslots do ctx.caps[j] = -1
@@ -899,6 +1464,10 @@ regex_destroy :: proc(re: ^Regex) {
         for name in re.gnames do delete(name)
         delete(re.gnames)
     }
+    if re.props != nil {
+        for k in re.props do delete(k)
+        delete(re.props)
+    }
     free(re)
 }
 
@@ -906,7 +1475,10 @@ regex_destroy :: proc(re: ^Regex) {
 @(private="file")
 re_free_prog :: proc(prog: []Re_Inst) {
     for inst in prog {
-        if inst.op == .Class { delete(inst.ranges); delete(inst.nranges); delete(inst.props) }
+        if inst.op == .Class {
+            delete(inst.ranges); delete(inst.nranges); delete(inst.props)
+            if inst.set != nil do cset_free(inst.set)
+        }
         if inst.op == .Look do re_free_prog(inst.sub)
     }
     delete(prog)
@@ -914,14 +1486,82 @@ re_free_prog :: proc(prog: []Re_Inst) {
 
 // ── integração com o runtime JS ─────────────────────────────────────────────
 
+// `source` como a spec o mostra (EscapeRegExpPattern): vazio vira `(?:)` e `/`
+// fora de classe e quebras de linha saem escapados — `new RegExp("a/b")` tem de
+// virar `/a\/b/` no toString, senão o texto não é um literal válido. Sem nada a
+// escapar devolve a própria fonte (sem alocar); senão uma string do vm.
+regex_source_text :: proc(vm: ^Interp, re: ^Regex) -> string {
+    src := re.source
+    if src == "" do return "(?:)"
+    needs := false
+    {
+        esc, cls := false, false
+        for c in src {
+            if esc { esc = false; if c == '\n' || c == '\r' || c == 0x2028 || c == 0x2029 do needs = true; continue }
+            switch c {
+            case '\\': esc = true
+            case '[': cls = true
+            case ']': cls = false
+            case '/': if !cls do needs = true
+            case '\n', '\r', 0x2028, 0x2029: needs = true
+            }
+        }
+    }
+    if !needs do return src
+    sb := strings.builder_make(context.temp_allocator)
+    regex_write_source(&sb, src)
+    return own_str_raw(vm, strings.to_string(sb))
+}
+
+// Escreve a fonte já escapada (ver regex_source_text) — usada também pelo to_text.
+regex_write_source :: proc(sb: ^strings.Builder, src: string) {
+    if src == "" { strings.write_string(sb, "(?:)"); return }
+    esc, cls := false, false
+    for c in src {
+        lt := ""
+        switch c {
+        case '\n': lt = "n"
+        case '\r': lt = "r"
+        case 0x2028: lt = "u2028"
+        case 0x2029: lt = "u2029"
+        }
+        if esc {
+            esc = false
+            if lt != "" { strings.write_string(sb, lt) } else { strings.write_rune(sb, c) }
+            continue
+        }
+        if lt != "" { strings.write_byte(sb, '\\'); strings.write_string(sb, lt); continue }
+        switch c {
+        case '\\': esc = true
+        case '[': cls = true
+        case ']': cls = false
+        case '/': if !cls do strings.write_byte(sb, '\\')
+        }
+        strings.write_rune(sb, c)
+    }
+}
+
+// RegExp.prototype.toString: "/" + source + "/" + flags.
+@(private="file")
+regex_tostring_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    re, ok := this.(^Regex)
+    if !ok {
+        throw_type_error(vm, "RegExp.prototype.toString requires that 'this' be a RegExp")
+        return nil
+    }
+    return own_str(vm, strings.concatenate({"/", regex_source_text(vm, re), "/", re.flags}, context.temp_allocator))
+}
+
 install_regex :: proc(vm: ^Interp) {
     vm.regex_test_fn = mk_native(vm, regex_test_native)
     vm.regex_exec_fn = mk_native(vm, regex_exec_native)
+    vm.regex_tostring_fn = mk_native(vm, regex_tostring_native)
     rctor := mk_native(vm, regexp_ctor_native)
     rctor.props = make(map[string]Value)
     rproto := new_object(vm)                       // RegExp.prototype (test/exec genéricos)
     rproto.props["test"]        = vm.regex_test_fn
     rproto.props["exec"]        = vm.regex_exec_fn
+    rproto.props["toString"]    = vm.regex_tostring_fn
     rproto.props["constructor"] = rctor
     rctor.props["prototype"] = rproto
     rctor.name = "RegExp"
@@ -1012,7 +1652,41 @@ regex_result_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> V
     arr.props["index"] = f64(str_rindex(s, m.groups[0])) // em RUNES (consistente com slice etc.)
     arr.props["input"] = own_str(vm, s)
     if len(re.gnames) > 0 do arr.props["groups"] = regex_groups_object(vm, re, s, m) // m.groups.nome
+    if re.has_indices do arr.props["indices"] = regex_indices_array(vm, re, s, m)
     return arr
+}
+
+// Flag d: `indices[i] = [início, fim]` de cada grupo (undefined se não participou),
+// em code units como `.index`, e `indices.groups` com os nomeados (undefined se o
+// padrão não tem nomes — como o `groups` do próprio resultado).
+@(private="file")
+regex_indices_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> ^Array {
+    pair :: proc(vm: ^Interp, s: string, m: Re_Match, g: int) -> Value {
+        if 2*g+1 >= len(m.groups) do return nil
+        gs, ge := m.groups[2*g], m.groups[2*g+1]
+        if gs < 0 do return nil
+        a := new_array(vm)
+        append(&a.items, f64(str_rindex(s, gs)), f64(str_rindex(s, ge)))
+        return a
+    }
+    ind := new_array(vm)
+    for g in 0 ..= re.ngroups do append(&ind.items, pair(vm, s, m, g))
+    ind.props = make(map[string]Value)
+    if len(re.gnames) > 0 {
+        Pair :: struct { name: string, gi: int }
+        pairs := make([dynamic]Pair, 0, len(re.gnames), context.temp_allocator)
+        for name, gi in re.gnames do append(&pairs, Pair{name, gi})
+        for i := 1; i < len(pairs); i += 1 {
+            for j := i; j > 0 && pairs[j].gi < pairs[j-1].gi; j -= 1 do pairs[j], pairs[j-1] = pairs[j-1], pairs[j]
+        }
+        gobj := new_object(vm)
+        gobj.proto = nil
+        for p in pairs do oput(gobj, own_str_raw(vm, p.name), pair(vm, s, m, p.gi))
+        ind.props["groups"] = gobj
+    } else {
+        ind.props["groups"] = nil
+    }
+    return ind
 }
 
 // O objeto `groups` de um casamento (exec/match e o último argumento do callback do
