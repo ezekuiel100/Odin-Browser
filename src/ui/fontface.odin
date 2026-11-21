@@ -789,6 +789,9 @@ fontface_poll :: proc() -> bool {
 
 // Resolve (família, peso, itálico) → fonte do atlas. Devolve nil quando não há
 // face pronta: o chamador cai na pilha genérica (degradação).
+// Match declarations before checking download/atlas availability. A pending
+// bold/normal face must use the generic fallback, not whichever sibling (for
+// example italic) happened to finish downloading first.
 // A escolha de peso é a mais próxima, com desempate para o mais PESADO (é o que
 // os navegadores fazem para pedidos ≥ 400).
 fontface_pick :: proc(fam_id: u8, weight: int, italic: bool, step: int) -> (^im.Font, f32) {
@@ -796,24 +799,27 @@ fontface_pick :: proc(fam_id: u8, weight: int, italic: bool, step: int) -> (^im.
     best := -1
     best_cost := 1 << 30
     for f, i in g_faces {
-        if f.fam_id != fam_id || f.state != .Ready do continue
-        if f.fonts[step] == nil do continue
+        if f.fam_id != fam_id do continue
         // Distância à FAIXA da face (css-fonts §5.2: peso dentro da faixa casa).
         lo, hi := f.weight, f.weight
         if f.wmax > f.wmin do lo, hi = f.wmin, f.wmax
         dist := weight < lo ? lo - weight : (weight > hi ? weight - hi : 0)
         cost := dist * 4
-        // Dentro da faixa mas instanciada noutro peso: serve agora, e a instância
-        // EXATA (derivada abaixo) ganha quando ficar pronta.
+        // Prefer the exact derived instance over its range parent.
         if dist == 0 && f.weight != weight do cost += 1
         if f.italic != italic do cost += 2000 // itálico errado é pior que peso errado
         if cost < best_cost { best_cost = cost; best = i }
     }
     if best >= 0 {
         b := g_faces[best]
-        if b.is_var && b.wmax > b.wmin && b.italic == italic && b.weight != weight &&
+        if b.state != .Ready || b.fonts[step] == nil {
+            best = -1
+        } else if b.is_var && b.wmax > b.wmin && b.italic == italic && b.weight != weight &&
            weight >= b.wmin && weight <= b.wmax {
             fontface_derive(best, weight)
+            // Keep the requested weight in the system fallback until the exact
+            // instance is installed; do not briefly paint a 700 title at 400.
+            best = -1
         }
     }
     when #config(FONTPROBE, false) {

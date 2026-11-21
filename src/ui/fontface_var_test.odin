@@ -124,8 +124,8 @@ test_var_liberar_dona_sozinha_libera :: proc(t: ^testing.T) {
     testing.expect(t, g_faces[0].raw == nil)
 }
 
-// Peso pedido DENTRO da faixa de uma face variável: serve a mãe agora e cria
-// a instância exata, que ganha assim que entra no atlas.
+// Peso pedido DENTRO da faixa de uma face variável: cria a instância exata
+// e mantém o fallback no peso pedido até ela entrar no atlas.
 @(test)
 test_var_faixa_deriva_a_instancia_do_peso_pedido :: proc(t: ^testing.T) {
     sf, sn := with_faces()
@@ -139,14 +139,15 @@ test_var_faixa_deriva_a_instancia_do_peso_pedido :: proc(t: ^testing.T) {
     defer for &f in g_faces do if f.derived do delete(f.url)
 
     got, _ := fontface_pick(1, 700, false, 0)
-    testing.expect(t, got == &fonts[0], "enquanto não há a instância de 700, a mãe serve")
+    testing.expect(t, got == nil, "enquanto não há a instância de 700, mantém o fallback no peso pedido")
     testing.expect_value(t, len(g_faces), 2)
     if len(g_faces) < 2 do return
     d := g_faces[1]
     testing.expect(t, d.derived && d.weight == 700 && d.state == .Ready, "derivada no peso pedido")
     testing.expect(t, raw_data(d.raw) == raw_data(raw) && d.raw_borrowed, "sem download: empresta da mãe")
     // segunda consulta não deriva de novo
-    fontface_pick(1, 700, false, 0)
+    pending, _ := fontface_pick(1, 700, false, 0)
+    testing.expect(t, pending == nil, "a derivada precisa entrar no atlas antes de ser usada")
     testing.expect_value(t, len(g_faces), 2)
     // quando a derivada entra no atlas, ela ganha
     g_faces[1].fonts[0] = &fonts[1]
@@ -177,7 +178,8 @@ test_var_l_pick_font_entrega_300_e_900_a_face_de_faixa :: proc(t: ^testing.T) {
 
     for w in ([?]int{300, 900, 450}) {
         f, _, _ := l_pick_font(16, Font_Weight(w), 1, .Sans, false)
-        testing.expectf(t, f == &fonts[0], "%d: a mãe serve enquanto a instância não entra no atlas", w)
+        fallback, _, _ := l_pick_font(16, Font_Weight(w), 0, .Sans, false)
+        testing.expectf(t, f == fallback && f != &fonts[0], "%d: mantém a fonte do sistema no peso pedido até instalar a instância", w)
     }
     pesos: [dynamic]int
     defer delete(pesos)

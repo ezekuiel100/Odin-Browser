@@ -88,6 +88,38 @@ test_font_log_hides_embedded_payloads :: proc(t: ^testing.T) {
     long := strings.repeat("x", 300, context.temp_allocator)
     testing.expect_value(t, len(font_log_url(long)), 180)
 }
+
+@(test)
+test_font_variants_stay_stable_in_every_download_order :: proc(t: ^testing.T) {
+    saved := g_faces
+    g_faces = nil
+    defer { delete(g_faces); g_faces = saved }
+    fonts := [3]im.Font{}
+    orders := [6][3]int{{0,1,2}, {0,2,1}, {1,0,2}, {1,2,0}, {2,0,1}, {2,1,0}}
+    for order in orders {
+        clear(&g_faces)
+        append(&g_faces,
+            Loaded_Face{fam_id=1, weight=400, italic=true, state=.Loading},
+            Loaded_Face{fam_id=1, weight=400, state=.Loading},
+            Loaded_Face{fam_id=1, weight=700, state=.Loading})
+        for phase in 0 ..= 3 {
+            for f, i in g_faces {
+                got, _ := fontface_pick(1, f.weight, f.italic, 0)
+                expected: ^im.Font
+                if f.state == .Ready do expected = &fonts[i]
+                testing.expectf(t, got == expected,
+                    "order=%v phase=%d variant=%d must use its own face or generic fallback", order, phase, i)
+            }
+            if phase == 3 do break
+            idx := order[phase]
+            // A download can be Ready before poll has installed its raster.
+            g_faces[idx].state = .Ready
+            got, _ := fontface_pick(1, g_faces[idx].weight, g_faces[idx].italic, 0)
+            testing.expect(t, got == nil, "wait for atlas installation too")
+            g_faces[idx].fonts[0] = &fonts[idx]
+        }
+    }
+}
 @(test)
 test_font_automatic_retry_only_for_transient_failures :: proc(t: ^testing.T) {
     now := time.tick_now()
