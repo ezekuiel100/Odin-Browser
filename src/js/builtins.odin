@@ -78,15 +78,14 @@ utf8_width :: proc(b: u8) -> int {
 
 // comprimento em code units UTF-16 ("length" do JS).
 //
-// `length` é das operações mais quentes do motor, então o caminho ASCII — que é a
-// esmagadora maioria das strings — tem de ficar numa passada só. `rune_count_in_string`
-// é a contagem otimizada do core; se ela bate com o nº de bytes, a string é ASCII
-// pura e não pode conter astral, e acabou. Só quando há multibyte é que vale varrer
-// atrás dos líderes de 4 bytes (>= 0xF0), que são os que valem 2 unidades.
+// Count byte leaders directly, including WTF-8 surrogates as one unit. The
+// Unicode rune counter would count each byte of a lone surrogate separately.
 str_rlen :: proc(s: string) -> int {
-    n := utf8.rune_count_in_string(s)
-    if n == len(s) do return n // ASCII puro: nenhum code point astral
-    for i := 0; i < len(s); i += 1 do if s[i] >= 0xF0 do n += 1
+    n := 0
+    for i := 0; i < len(s); {
+        n += 2 if s[i] >= 0xF0 else 1
+        i += utf8_width(s[i])
+    }
     return n
 }
 
@@ -146,7 +145,7 @@ str_code_unit_at :: proc(s: string, ui: int) -> (u16, bool) {
     if ui < 0 do return 0, false
     k := 0
     for i := 0; i < len(s); {
-        r, w := utf8.decode_rune(s[i:])
+        r, w := decode_js_rune(s[i:])
         if r < 0x10000 {
             if k == ui do return u16(r), true
             k += 1
@@ -1949,7 +1948,7 @@ string_from_char_code :: proc(vm: ^Interp, this: Value, args: []Value) -> Value 
                 continue
             }
         }
-        strings.write_rune(&sb, rune(u))
+        write_js_rune(&sb, rune(u))
     }
     return own_str(vm, strings.to_string(sb))
 }
@@ -1961,7 +1960,7 @@ string_from_code_point :: proc(vm: ^Interp, this: Value, args: []Value) -> Value
     sb: strings.Builder
     strings.builder_init(&sb)
     defer strings.builder_destroy(&sb)
-    for a in args do strings.write_rune(&sb, rune(as_int(a)))
+    for a in args do write_js_rune(&sb, rune(as_int(a)))
     return own_str(vm, strings.to_string(sb))
 }
 
@@ -3034,6 +3033,8 @@ install_builtins :: proc(vm: ^Interp) {
     vm.string_methods["codePointAt"]   = mk_native(vm, str_code_point_at) // ≠ charCodeAt desde o M167
     vm.string_methods["localeCompare"] = mk_native(vm, str_locale_compare)
     vm.string_methods["normalize"]     = mk_native(vm, str_normalize)
+    vm.string_methods["isWellFormed"] = mk_builtin_method(vm, str_is_well_formed, "isWellFormed", 0)
+    vm.string_methods["toWellFormed"] = mk_builtin_method(vm, str_to_well_formed, "toWellFormed", 0)
 
     // objeto Math
     m := new_object(vm)

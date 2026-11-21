@@ -598,7 +598,7 @@ decode_escapes :: proc(s: string, owned: ^[dynamic]string, octal: ^bool = nil, b
             case 'u':
                 if i + 2 < len(s) && s[i + 2] == '{' { // \u{1F600}
                     if v, n, ok := read_hex(s, i + 3, 6); ok && i + 3 + n < len(s) && s[i + 3 + n] == '}' && v <= 0x10FFFF {
-                        strings.write_rune(&sb, rune(v))
+                        write_js_rune(&sb, rune(v))
                         i += 4 + n
                         continue
                     }
@@ -620,7 +620,7 @@ decode_escapes :: proc(s: string, owned: ^[dynamic]string, octal: ^bool = nil, b
                         i += 6
                     }
                 }
-                strings.write_rune(&sb, rune(v))
+                write_js_rune(&sb, rune(v))
             case:
                 strings.write_byte(&sb, s[i + 1]) // \\ \' \" \` \$ e desconhecidos: literal
                 i += 2

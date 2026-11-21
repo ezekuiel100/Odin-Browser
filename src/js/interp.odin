@@ -2413,6 +2413,7 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         return nil
     case ^Collection:
         if name == "size" do return f64(o.size)
+        if o.kind != .Set && set_operation_name(name) do return nil
         if fn, ok := vm.collection_methods[name]; ok do return fn
         if name == "constructor" {
             switch o.kind {
@@ -3827,6 +3828,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             if keep do return cur
             rhs := eval(vm, n.right, env)
             if vm.throwing do return nil
+            if n.left.kind == .Ident do infer_binding_name(n.right, rhs, n.left.name)
             ref_write(vm, n.left, env, tobj, tkey, rhs, n.strict)
             return rhs
         }
@@ -3839,6 +3841,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         // declarado sobrescrevia a exceção do RHS.
         if vm.throwing do return nil
         val: Value = rhs
+        if n.op == .Assign && n.left.kind == .Ident do infer_binding_name(n.right, rhs, n.left.name)
         if n.op != .Assign do val = binop(vm, n.op, old, rhs) // x += v ≡ x = x <op> v
         if vm.throwing do return nil // valueOf do binop lançou
         ref_write(vm, n.left, env, tobj, tkey, val, n.strict)
@@ -4098,6 +4101,8 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     case .VarDecl:
         val: Value = nil
         if n.right != nil do val = eval(vm, n.right, env)
+        if vm.throwing do return nil
+        if n.left == nil do infer_binding_name(n.right, val, n.name)
         // `var` é function-scoped: binda no escopo de função mais próximo (React
         // declara `var d` num bloco e usa fora dele). let/const ficam no bloco.
         target := fn_scope_env(env) if n.aux else env
@@ -5424,6 +5429,7 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
         // já com os params anteriores visíveis — `(a, b=a) => ...` funciona.
         if av == nil && fn.param_defaults != nil && i < len(fn.param_defaults) && fn.param_defaults[i] != nil {
             av = eval(vm, fn.param_defaults[i], scope)
+            if p != "" do infer_binding_name(fn.param_defaults[i], av, p)
         }
         if fn.param_pats != nil && i < len(fn.param_pats) && fn.param_pats[i] != nil {
             bind_pattern(vm, fn.param_pats[i], av, scope) // param desestruturado

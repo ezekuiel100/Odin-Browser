@@ -56,7 +56,6 @@ same_value_zero :: proc(a, b: Value) -> bool {
 }
 
 // Índice da entrada com esta chave, ou -1.
-@(private = "file")
 coll_find :: proc(c: ^Collection, key: Value) -> int {
     for link := c.index[coll_hash(key)]; link != 0; link = c.entries[link-1].next {
         if same_value_zero(c.entries[link-1].key, key) do return link-1
@@ -183,7 +182,6 @@ coll_has :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return coll_find(c, arg(args, 0)) >= 0
 }
 
-@(private = "file")
 coll_delete :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     c, ok := this.(^Collection); if !ok do return false
     if i := coll_find(c, arg(args, 0)); i >= 0 {
@@ -443,6 +441,7 @@ install_collections :: proc(vm: ^Interp) {
     m["keys"]    = mk_native(vm, coll_keys)
     m["values"]  = mk_native(vm, coll_values)
     m["entries"] = mk_native(vm, coll_entries)
+    install_set_operations(vm)
     // [Symbol.iterator]: Map/WeakMap → entries; Set/WeakSet → values (default do JS).
     // Exposto p/ `coll[Symbol.iterator]()` explícito (getIterator do core-js), não só for-of.
     if vm.sym_iterator_key != "" do m[vm.sym_iterator_key] = mk_native(vm, coll_iterator)
@@ -459,7 +458,10 @@ install_collections :: proc(vm: ^Interp) {
         f.name = name
         proto := new_object(vm)
         proto.proto = vm.object_proto
-        for k, mf in vm.collection_methods do proto.props[k] = mf
+        for k, mf in vm.collection_methods {
+            if name != "Set" && set_operation_name(k) do continue
+            proto.props[k] = mf
+        }
         proto.props["constructor"] = f
         if f.props == nil do f.props = make(map[string]Value)
         f.props["prototype"] = proto

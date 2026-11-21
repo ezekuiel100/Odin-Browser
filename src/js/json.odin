@@ -256,13 +256,21 @@ json_array :: proc(st: ^Json_Out, holder: Value, a: ^Array, depth: int) {
 
 // QuoteJSONString: todo controle < 0x20 é escapado (antes só \n \r \t — os demais
 // saíam CRUS e o resultado era JSON INVÁLIDO, que o próprio JSON.parse rejeitava).
-// ⚠️ surrogate solto não chega aqui: o lexer já o troca por U+FFFD ao montar a
-// string, então o `\udXXX` da spec (well-formed stringify) não é reproduzível.
+// Escape WTF-8 surrogates so JSON output remains valid Unicode.
 @(private = "file")
 json_write_quoted :: proc(sb: ^strings.Builder, s: string) {
     HEX := "0123456789abcdef"
     strings.write_byte(sb, '"')
     for i := 0; i < len(s); i += 1 {
+        if s[i] == 0xED {
+            r, w := decode_js_rune(s[i:])
+            if r >= 0xD800 && r <= 0xDFFF {
+                strings.write_string(sb, "\\u")
+                for shift := 12; shift >= 0; shift -= 4 do strings.write_byte(sb, HEX[(u32(r) >> u32(shift)) & 15])
+                i += w-1
+                continue
+            }
+        }
         c := s[i]
         switch c {
         case '"':  strings.write_string(sb, "\\\"")
@@ -479,8 +487,15 @@ jp_string :: proc(vm: ^Interp, r: ^Json_Reader) -> Value {
             case 'u':
                 if r.pos + 4 < len(r.src) {
                     if cp, ok := strconv.parse_int(r.src[r.pos + 1:r.pos + 5], 16); ok {
-                        strings.write_rune(&sb, rune(cp))
                         r.pos += 4
+                        point := cp
+                        if cp >= 0xD800 && cp <= 0xDBFF && r.pos + 6 < len(r.src) && r.src[r.pos+1] == '\\' && r.src[r.pos+2] == 'u' {
+                            if lo, valid := strconv.parse_int(r.src[r.pos+3:r.pos+7], 16); valid && lo >= 0xDC00 && lo <= 0xDFFF {
+                                point = 0x10000 + ((cp-0xD800) << 10) + lo-0xDC00
+                                r.pos += 6
+                            }
+                        }
+                        write_js_rune(&sb, rune(point))
                     } else {
                         r.err = true
                     }
