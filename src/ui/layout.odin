@@ -10673,11 +10673,7 @@ paint_inline_content :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa:
     tem_link := false
     if !b.pe_none do for &it in b.inlines do if it.href != "" && !it.hidden && !it.invisible { tem_link = true; break }
     if tem_link { // pointer-events:none e caixa sem link nenhum saem sem alocar nada
-        // o realce do UA só existe p/ quem NÃO tem sublinhado: repetir a linha num
-        // link já sublinhado dá traço duplo (o do texto e o do realce).
-        ja_sub := make([]bool, len(b.inlines), context.temp_allocator)
-        for &it, i in b.inlines do ja_sub[i] = eff_deco(it, box_deco, box_deco_on, hov_deco_grp).underline
-        paint_link_hover(pt, s, b, cs, opa, over_color, over_t, hov_deco_grp, ja_sub)
+        paint_link_hover(s, b, cs)
     }
 }
 
@@ -10715,32 +10711,32 @@ Link_Run :: struct {
     grp:      u32,
     x0, x1:   f32, // extremos horizontais do run (inclui o espaço ENTRE as palavras)
     top, bot: f32,
-    col:      u32,
     href:     string,
-    autoral:  bool, // o AUTOR definiu a decoração de :hover deste link (o UA cala)
 }
 
-// Realce de hover do link: cursor de mão, clique e sublinhado.
+// Hover do link: cursor de mão, clique e botão do meio.
 //
 // O alvo é o LINK, não a palavra. Um <a> de várias palavras rende um item por
-// palavra — testar item a item (o que se fazia antes) sublinhava só a palavra
-// sob o cursor e deixava o espaço entre elas morto ao clique. Aqui os itens do
-// mesmo `link_grp` viram runs por linha; o run sob o mouse identifica o link, e
-// TODOS os runs dele (inclusive os das outras linhas) recebem o sublinhado.
+// palavra — testar item a item (o que se fazia antes) deixava o espaço entre
+// elas morto ao clique. Aqui os itens do mesmo `link_grp` viram runs por linha;
+// o run sob o mouse identifica o link.
+//
+// ⚠️ NÃO desenha sublinhado. Até 20/11 o UA traçava um sublinhado próprio no
+// link sob o mouse; como ele calava quando o texto já era sublinhado, só
+// aparecia onde o AUTOR tinha tirado o sublinhado (`text-decoration:none`) —
+// sempre contra o site (o logo do famososbr.com). O Chrome não tem realce de
+// hover: quem quer sublinhado no hover escreve `a:hover{…}`, e isso já é
+// pintado pelo caminho de `hov_deco`.
 @(private="file")
-paint_link_hover :: proc(pt: ^Painter, s: ^State, b: ^Box, cs: im.Vec2, opa: f32, over_color: u32, over_t: f32, hov_deco_grp: u32, ja_sub: []bool) {
+paint_link_hover :: proc(s: ^State, b: ^Box, cs: im.Vec2) {
     runs := make([dynamic]Link_Run, 0, 4, context.temp_allocator)
     for i := 0; i < len(b.inlines); {
         it := b.inlines[i]
         if it.href == "" || it.hidden || it.invisible { i += 1; continue }
-        wc := over_t > 0 ? lerp_color(it.color, over_color, over_t) : it.color
         r := Link_Run{
-            grp = it.link_grp, href = it.href, col = col_o(wc, opa),
+            grp = it.link_grp, href = it.href,
             x0 = cs.x + it.x, x1 = cs.x + it.x + it.w,
             top = cs.y + it.y, bot = cs.y + it.y + it.h,
-            // o UA cala quando o AUTOR mandou na decoração de :hover deste link, ou
-            // quando o texto já sai sublinhado (senão o realce vira traço duplo).
-            autoral = (it.hov_grp != 0 && it.hov_grp == hov_deco_grp) || ja_sub[i],
         }
         j := i + 1
         // grupo 0 (link sem grupo atribuído) NÃO funde: cada item vira o seu run,
@@ -10765,14 +10761,6 @@ paint_link_hover :: proc(pt: ^Painter, s: ^State, b: ^Box, cs: im.Vec2, opa: f32
     im.SetMouseCursor(.Hand)
     if im.IsMouseClicked(.Left) do navigate_href(s, runs[hov].href)
     if aux_frame() do s.aux_href = runs[hov].href
-    hg := runs[hov].grp
-    for r, ri in runs {
-        if ri != hov && (hg == 0 || r.grp != hg) do continue
-        // O sublinhado abaixo é do UA (afordância de link) — ver `autoral`.
-        if r.autoral do continue
-        y := r.bot - 2
-        emit(pt, PC_Line{{r.x0, y}, {r.x1, y}, r.col})
-    }
 }
 
 // Desenha uma imagem recortada MANUALMENTE ao retângulo clip [cmin,cmax],
