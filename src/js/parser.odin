@@ -1011,7 +1011,7 @@ parse_export :: proc(p: ^Parser) -> ^Node {
             consume_semicolon(p)
             return n
         }
-        if n.left != nil && n.left.name != "" do n.left.decl = true
+        if n.left != nil do n.left.decl = true
         return n
     }
     if t.kind == .LBrace { // export { a, b as c } [from "..."]

@@ -22,6 +22,7 @@ PROMISE_REJECTED  :: 2.0
 // Uma reação de Promise ainda não executada (a "microtask"). O que run_reaction
 // precisa: os callbacks dos dois lados, a promise derivada, e o estado/valor.
 Reaction_Job :: struct {
+    mutation_notify: bool,
     microtask: ^Function, // não-nil: callback queueMicrotask, sem promise derivada
     onf, onr: Value,
     next:     ^Object,
@@ -46,7 +47,9 @@ drain_reaction_queue :: proc(vm: ^Interp) {
         if vm_host_turn_expired(vm) do break
         job := vm.reaction_queue[0]
         ordered_remove(&vm.reaction_queue, 0) // FIFO; a fila fica curta (cada reação enfileira ~1)
-        if job.microtask != nil {
+        if job.mutation_notify {
+            mo_notify(vm)
+        } else if job.microtask != nil {
             call_function(vm, job.microtask, nil, nil)
             vm_clear_uncaught(vm) // reporta e limpa; não rejeita uma Promise
         } else {

@@ -33,12 +33,6 @@ import dom "../dom"
 @(private = "file") MO_QUEUE :: "#queue"
 @(private = "file") MO_REGS  :: "#regs"
 
-// Rodadas de entrega por checkpoint. A spec entrega UMA vez por microtask
-// checkpoint, e o que o callback mutar só sai no checkpoint seguinte. Um punhado
-// de rodadas faz observador-que-alimenta-observador convergir na mesma tarefa
-// sem risco de laço infinito (callback que SEMPRE muta pararia aqui).
-@(private = "file") MO_ROUNDS :: 4
-
 // Teto de registros enfileirados por observador entre dois checkpoints, como
 // rede de segurança de memória. A fila drena a cada tarefa, então isto só é
 // atingido por um laço patológico numa tarefa só. Alto de propósito: um
@@ -245,6 +239,13 @@ mo_enqueue :: proc(vm: ^Interp, target: ^dom.Node, kind: MO_Kind, attr: string, 
         if !hit do continue
         q, qok := obs.props[MO_QUEUE].(^Array)
         if !qok || len(q.items) >= MO_QUEUE_MAX do continue
+        pending := false
+        for o in vm.mo_pending do if o == obs { pending = true; break }
+        if !pending do append(&vm.mo_pending, obs)
+        if !vm.mo_queued {
+            vm.mo_queued = true
+            append(&vm.reaction_queue, Reaction_Job{mutation_notify = true})
+        }
         // `oldValue` é POR OBSERVADOR (só quem pediu attributeOldValue o vê), e o
         // record é compartilhado — então quem pediu ganha uma cópia rasa com o
         // campo preenchido. É o único campo que difere entre observadores.
@@ -333,12 +334,8 @@ mo_task_exit :: proc(vm: ^Interp) {
     // Não entregar observers reentrantemente durante jobs ou outro observer.
     if vm.draining || vm.mo_notifying do return
     promise_checkpoint(vm)
-    mo_notify(vm)
-    promise_checkpoint(vm) // jobs gerados pelos observers
 }
 
-// Ordering parcial: entrega de MO ainda ocorre em rodadas separadas, não como
-// um job na FIFO compartilhada; não implementa o ordering completo da spec.
 mo_has_records :: proc(vm: ^Interp) -> bool {
     for obs in vm.mut_observers {
         if q, ok := obs.props[MO_QUEUE].(^Array); ok && len(q.items) > 0 do return true
@@ -347,44 +344,34 @@ mo_has_records :: proc(vm: ^Interp) -> bool {
 }
 
 mo_notify :: proc(vm: ^Interp) {
-    if !mo_active(vm) || vm.mo_notifying do return
+    if vm.mo_notifying do return
     vm.mo_notifying = true
     defer vm.mo_notifying = false
-    // Uma CÓPIA da lista por rodada: o callback pode chamar observe/disconnect e
-    // mexer em vm.mut_observers no meio do laço. Alocador padrão (não o temp) de
-    // propósito — o buffer atravessa chamadas de JS arbitrário, e amarrá-lo ao
-    // ciclo de vida da arena temporária do frame seria acoplamento invisível.
-    // Um observador desconectado durante a rodada continua no snapshot, mas o
-    // disconnect esvazia a fila dele, então ele é só pulado.
+    // Snapshot the pending set once. Drain each queue just before its callback.
+    // Mutations during delivery schedule a new job at the tail of the FIFO.
+    vm.mo_queued = false
     snap: [dynamic]^Object
+    for o in vm.mo_pending do append(&snap, o)
+    clear(&vm.mo_pending)
     defer delete(snap)
-    for _ in 0 ..< MO_ROUNDS {
-        any := false
-        clear(&snap)
-        for o in vm.mut_observers do append(&snap, o)
-        for obs in snap {
-            if vm_host_turn_expired(vm) do return
-            q, ok := obs.props[MO_QUEUE].(^Array)
-            if !ok || len(q.items) == 0 do continue
-            recs := new_array(vm)
-            for it in q.items do append(&recs.items, it)
-            clear(&q.items)
-            vm.mo_records_sent += len(recs.items)
-            any = true
-            cb, cok := obs.props[MO_CB].(^Function)
-            if !cok do continue
-            call_function(vm, cb, obs, []Value{recs, obs})
-            // um callback que lança não impede os demais (como no navegador); a
-            // mensagem já foi para o uncaught_log, aqui só limpamos o estado de
-            // propagação p/ não vazar na tarefa que nos chamou.
-            vm_clear_uncaught(vm)
-        }
-        if !any do break
+    for obs in snap {
+        q, ok := obs.props[MO_QUEUE].(^Array)
+        if !ok || len(q.items) == 0 do continue
+        recs := new_array(vm)
+        for it in q.items do append(&recs.items, it)
+        clear(&q.items)
+        vm.mo_records_sent += len(recs.items)
+        cb, cok := obs.props[MO_CB].(^Function)
+        if !cok do continue
+        call_function(vm, cb, obs, []Value{recs, obs})
+        vm_clear_uncaught(vm)
     }
 }
 
 // vm_destroy: só a lista (os objetos são rastreados pelo vm).
 mo_free :: proc(vm: ^Interp) {
+    delete(vm.mo_pending)
+    vm.mo_pending = nil
     delete(vm.mut_observers)
     vm.mut_observers = nil
 }

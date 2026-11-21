@@ -385,3 +385,56 @@ test_mo_insercao_no_indice_certo_com_observador :: proc(t: ^testing.T) {
     `)
     testing.expect_value(t, got, "AISPAN|2")
 }
+
+@(test)
+test_mo_shared_fifo_and_recursive_delivery :: proc(t: ^testing.T) {
+    root := build_mo_dom(); defer dom.free_tree(root)
+    vm := vm_create_with_dom(root); defer vm_free(vm)
+    vm_run(vm, `
+        var order = '', count = 0;
+        var el = document.getElementById('s');
+        var mo = new MutationObserver(function(recs) {
+            count++; order += 'm' + count + ',';
+            if (count < 6) {
+                queueMicrotask(function(){order += 'q,';});
+                el.setAttribute('data-x', String(count));
+            }
+        });
+        mo.observe(el, {attributes:true});
+        Promise.resolve().then(function(){order += 'p,';});
+        el.setAttribute('data-x', 'start');
+        queueMicrotask(function(){order += 'end,';});
+    `)
+    testing.expect_value(t, vm_run(vm, `order`).(string),
+        "p,m1,end,q,m2,q,m3,q,m4,q,m5,q,m6,")
+}
+
+@(test)
+test_mo_pending_order_and_disconnect :: proc(t: ^testing.T) {
+    root := build_mo_dom(); defer dom.free_tree(root)
+    vm := vm_create_with_dom(root); defer vm_free(vm)
+    vm_run(vm, `
+        var order = '';
+        var a = document.getElementById('h'), b = document.getElementById('s');
+        var first = new MutationObserver(function(){order += 'a';});
+        var second = new MutationObserver(function(){order += 'b'; first.disconnect();});
+        first.observe(a, {attributes:true}); second.observe(b, {attributes:true});
+        b.setAttribute('x', '1'); a.setAttribute('x', '1');
+        queueMicrotask(function(){order += 'q';});
+    `)
+    testing.expect_value(t, vm_run(vm, `order`).(string), "bq")
+}
+
+@(test)
+test_mo_disconnect_before_notify_allows_later_observe :: proc(t: ^testing.T) {
+    root := build_mo_dom(); defer dom.free_tree(root)
+    vm := vm_create_with_dom(root); defer vm_free(vm)
+    vm_run(vm, `
+        var count = 0, el = document.getElementById('s');
+        var mo = new MutationObserver(function(){count++;});
+        mo.observe(el, {attributes:true});
+        el.setAttribute('x', '1'); mo.disconnect();
+    `)
+    vm_run(vm, `mo.observe(el, {attributes:true}); el.setAttribute('x', '2');`)
+    testing.expect_value(t, as_number(vm_run(vm, `count`)), 1)
+}

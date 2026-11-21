@@ -240,3 +240,93 @@ ciclo_nao_quebra_o_caso_aciclico :: proc(t: ^testing.T) {
     testing.expect_value(t, vm_run(vm, `depois`).(string), "tarde")
     testing.expect_value(t, vm_run(vm, `porNs`).(string), "tarde")
 }
+
+@(test)
+ciclo_exports_lexicais_tdz_e_hoisting :: proc(t: ^testing.T) {
+    vm := ciclo_vm(); defer vm_free(vm)
+    vm_run(vm, `var result = '', later;`)
+    vm.module_stubs["a.js"] = `
+        import "b.js";
+        export let x = 3;
+        const hidden = 4; export {hidden as renamed};
+        export class C {}
+        export var v = 5;
+        export function f(){return 7;}
+        export default 9;
+    `
+    vm.module_stubs["b.js"] = `
+        import d, {x, renamed, C, v, f} from "a.js";
+        import * as ns from "a.js";
+        try { x; } catch(e) { result += e.name + ','; }
+        try { typeof renamed; } catch(e) { result += e.name + ','; }
+        try { ns.C; } catch(e) { result += e.name + ','; }
+        try { d; } catch(e) { result += e.name + ','; }
+        result += String(v) + ',' + f();
+        later = function(){return x + renamed + d + ns.v;};
+    `
+    vm_run_module(vm, `import "a.js";`)
+    testing.expect_value(t, vm_run(vm, `result`).(string),
+        "ReferenceError,ReferenceError,ReferenceError,ReferenceError,undefined,7")
+    testing.expect_value(t, as_number(vm_run(vm, `later()`)), 21)
+}
+
+@(test)
+ciclo_default_function_e_identidade :: proc(t: ^testing.T) {
+    vm := ciclo_vm(); defer vm_free(vm)
+    vm_run(vm, `var early, result;`)
+    vm.module_stubs["a.js"] = `
+        import "b.js";
+        export default function(){return 12;}
+    `
+    vm.module_stubs["b.js"] = `import f from "a.js"; early = f; result = f();`
+    vm_run_module(vm, `import f from "a.js"; result = result === 12 && f === early;`)
+    testing.expect_value(t, vm_run(vm, `result`).(bool), true)
+}
+
+@(test)
+ciclo_tdz_rejeita_importadores :: proc(t: ^testing.T) {
+    vm := ciclo_vm(); defer vm_free(vm)
+    vm_run(vm, `var reason = '', ran = false;`)
+    vm.module_stubs["a.js"] = `import "b.js"; export const x = 1; ran = true;`
+    vm.module_stubs["b.js"] = `import {x} from "a.js"; x;`
+    vm_run(vm, `import("a.js").catch(function(e){reason = e.name;});`)
+    testing.expect_value(t, vm_run(vm, `reason === 'ReferenceError' && !ran`).(bool), true)
+}
+
+@(test)
+module_reexport_preserva_binding_vivo :: proc(t: ^testing.T) {
+    vm := ciclo_vm(); defer vm_free(vm)
+    vm_run(vm, `var result;`)
+    vm.module_stubs["a.js"] = `export let x = 1; export function update(){x = 2;}`
+    vm.module_stubs["b.js"] = `export {x as y, update} from "a.js";`
+    vm.module_stubs["c.js"] = `export * from "b.js";`
+    vm_run_module(vm, `import {y, update} from "c.js"; update(); result = y;`)
+    testing.expect_value(t, as_number(vm_run(vm, `result`)), 2)
+}
+
+@(test)
+module_tdz_antes_e_durante_await :: proc(t: ^testing.T) {
+    vm := ciclo_vm(); defer vm_free(vm)
+    vm_run(vm, `var resume, read, result = '';`)
+    vm.module_stubs["a.js"] = `
+        read = function(){return x;};
+        try { x = 2; } catch(e) {result += e.name + ',';}
+        try { typeof x; } catch(e) {result += e.name + ',';}
+        await new Promise(function(r){resume = r;});
+        export let x = 8;
+    `
+    vm_run(vm, `import("a.js");`)
+    vm_run(vm, `try {read();} catch(e) {result += e.name + ',';} resume();`)
+    testing.expect_value(t, vm_run(vm, `result`).(string), "ReferenceError,ReferenceError,ReferenceError,")
+    testing.expect_value(t, as_number(vm_run(vm, `read()`)), 8)
+}
+
+@(test)
+ciclo_default_arrow_permanece_na_tdz :: proc(t: ^testing.T) {
+    vm := ciclo_vm(); defer vm_free(vm)
+    vm_run(vm, `var result = '';`)
+    vm.module_stubs["a.js"] = `import "b.js"; export default () => 5;`
+    vm.module_stubs["b.js"] = `import f from "a.js"; try {f;} catch(e) {result = e.name;}`
+    vm_run_module(vm, `import f from "a.js"; result += ',' + f();`)
+    testing.expect_value(t, vm_run(vm, `result`).(string), "ReferenceError,5")
+}

@@ -131,7 +131,7 @@ module_ns_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
     if m == nil || m.env == nil do return nil, false
     for d in m.deferred {
         if d.exported == name {
-            v, _ := env_get(m.env, d.local)
+            v, _ := env_get(m.env, d.local, vm)
             return v, true
         }
     }
@@ -210,7 +210,10 @@ eval_import_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) {
             m != nil ? "avaliação do módulo lançou" : "resolução/cap")
         if vm.throwing do vm_clear_uncaught(vm) // dep lançou: loga e não envenena o importador
     }
-    if n.name != "" do env_define(env, n.name, ok ? get_member(vm, m.ns, "default") : nil)
+    if n.name != "" {
+        if local := module_local_of(m, "default"); ok && local != "" do env_alias(env, n.name, m.env, local)
+        else do env_define(env, n.name, ok ? get_member(vm, m.ns, "default") : nil)
+    }
     if n.rest_param != "" do env_define(env, n.rest_param, ok ? m.ns : nil)
     for c in n.body { // {a, b as c}: c.str = exportado, c.name = local
         // LIVE BINDING (M139): quando o export vem de uma variável do exportador, o
@@ -239,16 +242,30 @@ eval_import_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) {
 eval_export_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     m := vm.current_module
     if n.bval { // export default <expr> — valor imediato (spec)
-        v := eval(vm, n.left, env)
+        v: Value
+        if m != nil && n.left != nil && n.left.kind == .Func && n.left.decl {
+            v, _ = env_get(m.env, module_local_of(m, "default"))
+        } else {
+            v = eval(vm, n.left, env)
+        }
         if vm.throwing do return nil
-        if m != nil do oput(m.ns, "default", v)
+        if m != nil {
+            local := module_local_of(m, "default")
+            env_define(m.env, local, v)
+            oput(m.ns, "default", v)
+        }
         return v
     }
     if n.left != nil { // export <declaração>: executa e adia o snapshot dos nomes
-        v := eval(vm, n.left, env)
+        v: Value
+        if m != nil && n.left.kind == .Func {
+            v, _ = env_get(env, n.left.name)
+        } else {
+            v = eval(vm, n.left, env)
+        }
         if vm.throwing do return nil
         if m != nil {
-            module_collect_decl_exports(m, n.left)
+            // Export names were registered during instantiation.
             // publica JÁ, não só no fim: em ciclo o namespace é enumerado enquanto
             // o módulo ainda roda, e enumeração passa por `ns.props` (o get-hook só
             // cobre leitura por nome). Sem isto, `export * from` e `Object.keys(ns)`
@@ -271,16 +288,16 @@ eval_export_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             if n.name != "" { // export * as ns from "x"
                 oput(m.ns, n.name, dep.ns)
             } else { // export * from "x" — copia tudo exceto default (spec)
-                for k, v in dep.ns.props do if k != "default" do oput(m.ns, k, v)
+                for k in dep.ns.props do if k != "default" do module_link_export(vm, m, k, dep, k)
             }
         } else { // export {a, b as c} from "x"
-            for c in n.body do oput(m.ns, c.str, get_member(vm, dep.ns, c.name))
+            for c in n.body do module_link_export(vm, m, c.str, dep, c.name)
         }
         return nil
     }
     // export {a, b as c} local: adia p/ o snapshot do fim do módulo
     if m != nil {
-        for c in n.body do append(&m.deferred, Deferred_Export{local = c.name, exported = c.str})
+        // Local export aliases were registered during instantiation.
         module_snapshot_exports(vm, m) // idem acima: chave visível já durante o ciclo
     }
     return nil
@@ -296,11 +313,11 @@ module_collect_decl_exports :: proc(m: ^Module, decl: ^Node) {
     case .VarDecl:
         add(m, decl.name)
         if decl.left != nil && decl.left.kind == .Pattern { // export const {a, b} = obj
-            for el in decl.left.body do add(m, el.name)
+            module_collect_pattern_exports(m, decl.left)
         }
         for d in decl.body { // declaradores extras: export const a = 1, b = 2
             add(m, d.name)
-            if d.left != nil && d.left.kind == .Pattern do for el in d.left.body do add(m, el.name)
+            if d.left != nil && d.left.kind == .Pattern do module_collect_pattern_exports(m, d.left)
         }
     case .Func, .Class:
         add(m, decl.name)
@@ -354,4 +371,77 @@ module_start_dependencies :: proc(vm: ^Interp, program: ^Node) -> (pending: bool
         }
     }
     return pending
+}
+
+// Prepare the namespace and declaration bindings before any dependency executes.
+module_instantiate :: proc(vm: ^Interp, m: ^Module, program: ^Node, env: ^Env) {
+    prepare :: proc(n: ^Node, env: ^Env) {
+        if n == nil do return
+        if n.kind == .VarDecl {
+            if !n.aux {
+                if n.name != "" do env_declare_uninitialized(env, n.name)
+                if n.left != nil do module_prepare_pattern(n.left, env)
+            }
+            for d in n.body do prepare(d, env)
+        } else if n.kind == .Class && n.name != "" {
+            env_declare_uninitialized(env, n.name)
+        }
+    }
+    for n in program.body {
+        if n.kind != .ExportDecl { prepare(n, env); continue }
+        if n.bval {
+            local := "#default"
+            if n.left != nil && n.left.decl && (n.left.kind == .Func || n.left.kind == .Class) && n.left.name != "" do local = n.left.name
+            append(&m.deferred, Deferred_Export{local = local, exported = "default"})
+            env_declare_uninitialized(env, local)
+            if n.left != nil && n.left.kind == .Func && n.left.decl {
+                env_define(env, local, eval(vm, n.left, env))
+            }
+        } else if n.left != nil {
+            prepare(n.left, env)
+            module_collect_decl_exports(m, n.left)
+        } else if n.str == "" {
+            for c in n.body do append(&m.deferred, Deferred_Export{local = c.name, exported = c.str})
+        } else if !n.aux {
+            for c in n.body {
+                local := own_str(vm, fmt.tprintf("#reexport:%s", c.str)).(string)
+                append(&m.deferred, Deferred_Export{local = local, exported = c.str})
+                env_declare_uninitialized(env, local)
+            }
+        }
+    }
+    hoist_functions(vm, program.body[:], env)
+    hoist_vars_body(program.body[:], env)
+    module_snapshot_exports(vm, m)
+}
+
+module_prepare_pattern :: proc(n: ^Node, env: ^Env) {
+    for el in n.body {
+        if el.name != "" do env_declare_uninitialized(env, el.name)
+        if el.left != nil && el.left.kind == .Pattern do module_prepare_pattern(el.left, env)
+    }
+}
+
+module_collect_pattern_exports :: proc(m: ^Module, pat: ^Node) {
+    for el in pat.body {
+        if el.name != "" do append(&m.deferred, Deferred_Export{local = el.name, exported = el.name})
+        if el.left != nil && el.left.kind == .Pattern do module_collect_pattern_exports(m, el.left)
+    }
+}
+
+// Reexports remain aliases rather than snapshots, preserving later writes and TDZ.
+module_link_export :: proc(vm: ^Interp, m: ^Module, exported: string, dep: ^Module, imported: string) {
+    local := module_local_of(m, exported)
+    if local == "" {
+        local = own_str(vm, fmt.tprintf("#reexport:%s", exported)).(string)
+        append(&m.deferred, Deferred_Export{local = local, exported = exported})
+    }
+    if source := module_local_of(dep, imported); source != "" {
+        delete_key(&m.env.vars, local)
+        if m.env.uninitialized != nil do delete_key(&m.env.uninitialized, local)
+        env_alias(m.env, local, dep.env, source)
+    } else {
+        env_define(m.env, local, dep.ns.props[imported])
+    }
+    oput(m.ns, exported, nil)
 }

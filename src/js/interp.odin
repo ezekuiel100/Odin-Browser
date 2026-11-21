@@ -298,6 +298,7 @@ Env_Alias :: struct {
 
 Env :: struct {
     vars:   map[string]Value,
+    uninitialized: map[string]bool, // module lexical bindings in the TDZ
     parent: ^Env,
     is_fn_scope: bool, // fronteira de escopo de FUNÇÃO (var sobe até aqui; blocos não)
     aliases: map[string]Env_Alias, // nil até o 1º import com live binding
@@ -423,6 +424,8 @@ Interp :: struct {
     mut_observers:  [dynamic]^Object,     // MutationObserver ativos (mutation_observer.odin). VAZIO no caso comum:
                                           // é o `len` disto que faz toda mutação de DOM não pagar nada quando
                                           // nenhuma página observa. Objetos rastreados pelo vm; só a lista é liberada.
+    mo_queued: bool,
+    mo_pending: [dynamic]^Object,
     mo_notifying:   bool,                 // já dentro de mo_notify? (um callback que muta não re-entra na entrega)
     mo_task_depth:  int,                  // tarefas síncronas de JS empilhadas (mo_task_enter/exit); a entrega
                                           // de MutationRecords só acontece quando volta a ZERO — a spec só roda
@@ -797,6 +800,10 @@ recycle_envs :: proc(vm: ^Interp, mark: int) {
             delete(e.aliases)
             e.aliases = nil
         }
+        if e.uninitialized != nil {
+            delete(e.uninitialized)
+            e.uninitialized = nil
+        }
         if e.consts != nil {
             delete(e.consts)
             e.consts = nil
@@ -842,7 +849,6 @@ subtree_has_func :: proc(n: ^Node) -> bool {
 // JS. Expressões de função (`var f = function(){}`) NÃO são içadas (não estão em
 // posição de statement). O loop de execução PULA essas declarações depois (já
 // içadas), evitando recriar a função. Declaração posterior de mesmo nome vence.
-@(private = "file")
 hoist_functions :: proc(vm: ^Interp, stmts: []^Node, env: ^Env) {
     for statement in stmts {
         s := statement
@@ -1023,7 +1029,7 @@ throw_reference_error :: proc(vm: ^Interp, msg: string) {
 // acha — e por `typeof`, a única isenção da spec, que precisa do mesmo lookup
 // SEM o throw. Ter um funil só é o que garante que os dois não divirjam.
 lookup_ident :: proc(vm: ^Interp, env: ^Env, name: string) -> (Value, bool) {
-    if v, ok := env_get(env, name); ok do return v, true
+    if v, ok := env_get(env, name, vm); ok do return v, true
     if winv, wok := env_get(vm.global, "window"); wok {
         if win, ok := winv.(^Object); ok {
             // ⚠️ pelo HOOK (window_get), não por `win.props` direto: as props
@@ -1144,6 +1150,7 @@ vm_destroy :: proc(vm: ^Interp) {
     for e in vm.all_envs {
         delete(e.vars)
         if e.aliases != nil do delete(e.aliases)
+        if e.uninitialized != nil do delete(e.uninitialized)
         if e.consts != nil do delete(e.consts)
         free(e)
     }
@@ -1152,6 +1159,7 @@ vm_destroy :: proc(vm: ^Interp) {
     for e in vm.env_pool {
         delete(e.vars)
         if e.aliases != nil do delete(e.aliases)
+        if e.uninitialized != nil do delete(e.uninitialized)
         if e.consts != nil do delete(e.consts)
         free(e)
     }
@@ -1347,15 +1355,21 @@ vm_frame_step :: proc(vm: ^Interp) -> bool {
     return fired
 }
 
-env_get :: proc(e: ^Env, name: string) -> (Value, bool) {
+env_get :: proc(e: ^Env, name: string, vm: ^Interp = nil) -> (Value, bool) {
     when JSPROF { g_prof.env_get += 1 }
     cur := e
     for cur != nil {
         when JSPROF { g_prof.env_saltos += 1 } // custo REAL da cadeia: niveis percorridos
-        if v, ok := cur.vars[name]; ok do return v, true
+        if v, ok := cur.vars[name]; ok {
+            if vm != nil && cur.uninitialized[name] {
+                throw_reference_error(vm, fmt.tprintf("Cannot access '%s' before initialization", name))
+                return nil, true
+            }
+            return v, true
+        }
         // live binding de import: resolve no escopo do módulo exportador AGORA
         if cur.aliases != nil {
-            if a, ok := cur.aliases[name]; ok do return env_get(a.src, a.local)
+            if a, ok := cur.aliases[name]; ok do return env_get(a.src, a.local, vm)
         }
         cur = cur.parent
     }
@@ -1370,6 +1384,7 @@ env_alias :: proc(e: ^Env, name: string, src: ^Env, local: string) {
 }
 
 env_define :: proc(e: ^Env, name: string, v: Value) {
+    if e.uninitialized != nil do delete_key(&e.uninitialized, name)
     e.vars[name] = v
 }
 
@@ -1379,7 +1394,7 @@ env_define :: proc(e: ^Env, name: string, v: Value) {
 // redefine o binding a cada iteração num escopo novo, segue funcionando (o rebind
 // passa por env_define, não por env_assign).
 env_define_const :: proc(e: ^Env, name: string, v: Value) {
-    e.vars[name] = v
+    env_define(e, name, v)
     if e.consts == nil do e.consts = make(map[string]bool)
     e.consts[name] = true
 }
@@ -1392,12 +1407,21 @@ env_assign :: proc(vm: ^Interp, e: ^Env, name: string, v: Value, strict := false
     root := e
     for cur != nil {
         if _, ok := cur.vars[name]; ok {
+            if cur.uninitialized[name] {
+                throw_reference_error(vm, fmt.tprintf("Cannot access '%s' before initialization", name))
+                return
+            }
             if cur.consts != nil && cur.consts[name] {
                 throw_type_error(vm, "Assignment to constant variable.")
                 return
             }
             cur.vars[name] = v
             if cur.mapped_args != nil do args_param_written(cur.mapped_args, name, v)
+            return
+        }
+        if alias, ok := cur.aliases[name]; ok {
+            if env_uninitialized(alias.src, alias.local) do throw_reference_error(vm, "Cannot access import before initialization")
+            else do throw_type_error(vm, "Assignment to import binding")
             return
         }
         root = cur
@@ -4352,7 +4376,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 
     case .Program:
         result: Value = nil
-        hoist_functions(vm, n.body[:], env)
+        if vm.current_module == nil || vm.current_module.env != env do hoist_functions(vm, n.body[:], env)
         hoist_vars_body(n.body[:], env) // var top-level (inclui os aninhados em blocos)
         for s in n.body {
             if is_hoisted_func(s) do continue // já içada
@@ -5969,7 +5993,10 @@ vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil, url := "") -> Value {
     reset_task_clock(vm)    // relógio do watchdog por tempo
     run_env := env if env != nil else vm.global
     m := vm.current_module
-    if m != nil do m.evaluation = promise_new(vm)
+    if m != nil {
+        m.evaluation = promise_new(vm)
+        module_instantiate(vm, m, prog, run_env)
+    }
     pending_dependencies := module_start_dependencies(vm, prog)
     if program_needs_coroutine(prog) || pending_dependencies {
         return program_call(vm, prog, run_env)
@@ -6079,4 +6106,20 @@ function_length :: proc(f: ^Function) -> f64 {
     if f.native != nil do return f64(f.native_length)
     for d, i in f.param_defaults do if d != nil do return f64(i)
     return f64(len(f.params))
+}
+
+// Binding resolution follows import aliases without reading a value.
+env_uninitialized :: proc(e: ^Env, name: string, depth := 0) -> bool {
+    if depth > 256 do return false
+    for cur := e; cur != nil; cur = cur.parent {
+        if _, ok := cur.vars[name]; ok do return cur.uninitialized[name]
+        if a, ok := cur.aliases[name]; ok do return env_uninitialized(a.src, a.local, depth + 1)
+    }
+    return false
+}
+
+env_declare_uninitialized :: proc(e: ^Env, name: string) {
+    e.vars[name] = nil
+    if e.uninitialized == nil do e.uninitialized = make(map[string]bool)
+    e.uninitialized[name] = true
 }

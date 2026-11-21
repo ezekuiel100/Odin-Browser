@@ -246,6 +246,9 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
     for _, v in vm.node_wrappers {
         gc_push(&g, v)
     }
+    for v in vm.mo_pending {
+        gc_push(&g, v)
+    }
     for v in vm.mut_observers {
         gc_push(&g, v)
     }
@@ -341,6 +344,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
 
         delete(e.vars)
         if e.aliases != nil do delete(e.aliases)
+        if e.uninitialized != nil do delete(e.uninitialized)
         if e.consts != nil do delete(e.consts)
         free(e)
         }
