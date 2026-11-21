@@ -257,7 +257,7 @@ this_ta :: proc(this: Value) -> (^Object, bool) {
 @(private = "file")
 rel_index :: proc(v: Value, length: int, def: int) -> int {
     if v == nil do return def
-    n := int(as_number(v))
+    n := as_int(v)
     if n < 0 do n += length
     if n < 0 do n = 0
     if n > length do n = length
@@ -329,19 +329,116 @@ ta_fill :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 }
 
 @(private = "file")
-ta_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    o, ok := this_ta(this); if !ok do return f64(-1)
-    target := as_number(arg(args, 0))
-    for i in 0 ..< o.ta_len do if ta_read(o, i) == target do return f64(i)
-    return f64(-1)
+ta_require :: proc(vm: ^Interp, this: Value) -> (^Object, bool) {
+    o, ok := this_ta(this)
+    if !ok do throw_type_error(vm, "Receiver is not a TypedArray")
+    return o, ok
 }
 
 @(private = "file")
-ta_includes :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    o, ok := this_ta(this); if !ok do return false
-    target := as_number(arg(args, 0))
-    for i in 0 ..< o.ta_len do if ta_read(o, i) == target do return true
-    return false
+ta_at :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := ta_require(vm, this); if !ok do return nil
+    i := as_int(to_number(vm, arg(args, 0)))
+    if vm.throwing do return nil
+    if i < 0 do i += o.ta_len
+    if i < 0 || i >= o.ta_len do return nil
+    return ta_read(o, i)
+}
+
+// Search values are not coerced; includes uses SameValueZero (including NaN).
+@(private = "file")
+ta_search :: proc(vm: ^Interp, this: Value, args: []Value, backwards, includes: bool) -> Value {
+    o, ok := ta_require(vm, this); if !ok do return nil
+    missing: Value = f64(-1)
+    if includes do missing = false
+    if o.ta_len == 0 do return missing
+    i := 0
+    if backwards do i = o.ta_len - 1
+    if len(args) > 1 && (backwards || args[1] != nil) {
+        i = as_int(to_number(vm, args[1]))
+        if vm.throwing do return nil
+        if i < 0 do i += o.ta_len
+        if backwards { i = min(i, o.ta_len - 1) } else { i = max(i, 0) }
+    }
+    target, numeric := arg(args, 0).(f64)
+    if !numeric do return missing
+    step := 1; if backwards do step = -1
+    for i >= 0 && i < o.ta_len {
+        el := ta_read(o, i)
+        if el == target || (includes && el != el && target != target) {
+            if includes do return true
+            return f64(i)
+        }
+        i += step
+    }
+    return missing
+}
+
+@(private = "file")
+ta_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return ta_search(vm, this, args, false, false) }
+@(private = "file")
+ta_last_index_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return ta_search(vm, this, args, true, false) }
+@(private = "file")
+ta_includes :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return ta_search(vm, this, args, false, true) }
+
+// Copy bytes in the appropriate direction: preserve float bit patterns and
+// handle overlapping ranges, including views with a nonzero byteOffset.
+@(private = "file")
+ta_copy_within :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := ta_require(vm, this); if !ok do return nil
+    target := rel_index(to_number(vm, arg(args, 0)), o.ta_len, 0)
+    if vm.throwing do return nil
+    start := rel_index(to_number(vm, arg(args, 1)), o.ta_len, 0)
+    if vm.throwing do return nil
+    end := o.ta_len
+    if arg(args, 2) != nil do end = rel_index(to_number(vm, args[2]), o.ta_len, o.ta_len)
+    if vm.throwing do return nil
+    count := max(0, min(end - start, o.ta_len - target)) * ta_bpe(o.ta_kind)
+    dst := o.ta_off + target * ta_bpe(o.ta_kind)
+    src := o.ta_off + start * ta_bpe(o.ta_kind)
+    if dst > src {
+        for i := count - 1; i >= 0; i -= 1 do o.ab.data[dst+i] = o.ab.data[src+i]
+    } else {
+        for i in 0 ..< count do o.ab.data[dst+i] = o.ab.data[src+i]
+    }
+    return this
+}
+
+@(private = "file")
+ta_to_reversed :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := ta_require(vm, this); if !ok do return nil
+    res := make_typed_array(vm, o.ta_kind, []Value{f64(o.ta_len)})
+    ro := res.(^Object)
+    for i in 0 ..< o.ta_len do ta_write(ro, i, ta_read(o, o.ta_len-1-i))
+    return res
+}
+
+@(private = "file")
+ta_with :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := ta_require(vm, this); if !ok do return nil
+    i := as_int(to_number(vm, arg(args, 0)))
+    if vm.throwing do return nil
+    // Value conversion precedes the range check, even for an invalid index.
+    v := to_number(vm, arg(args, 1))
+    if vm.throwing do return nil
+    if i < 0 do i += o.ta_len
+    if i < 0 || i >= o.ta_len {
+        vm.thrown = mk_error(vm, "RangeError", "Invalid index")
+        vm.throwing = true
+        return nil
+    }
+    res := make_typed_array(vm, o.ta_kind, []Value{o})
+    ta_write(res.(^Object), i, v)
+    return res
+}
+
+@(private = "file")
+ta_to_sorted :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    _, has_cmp := arg(args, 0).(^Function)
+    if arg(args, 0) != nil && !has_cmp { throw_type_error(vm, "Comparator is not a function"); return nil }
+    o, ok := ta_require(vm, this); if !ok do return nil
+    res := make_typed_array(vm, o.ta_kind, []Value{o})
+    return ta_sort(vm, res, args)
 }
 
 @(private = "file")
@@ -354,6 +451,25 @@ ta_join :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     for i in 0 ..< o.ta_len {
         if i > 0 do strings.write_string(&sb, sep)
         to_text(&sb, ta_read(o, i))
+    }
+    return own_str(vm, strings.to_string(sb))
+}
+
+@(private = "file")
+ta_to_locale_string :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := ta_require(vm, this); if !ok do return nil
+    sb: strings.Builder
+    strings.builder_init(&sb); defer strings.builder_destroy(&sb)
+    for i in 0 ..< o.ta_len {
+        if i > 0 do strings.write_string(&sb, ",")
+        el: Value = ta_read(o, i)
+        method := get_member(vm, el, "toLocaleString")
+        if vm.throwing do return nil
+        cb, callable := method.(^Function)
+        if !callable { throw_type_error(vm, "toLocaleString is not a function"); return nil }
+        result := call_function(vm, cb, el, args)
+        if vm.throwing do return nil
+        to_text(&sb, result)
     }
     return own_str(vm, strings.to_string(sb))
 }
@@ -445,15 +561,51 @@ ta_every :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 }
 
 @(private = "file")
-ta_find :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    o, ok := this_ta(this); if !ok do return nil
-    cb, cok := arg(args, 0).(^Function); if !cok do return nil
-    for i in 0 ..< o.ta_len {
+ta_find_direction :: proc(vm: ^Interp, this: Value, args: []Value, backwards, index: bool) -> Value {
+    o, ok := ta_require(vm, this); if !ok do return nil
+    cb, cok := arg(args, 0).(^Function)
+    if !cok { throw_type_error(vm, "Callback is not a function"); return nil }
+    i := 0; step := 1
+    if backwards { i = o.ta_len - 1; step = -1 }
+    for i >= 0 && i < o.ta_len {
         el := ta_read(o, i)
-        if truthy(call_function(vm, cb, nil, []Value{el, f64(i), this})) do return el
+        result := call_function(vm, cb, arg(args, 1), []Value{el, f64(i), this})
         if vm.throwing do return nil
+        if truthy(result) {
+            if index do return f64(i)
+            return el
+        }
+        i += step
     }
+    if index do return f64(-1)
     return nil
+}
+
+@(private = "file")
+ta_find :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return ta_find_direction(vm, this, args, false, false) }
+@(private = "file")
+ta_find_index :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return ta_find_direction(vm, this, args, false, true) }
+@(private = "file")
+ta_find_last :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return ta_find_direction(vm, this, args, true, false) }
+@(private = "file")
+ta_find_last_index :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return ta_find_direction(vm, this, args, true, true) }
+
+@(private = "file")
+ta_reduce_right :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := ta_require(vm, this); if !ok do return nil
+    cb, cok := arg(args, 0).(^Function)
+    if !cok { throw_type_error(vm, "Callback is not a function"); return nil }
+    acc: Value; i := o.ta_len - 1
+    if len(args) >= 2 { acc = args[1] } else {
+        if i < 0 { throw_type_error(vm, "Reduce of empty array with no initial value"); return nil }
+        acc = ta_read(o, i); i -= 1
+    }
+    for i >= 0 {
+        acc = call_function(vm, cb, nil, []Value{acc, ta_read(o, i), f64(i), this})
+        if vm.throwing do return nil
+        i -= 1
+    }
+    return acc
 }
 
 @(private = "file")
@@ -473,7 +625,10 @@ ta_reverse :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 @(private = "file")
 ta_sort_after :: proc(vm: ^Interp, cmp: ^Function, has_cmp: bool, a, b: f64) -> bool {
     if has_cmp {
-        r := as_number(call_function(vm, cmp, nil, []Value{a, b}))
+        result := call_function(vm, cmp, nil, []Value{a, b})
+        if vm.throwing do return false
+        r := to_number(vm, result)
+        if vm.throwing do return false
         if r != r do return false // comparador NaN → trata como 0 (não move)
         return r > 0
     }
@@ -481,6 +636,7 @@ ta_sort_after :: proc(vm: ^Interp, cmp: ^Function, has_cmp: bool, a, b: f64) -> 
     b_nan := b != b
     if a_nan do return !b_nan // a=NaN vai p/ o fim, exceto se b também for NaN
     if b_nan do return false  // b=NaN e a não: a vem antes
+    if a == 0 && b == 0 do return !math.sign_bit(a) && math.sign_bit(b)
     return a > b
 }
 
@@ -512,8 +668,9 @@ ta_structured_clone :: proc(vm: ^Interp, o: ^Object) -> ^Object {
 // TypedArray.prototype.sort([cmp]) — ordena os elementos IN-PLACE e devolve this.
 @(private = "file")
 ta_sort :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    o, ok := this_ta(this); if !ok do return this
+    o, ok := ta_require(vm, this); if !ok do return nil
     cmp, has_cmp := arg(args, 0).(^Function)
+    if arg(args, 0) != nil && !has_cmp { throw_type_error(vm, "Comparator is not a function"); return nil }
     n := o.ta_len
     for i := 1; i < n; i += 1 { // insertion sort estável sobre os valores numéricos
         v := ta_read(o, i)
@@ -522,6 +679,7 @@ ta_sort :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
             ta_write(o, j + 1, ta_read(o, j))
             j -= 1
         }
+        if vm.throwing do return nil
         ta_write(o, j + 1, v)
         if vm.throwing do break // comparador lançou
     }
@@ -939,6 +1097,17 @@ install_typed_arrays :: proc(vm: ^Interp) {
     kinds := []TA_Kind{.I8, .U8, .U8C, .I16, .U16, .I32, .U32, .F32, .F64}
     for k in kinds {
         p := new_object(vm)
+        p.props["toLocaleString"] = mk_builtin_method(vm, ta_to_locale_string, "toLocaleString", 0)
+        p.props["at"] = mk_builtin_method(vm, ta_at, "at", 1)
+        p.props["findIndex"] = mk_builtin_method(vm, ta_find_index, "findIndex", 1)
+        p.props["findLast"] = mk_builtin_method(vm, ta_find_last, "findLast", 1)
+        p.props["findLastIndex"] = mk_builtin_method(vm, ta_find_last_index, "findLastIndex", 1)
+        p.props["lastIndexOf"] = mk_builtin_method(vm, ta_last_index_of, "lastIndexOf", 1)
+        p.props["reduceRight"] = mk_builtin_method(vm, ta_reduce_right, "reduceRight", 1)
+        p.props["copyWithin"] = mk_builtin_method(vm, ta_copy_within, "copyWithin", 2)
+        p.props["toReversed"] = mk_builtin_method(vm, ta_to_reversed, "toReversed", 0)
+        p.props["toSorted"] = mk_builtin_method(vm, ta_to_sorted, "toSorted", 1)
+        p.props["with"] = mk_builtin_method(vm, ta_with, "with", 2)
         p.props["set"]      = mk_native(vm, ta_set_method)
         p.props["subarray"] = mk_native(vm, ta_subarray)
         p.props["slice"]    = mk_native(vm, ta_slice)
