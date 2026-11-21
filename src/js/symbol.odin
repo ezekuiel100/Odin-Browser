@@ -126,6 +126,10 @@ install_symbol :: proc(vm: ^Interp) {
     ctor.attrs = make(map[string]Prop_Attrs)
     ctor.attrs["species"] = {}
     ctor.attrs["isConcatSpreadable"] = {}
+    replace := new_symbol(vm, "Symbol.replace")
+    ctor.props["replace"] = replace
+    vm.sym_replace_key = symbol_key(vm, replace)
+    ctor.attrs["replace"] = {}
 
     // %SymbolPrototype% (M220). Symbol era o último primitivo SEM `.prototype` — a
     // mesma falta que o M127 consertou no Boolean, e pelo mesmo motivo: o padrão

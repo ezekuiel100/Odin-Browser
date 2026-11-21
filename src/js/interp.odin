@@ -359,6 +359,7 @@ Interp :: struct {
                                            // Object.getOwnPropertySymbols. nil até o 1º uso.
     sym_species_key: string,
     sym_concat_spreadable_key: string,
+    sym_replace_key: string,
     sym_iterator_key: string,              // chave-string do Symbol.iterator (p/ protocolo de iterador)
     sym_async_iterator_key: string,        // chave-string do Symbol.asyncIterator (for-await + async generators)
     sym_toprimitive_key: string,           // chave-string do Symbol.toPrimitive (ToPrimitive consulta antes de valueOf/toString)

@@ -203,10 +203,45 @@ reflect_own_keys :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 reflect_get_prototype_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if is_primitive(arg(args, 0)) {
+        throw_type_error(vm, "Reflect.getPrototypeOf requires an object")
+        return nil
+    }
     // Mesma semântica do Object.getPrototypeOf (inclusive p/ FUNÇÃO/classe, cujo
     // [[Prototype]] é a superclasse) — divergir dele fazia `Reflect.getPrototypeOf(
     // Classe)` devolver null onde o Object.* acertava.
     return obj_get_prototype_of(vm, this, args)
+}
+
+proxy_get_prototype_of :: proc(vm: ^Interp, p: ^Object) -> Value {
+    trap, found := proxy_trap(vm, p, "getPrototypeOf")
+    if vm.throwing do return nil
+    if !found do return obj_get_prototype_of(vm, nil, []Value{p.px_target})
+    proto := call_function(vm, trap, p.px_handler, []Value{p.px_target})
+    if vm.throwing do return nil
+    if proto != (JS_Null{}) && is_primitive(proto) {
+        throw_type_error(vm, "getPrototypeOf trap must return an object or null")
+        return nil
+    }
+    target := p.px_target
+    for inner := proxy_state(target); inner != nil; inner = proxy_state(target) {
+        if !proxy_live(vm, inner) do return nil
+        target = inner.px_target
+    }
+    extensible := true
+    #partial switch t in target {
+    case ^Object: extensible = !t.non_extensible
+    case ^Array: extensible = !t.sealed && !t.frozen
+    }
+    if !extensible {
+        actual := obj_get_prototype_of(vm, nil, []Value{p.px_target})
+        if vm.throwing do return nil
+        if proto != actual {
+            throw_type_error(vm, "getPrototypeOf trap disagrees with a non-extensible target")
+            return nil
+        }
+    }
+    return proto
 }
 
 // Reflect.defineProperty/getOwnPropertyDescriptor: delegam à API de Object

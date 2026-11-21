@@ -628,6 +628,7 @@ proto_accessor_set :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 }
 
 obj_get_prototype_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if p := proxy_state(arg(args, 0)); p != nil do return proxy_get_prototype_of(vm, p)
     if o, ok := arg(args, 0).(^Object); ok {
         if o.proto != nil do return o.proto
         if o.proto_x != nil do return o.proto_x // protótipo exótico (Object.create(array))

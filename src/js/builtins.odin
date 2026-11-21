@@ -1166,9 +1166,12 @@ regex_replace_impl :: proc(vm: ^Interp, s: string, re: ^Regex, replacement: Valu
 // replace(pattern, replacement) — regex com $-refs/função OU string (1ª ocorrência).
 @(private = "file")
 str_replace :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return own_str(vm, "")
+    if is_nullish(this) { throw_type_error(vm, "String.prototype.replace requires a receiver"); return nil }
     pattern := arg(args, 0)
     replacement := arg(args, 1)
+    if result, handled := str_custom_replace(vm, this, pattern, replacement); handled do return result
+    s := to_js_string(vm, this)
+    if vm.throwing do return nil
 
     if re, rok := pattern.(^Regex); rok {
         return regex_replace_impl(vm, s, re, replacement, re.global)
@@ -1205,6 +1208,19 @@ str_replace :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return allocated ? own_taken(vm, res) : own_str(vm, res)
 }
 
+@(private = "file")
+str_custom_replace :: proc(vm: ^Interp, receiver, pattern, replacement: Value) -> (Value, bool) {
+    if is_nullish(pattern) do return nil, false
+    method := get_member(vm, pattern, vm.sym_replace_key)
+    if vm.throwing do return nil, true
+    if is_nullish(method) do return nil, false
+    if fn, ok := method.(^Function); ok {
+        return call_function(vm, fn, pattern, []Value{receiver, replacement}), true
+    }
+    throw_type_error(vm, "Symbol.replace must be callable")
+    return nil, true
+}
+
 // $-refs de replacement com pattern STRING (sem grupos): $$ → $, $& → casado,
 // $` → antes, $' → depois; $1..$9 ficam LITERAIS (spec: sem capturas).
 @(private = "file")
@@ -1226,15 +1242,19 @@ write_str_replacement :: proc(sb: ^strings.Builder, repl: string, s: string, idx
 
 @(private = "file")
 str_replace_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return own_str(vm, "")
+    if is_nullish(this) { throw_type_error(vm, "String.prototype.replaceAll requires a receiver"); return nil }
     pattern := arg(args, 0)
-
     if re, rok := pattern.(^Regex); rok {
         if !re.global {
             vm.thrown = mk_error(vm, "TypeError", "replaceAll com regex exige flag global")
             vm.throwing = true
-            return own_str(vm, s)
+            return nil
         }
+    }
+    if result, handled := str_custom_replace(vm, this, pattern, arg(args, 1)); handled do return result
+    s := to_js_string(vm, this)
+    if vm.throwing do return nil
+    if re, rok := pattern.(^Regex); rok {
         return regex_replace_impl(vm, s, re, arg(args, 1), true)
     }
 
