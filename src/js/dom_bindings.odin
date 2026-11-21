@@ -1707,6 +1707,7 @@ forget_wrapper :: proc(vm: ^Interp, node: ^dom.Node) {
         // apontando p/ este nó: zerar só o do wrapper deixaria `var c = el.children`
         // guardado pela página lendo memória reciclada.
         coll_forget(vm, w)
+        attrs_forget(vm, w)
         w.host = nil
     }
     delete_key(&vm.node_wrappers, rawptr(node))
@@ -1858,6 +1859,7 @@ install_dom_interfaces :: proc(vm: ^Interp) {
         {"DOMStringMap",      vm.object_proto},
         {"CSSStyleDeclaration", vm.object_proto},
         {"Attr",              node_proto},          // Attr extends Node (spec)
+        {"NamedNodeMap",      vm.object_proto},     // el.attributes (dom_attributes.odin)
         // HTMLMediaElement NÃO entra aqui: agora é criada com Video/Audio
         // pendurados nela, logo abaixo (a ordem importa).
     }
@@ -1874,6 +1876,17 @@ install_dom_interfaces :: proc(vm: ^Interp) {
                 hcp, _ := hcf.props["prototype"].(^Object)
                 nlp, _ := nlf.props["prototype"].(^Object)
                 if hcp != nil && nlp != nil do install_collection_protos(vm, hcp, nlp)
+            }
+        }
+    }
+    if nm, ok := env_get(vm.global, "NamedNodeMap"); ok {
+        if at, aok := env_get(vm.global, "Attr"); aok {
+            nmf, _ := nm.(^Function)
+            atf, _ := at.(^Function)
+            if nmf != nil && atf != nil {
+                nmp, _ := nmf.props["prototype"].(^Object)
+                atp, _ := atf.props["prototype"].(^Object)
+                if nmp != nil && atp != nil do install_attr_protos(vm, nmp, atp)
             }
         }
     }
@@ -3858,6 +3871,11 @@ dom_elem_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
         return "#document", true
     case "className":
         return own_str(vm, get_class(node)), true // clonado: a dom-owned morre no próximo set
+    case "attributes":
+        // NamedNodeMap VIVA (dom_attributes.odin). Era undefined: o jQuery 1.9 lê
+        // `div.attributes["onsubmit"]` no teste de suporte e morria inteiro.
+        if node.kind != .Element do return nil, false
+        return dom_named_node_map(vm, o, node), true
     case "classList":
         cl := new_object(vm) // wrapper leve; compartilha o host (o mesmo nó)
         cl.host = o.host

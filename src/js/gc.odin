@@ -227,6 +227,8 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
     gc_push(&g, vm.dom_element_proto)
     gc_push(&g, vm.dom_htmlcollection_proto)
     gc_push(&g, vm.dom_nodelist_proto)
+    gc_push(&g, vm.dom_namednodemap_proto)
+    gc_push(&g, vm.dom_attr_proto)
     gc_push(&g, vm.dom_fragment_proto)
     gc_push(&g, vm.dom_shadowroot_proto)
     for _, v in vm.dom_tag_protos {

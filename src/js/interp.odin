@@ -407,6 +407,8 @@ Interp :: struct {
     dom_element_proto:     ^Object,               // HTMLElement.prototype (proto dos wrappers de elemento; base p/ instanceof + polyfills em Element/Node/HTMLElement.prototype)
     dom_htmlcollection_proto: ^Object,            // HTMLCollection.prototype (el.children — dom_collection.odin)
     dom_nodelist_proto:       ^Object,            // NodeList.prototype (el.childNodes)
+    dom_namednodemap_proto:   ^Object,            // NamedNodeMap.prototype (el.attributes — dom_attributes.odin)
+    dom_attr_proto:           ^Object,            // Attr.prototype (itens de el.attributes)
     dom_colls: map[rawptr]^Coll_State,            // ^Object da coleção -> prefixo cacheado dos filhos
     dom_fragment_proto:    ^Object,               // DocumentFragment.prototype (nós "#content" de <template>)
     dom_shadowroot_proto:  ^Object,               // ShadowRoot.prototype (nós "#shadow")
