@@ -915,6 +915,7 @@ svg_inv :: proc(t: Svg_Xform) -> (Svg_Xform, bool) {
 @(private="file")
 svg_fill_scanline :: proc(pt: ^Painter, subs: [][][2]f32, col: u32, t: Svg_Xform, evenodd: bool, ctx := SvgCtx{}) {
     ymin, ymax: f32 = 1e30, -1e30
+    xmin, xmax: f32 = 1e30, -1e30
     screen := make([][]im.Vec2, len(subs), context.temp_allocator)
     for sub, si in subs {
         s := make([]im.Vec2, len(sub), context.temp_allocator)
@@ -922,11 +923,14 @@ svg_fill_scanline :: proc(pt: ^Painter, subs: [][][2]f32, col: u32, t: Svg_Xform
             v := svg_pt(t, p[0], p[1]); s[i] = v
             if v.y < ymin do ymin = v.y
             if v.y > ymax do ymax = v.y
+            xmin = min(xmin, v.x); xmax = max(xmax, v.x)
         }
         screen[si] = s
     }
     if ymax <= ymin do return
     y0 := int(math.floor(ymin)); y1 := int(math.ceil(ymax))
+    x0 := int(math.floor(xmin)); x1 := int(math.ceil(xmax))
+    if x1 <= x0 do return
 
     // ── gradiente (M225) ────────────────────────────────────────────────────
     // Resolvido AQUI porque é aqui que a bounding box da forma existe: o default
@@ -991,41 +995,94 @@ svg_fill_scanline :: proc(pt: ^Painter, subs: [][][2]f32, col: u32, t: Svg_Xform
     }
     Cross :: struct { x: f32, dir: int } // dir = sentido do cruzamento (p/ nonzero)
     xs := make([dynamic]Cross, context.temp_allocator)
-    for y := y0; y < y1; y += 1 {
-        yc := f32(y) + 0.5
-        clear(&xs)
-        for s in screen {
-            n := len(s)
-            if n < 2 do continue
-            for i in 0 ..< n {
-                a := s[i]; b := s[(i + 1) % n] // aresta de fechamento incluída
-                if (a.y <= yc && b.y > yc) || (b.y <= yc && a.y > yc) {
-                    x := a.x + (yc - a.y) / (b.y - a.y) * (b.x - a.x)
-                    append(&xs, Cross{x, b.y > a.y ? 1 : -1})
-                }
-            }
-        }
-        if len(xs) < 2 do continue
-        slice.sort_by(xs[:], proc(a, b: Cross) -> bool { return a.x < b.x })
-        if evenodd {
-            // paridade: preenche os intervalos ímpares (0-1, 2-3, …)
-            for k := 0; k + 1 < len(xs); k += 2 {
-                if xs[k + 1].x > xs[k].x {
-                    span(pt, xs[k].x, xs[k + 1].x, f32(y), col, use_grad, grad, inv, bbx, bby, bbw, bbh, ctx.fill_op, ctx.eff)
-                }
-            }
+    // Integrate horizontal pixel coverage analytically at eight vertical
+    // samples. Accumulate ALL contours before compositing once per pixel:
+    // painting samples separately darkens translucent fills and hole edges.
+    AA_SAMPLES :: 8
+    samples := ctx.no_aa ? 1 : AA_SAMPLES
+    coverage, delta: []f32
+    if !ctx.no_aa {
+        coverage = make([]f32, x1-x0, context.temp_allocator)
+        delta = make([]f32, x1-x0+1, context.temp_allocator)
+    }
+    cover :: proc(coverage, delta: []f32, x0: int, xa, xb: f32) {
+        a := max(xa, f32(x0)); b := min(xb, f32(x0+len(coverage)))
+        if b <= a do return
+        first := int(math.floor(a))-x0; last := int(math.ceil(b))-x0-1
+        weight :: f32(1.0 / AA_SAMPLES)
+        if first == last {
+            coverage[first] += (b-a)*weight
         } else {
-            // NONZERO (default da SPEC): soma o SENTIDO dos cruzamentos e preenche
-            // onde o contador != 0. Furo desenhado no sentido OPOSTO continua
-            // vazando; dois subcaminhos no MESMO sentido se FUNDEM — com even-odd
-            // o segundo abriria um buraco errado.
-            w := 0
-            for k := 0; k + 1 < len(xs); k += 1 {
-                w += xs[k].dir
-                if w != 0 && xs[k + 1].x > xs[k].x {
-                    span(pt, xs[k].x, xs[k + 1].x, f32(y), col, use_grad, grad, inv, bbx, bby, bbw, bbh, ctx.fill_op, ctx.eff)
+            coverage[first] += (f32(x0+first+1)-a)*weight
+            coverage[last] += (b-f32(x0+last))*weight
+            // Full pixels between the two edges use a difference array, so
+            // the sampling cost depends on edge count, not filled area.
+            delta[first+1] += weight; delta[last] -= weight
+        }
+    }
+    for y := y0; y < y1; y += 1 {
+        if !ctx.no_aa {
+            for &v in coverage do v = 0
+            for &v in delta do v = 0
+        }
+        for sample in 0 ..< samples {
+            yc := f32(y) + (f32(sample)+0.5)/f32(samples)
+            clear(&xs)
+            for s in screen {
+                n := len(s)
+                if n < 2 do continue
+                for i in 0 ..< n {
+                    a := s[i]; b := s[(i + 1) % n] // aresta de fechamento incluída
+                    if (a.y <= yc && b.y > yc) || (b.y <= yc && a.y > yc) {
+                        x := a.x + (yc - a.y) / (b.y - a.y) * (b.x - a.x)
+                        append(&xs, Cross{x, b.y > a.y ? 1 : -1})
+                    }
                 }
             }
+            if len(xs) < 2 do continue
+            slice.sort_by(xs[:], proc(a, b: Cross) -> bool { return a.x < b.x })
+            if evenodd {
+                // paridade: preenche os intervalos ímpares (0-1, 2-3, …)
+                for k := 0; k + 1 < len(xs); k += 2 {
+                    if xs[k + 1].x > xs[k].x {
+                        if ctx.no_aa {
+                            span(pt, xs[k].x, xs[k + 1].x, f32(y), col, use_grad, grad, inv, bbx, bby, bbw, bbh, ctx.fill_op, ctx.eff)
+                        } else { cover(coverage, delta, x0, xs[k].x, xs[k+1].x) }
+                    }
+                }
+            } else {
+                // NONZERO (default da SPEC): soma o SENTIDO dos cruzamentos e preenche
+                // onde o contador != 0. Furo desenhado no sentido OPOSTO continua
+                // vazando; dois subcaminhos no MESMO sentido se FUNDEM — com even-odd
+                // o segundo abriria um buraco errado.
+                w := 0
+                for k := 0; k + 1 < len(xs); k += 1 {
+                    w += xs[k].dir
+                    if w != 0 && xs[k + 1].x > xs[k].x {
+                        if ctx.no_aa {
+                            span(pt, xs[k].x, xs[k + 1].x, f32(y), col, use_grad, grad, inv, bbx, bby, bbw, bbh, ctx.fill_op, ctx.eff)
+                        } else { cover(coverage, delta, x0, xs[k].x, xs[k+1].x) }
+                    }
+                }
+            }
+        } // vertical samples
+        if ctx.no_aa do continue
+        full: f32 = 0
+        for &value, i in coverage {
+            full += delta[i]
+            value = math.round(clamp(value+full, 0, 1)*255)/255
+        }
+        // Coalesce equally covered pixels: opaque interiors remain one span,
+        // while only boundary pixels need their own alpha.
+        for i := 0; i < len(coverage); {
+            cov := coverage[i]
+            end := i+1
+            for end < len(coverage) && coverage[end] == cov do end += 1
+            if cov > 0 {
+                span(pt, f32(x0+i), f32(x0+end), f32(y), mul_alpha(col, cov), use_grad,
+                    grad, inv, bbx, bby, bbw, bbh, ctx.fill_op*cov, ctx.eff)
+            }
+            i = end
         }
     }
 }
