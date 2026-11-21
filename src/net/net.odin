@@ -176,6 +176,12 @@ fetch :: proc(url: string) -> Response {
     return fetch_opts(url)
 }
 
+// Image endpoints may return an HTML viewer when navigation MIME types take
+// priority. Advertise the formats our image decoders support (no AVIF).
+fetch_image :: proc(url: string) -> Response {
+    return fetch_opts(url, "image/webp,image/png,image/jpeg,image/gif,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
+}
+
 // Busca de ARQUIVO DE FONTE. Existe como nome próprio só para o call-site ficar
 // legível — vai com o mesmo CHROME_UA de todo o resto.
 //
@@ -190,7 +196,7 @@ fetch_font :: proc(url: string) -> Response {
 }
 
 @(private)
-fetch_opts :: proc(url: string) -> Response {
+fetch_opts :: proc(url: string, accept := "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8") -> Response {
     if strings.has_prefix(url, "data:") do return fetch_data_uri(url)
 
     ensure_init()
@@ -212,7 +218,8 @@ fetch_opts :: proc(url: string) -> Response {
     // auto-decompress da libcurl, que exigiria zlib compilado (que não temos);
     // recebemos gzip cru e descomprimimos nós mesmos mais abaixo.
     headers: ^curl.slist
-    headers = curl.slist_append(headers, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+    accept_header := strings.clone_to_cstring(strings.concatenate({"Accept: ", accept}, context.temp_allocator), context.temp_allocator)
+    headers = curl.slist_append(headers, accept_header)
     headers = curl.slist_append(headers, "Accept-Language: en-US,en;q=0.9")
     headers = curl.slist_append(headers, "Accept-Encoding: gzip")
     defer curl.slist_free_all(headers)

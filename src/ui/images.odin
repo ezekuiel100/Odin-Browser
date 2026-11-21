@@ -384,7 +384,7 @@ images_poll :: proc(renderer: ^sdl2.Renderer) {
 @(private="file")
 image_worker :: proc(img: ^Img) {
     dbg_adopt_allocator() // alocador tracked global em debug (evita falso bad-free)
-    resp := netpkg.fetch(img.url)
+    resp := netpkg.fetch_image(img.url)
     img.http_status = resp.status
     img.retry_after = resp.retry_after
     if resp.ok && len(resp.body) > 0 {
