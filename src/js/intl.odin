@@ -1,31 +1,9 @@
 package js
 
-// Intl (M151) — ECMA-402, na medida em que um navegador sem ICU consegue.
-//
-// Entrou porque o M150 fez identificador livre lançar ReferenceError, e aí
-// `Intl is not defined` virou o global mais faltante do corpus depois dos que já
-// servi: 4 sites (bandcamp, stackoverflow, coingecko, zoom).
-//
-// ── O QUE ISTO É E O QUE NÃO É ───────────────────────────────────────────────
-// ECMA-402 de verdade é uma fachada para o ICU: dezenas de MB de dados CLDR por
-// locale (nomes de mês, regras de plural por idioma, colação por idioma, fusos
-// horários). Não temos nada disso e não vamos ter. O que dá para fazer com
-// honestidade é cobrir a ESTRUTURA da API — os construtores existem, aceitam
-// (locales, options), devolvem objetos com format/resolvedOptions, e o
-// `supportedLocalesOf` responde — com uma tabela PEQUENA de separadores e
-// símbolos que acerta os casos que importam para as páginas que renderizamos
-// (en, pt-BR, es, de, fr).
-//
-// A escolha de projeto: **é melhor formatar 1234.5 como "1.234,50" em pt-BR do
-// que lançar**. Um site que faz `new Intl.NumberFormat('pt-BR',{style:'currency',
-// currency:'BRL'}).format(x)` para montar um preço hoje MORRE; com isto ele
-// mostra "R$ 1.234,50". Onde não sabemos (nome de mês em japonês, colação de
-// tcheco, fuso que não seja UTC), degradamos para algo previsível em vez de
-// inventar — e está anotado em cada ponto.
-//
-// ⚠️ FUSO: formata em hora LOCAL (date_tz.odin), ou UTC com `timeZone: "UTC"`;
-// outro nome IANA cai no local (não temos a base de fusos). `resolvedOptions()
-// .timeZone` é o nome IANA da máquina — consistente com o que a Date produz.
+// Intl (M151). Collator uses Windows ICU data for locale-aware ordering.
+// Number/date formatting and the remaining APIs retain their small locale tables;
+// they do not claim full ECMA-402 coverage. DateTimeFormat supports local time
+// (date_tz.odin) or UTC; other IANA time zones currently fall back to local time.
 
 import "core:fmt"
 import "core:strings"
@@ -222,7 +200,6 @@ format_number :: proc(x_in: f64, o: Num_Opts) -> string {
 
 // `locales` pode ser string, array de strings, ou ausente. Pegamos o primeiro —
 // não temos negociação de locale, e o 1º é o preferido do chamador.
-@(private = "file")
 first_locale :: proc(vm: ^Interp, v: Value) -> string {
     switch t in v {
     case string:
@@ -505,45 +482,44 @@ intl_datetime_format :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
 }
 
 // ── Intl.Collator ───────────────────────────────────────────────────────────
-//
-// Colação de verdade é por idioma (em sueco 'ä' vem depois de 'z'; em alemão,
-// junto de 'a'). Sem CLDR fazemos comparação por CODE POINT, com a opção
-// `sensitivity:'base'`/'accent' caindo em comparação case-insensitive — que é o
-// uso majoritário (ordenar lista da UI) e o único que dá para honrar.
+// Both APIs use Windows ICU collation data (see collation_windows.odin).
 
 @(private = "file")
 coll_compare :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
-    x := key_string(vm, arg(a, 0))
-    y := key_string(vm, arg(a, 1))
-    inst := receiver(vm, this)
-    if inst != nil {
-        if v, ok := inst.props["#ci"].(bool); ok && v {
-            x = strings.to_lower(x, context.temp_allocator)
-            y = strings.to_lower(y, context.temp_allocator)
-        }
-    }
-    return f64(strings.compare(x, y))
+    // The compare function is bound to its Collator, even under call/apply.
+    inst, _ := vm.native_bound.(^Object)
+    if inst == nil { throw_type_error(vm, "Invalid Collator receiver"); return nil }
+    x := collation_string(vm, arg(a, 0))
+    if vm.throwing do return nil
+    y := collation_string(vm, arg(a, 1))
+    if vm.throwing do return nil
+    return collation_compare(vm, load_collation_options(inst), x, y)
 }
 
 @(private = "file")
 coll_resolved :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     o := new_object(vm)
     inst := receiver(vm, this)
-    locale := "en-US"
-    if inst != nil do if v, ok := inst.props["#loc"].(string); ok do locale = v
-    o.props["locale"]      = own_str(vm, locale)
-    o.props["usage"]       = own_str(vm, "sort")
-    o.props["sensitivity"] = own_str(vm, "variant")
+    opts := load_collation_options(inst)
+    o.props["locale"]      = own_str(vm, opts.locale)
+    o.props["usage"]       = own_str(vm, opts.usage)
+    o.props["sensitivity"] = own_str(vm, opts.sensitivity)
     o.props["collation"]   = own_str(vm, "default")
+    o.props["numeric"]     = opts.numeric
+    o.props["caseFirst"]   = own_str(vm, opts.case_first)
+    o.props["ignorePunctuation"] = opts.punctuation
     return o
 }
 
 @(private = "file")
 intl_collator :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    opts := collation_options(vm, arg(a, 0), arg(a, 1))
+    if vm.throwing do return nil
+    // Validate the locale at construction, including an otherwise unused collator.
+    collation_compare(vm, opts, "", "", &opts)
+    if vm.throwing do return nil
     inst := new_object(vm)
-    inst.props["#loc"]  = first_locale(vm, arg(a, 0))
-    sens := opt_str(vm, arg(a, 1), "sensitivity", "variant")
-    inst.props["#ci"]   = sens == "base" || sens == "accent"
+    store_collation_options(vm, inst, opts)
     inst.props["#kind"] = "collator"
     inst.props["compare"]         = mk_bound(vm, inst, coll_compare)
     inst.props["resolvedOptions"] = mk_bound(vm, inst, coll_resolved)

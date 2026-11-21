@@ -1492,14 +1492,17 @@ str_match_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return make_array_iterator(vm, out)
 }
 
-// localeCompare(b) — ordem por code point (sem colação de locale de verdade)
+// Locale-aware ordering shares the same ICU path as Intl.Collator.
 @(private = "file")
 str_locale_compare :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    a, ok := this.(string); if !ok do return f64(0)
-    b, _ := arg(args, 0).(string)
-    if a < b do return f64(-1)
-    if a > b do return f64(1)
-    return f64(0)
+    if is_nullish(this) { throw_type_error(vm, "localeCompare requires a non-null receiver"); return nil }
+    x := collation_string(vm, this)
+    if vm.throwing do return nil
+    y := collation_string(vm, arg(args, 0))
+    if vm.throwing do return nil
+    o := collation_options(vm, arg(args, 1), arg(args, 2))
+    if vm.throwing do return nil
+    return collation_compare(vm, o, x, y)
 }
 
 // normalize() — identidade (sem NFC/NFD; a maioria dos usos só quer "uma forma")
