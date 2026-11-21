@@ -5,8 +5,9 @@ package js
 // os métodos moram num prototype compartilhado (vm.date_proto) — cada
 // `new Date()` é só um objeto pequeno apontando p/ ele.
 //
-// SIMPLIFICAÇÃO deliberada: sem fuso horário — hora "local" == UTC
-// (getTimezoneOffset() = 0; getHours == getUTCHours; toString diz GMT+0000).
+// Hora LOCAL de verdade desde 21/11/2026 (date_tz.odin: LocalTime/UTC pela regra
+// do Windows por ano). Até então era UTC pura — getTimezoneOffset() = 0 e todo
+// relógio de página saía deslocado do fuso da máquina.
 
 import "core:math"
 import "core:strings"
@@ -15,7 +16,6 @@ import "core:fmt"
 
 // ── calendário civil (algoritmos de Howard Hinnant, days<->Y/M/D) ───────────
 
-@(private = "file")
 days_from_civil :: proc(y_in, m, d: int) -> int {
     y := y_in
     if m <= 2 do y -= 1
@@ -27,7 +27,6 @@ days_from_civil :: proc(y_in, m, d: int) -> int {
     return era * 146097 + doe - 719468
 }
 
-@(private = "file")
 civil_from_days :: proc(z_in: int) -> (y, m, d: int) {
     z := z_in + 719468
     era := (z >= 0 ? z : z - 146096) / 146097
@@ -118,10 +117,10 @@ native_date_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
             if vm.throwing do return nil
         }
     case:
-        // new Date(ano, mês0, dia, h, min, s, ms) — hora LOCAL (== UTC aqui)
+        // new Date(ano, mês0, dia, h, min, s, ms) — hora LOCAL
         tv, ok := date_from_components(vm, args)
         if !ok do return nil
-        t = tv
+        t = utc_from_local(tv)
     }
     return date_new(vm, t)
 }
@@ -198,7 +197,7 @@ time_clip :: proc(t: f64) -> f64 {
 // "implementation-specific", mas o que os navegadores aceitam é de facto padrão e
 // código real depende dele (`new Date("March 5, 2024")`, cabeçalho HTTP RFC 2822,
 // e a ida e volta `Date.parse(d.toString())` que a spec EXIGE). Antes, tudo fora
-// do ISO dava NaN/"Invalid Date". Hora sem fuso é LOCAL — aqui local == UTC.
+// do ISO dava NaN/"Invalid Date". Hora sem fuso é LOCAL; só-data ISO é UTC.
 @(private = "file")
 date_parse_str :: proc(s_in: string) -> f64 {
     s := strings.trim_space(s_in)
@@ -258,8 +257,10 @@ date_parse_iso :: proc(s: string) -> (f64, bool) {
     }
     h, mi, sec, ms := 0, 0, 0, 0
     off_min := 0
+    local := false // data-hora SEM offset é hora local (spec); só-data é UTC
     if i < len(s) && (s[i] == 'T' || s[i] == 't' || s[i] == ' ') {
         i += 1
+        local = true
         hv, hok := read_n(s, &i, 2)
         if !hok do return nan, false
         if !eat(s, &i, ':') do return nan, false
@@ -285,7 +286,9 @@ date_parse_iso :: proc(s: string) -> (f64, bool) {
             switch s[i] {
             case 'Z', 'z':
                 i += 1
+                local = false
             case '+', '-':
+                local = false
                 sign := s[i] == '-' ? -1 : 1
                 i += 1
                 oh, ohok := read_n(s, &i, 2)
@@ -304,10 +307,10 @@ date_parse_iso :: proc(s: string) -> (f64, bool) {
     if mo < 1 || mo > 12 || d < 1 || d > days_in_month(y, mo) do return nan, true
     if mi > 59 || sec > 59 do return nan, true
     if h > 24 || (h == 24 && (mi != 0 || sec != 0 || ms != 0)) do return nan, true
-    return ms_from_parts(y, mo, d, h, mi, sec, ms) - f64(off_min) * 60_000, true
+    tv := ms_from_parts(y, mo, d, h, mi, sec, ms) - f64(off_min) * 60_000
+    return local ? utc_from_local(tv) : tv, true
 }
 
-@(private = "file")
 days_in_month :: proc(y, m: int) -> int {
     switch m {
     case 2:
@@ -472,7 +475,8 @@ date_parse_legacy :: proc(s: string) -> f64 {
     case 2: if h > 12 do return nan; if h < 12 do h += 12
     }
     if h > 24 || mi > 59 || sec > 59 do return nan
-    return ms_from_parts(y, mo, d, h, mi, sec, ms) - f64(off_min) * 60_000
+    tv := ms_from_parts(y, mo, d, h, mi, sec, ms) - f64(off_min) * 60_000
+    return has_tz ? tv : utc_from_local(tv) // sem fuso no texto: hora local
 }
 
 // ── métodos ──────────────────────────────────────────────────────────────────
@@ -488,15 +492,46 @@ date_parse_legacy :: proc(s: string) -> f64 {
     throw_type_error(vm, "Date.prototype.getTime called on non-Date object")
     return nil
 }
-@(private = "file") date_get_full_year :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(date_parts(date_t(this)).year) }
-@(private = "file") date_get_month :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(date_parts(date_t(this)).month - 1) } // 0-based
-@(private = "file") date_get_date :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(date_parts(date_t(this)).day) }
-@(private = "file") date_get_day :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(date_parts(date_t(this)).wday) }
-@(private = "file") date_get_hours :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(date_parts(date_t(this)).hour) }
-@(private = "file") date_get_minutes :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(date_parts(date_t(this)).min) }
-@(private = "file") date_get_seconds :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(date_parts(date_t(this)).sec) }
-@(private = "file") date_get_ms :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(date_parts(date_t(this)).ms) }
-@(private = "file") date_get_tz :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return f64(0) } // local == UTC
+// Getters: os locais decompõem LocalTime(t), os getUTC* o próprio t. Data inválida → NaN.
+@(private = "file")
+date_get_part :: proc(vm: ^Interp, this: Value, utc: bool, which: int) -> Value {
+    t, ok := date_this(vm, this, "get*") // brand-check: getHours.call({}) → TypeError
+    if !ok do return nil
+    if t != t do return math.nan_f64()
+    p := date_parts(utc ? t : local_time(t))
+    switch which {
+    case 0: return f64(p.year)
+    case 1: return f64(p.month - 1) // 0-based
+    case 2: return f64(p.day)
+    case 3: return f64(p.wday)
+    case 4: return f64(p.hour)
+    case 5: return f64(p.min)
+    case 6: return f64(p.sec)
+    }
+    return f64(p.ms)
+}
+@(private = "file") date_get_full_year :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, false, 0) }
+@(private = "file") date_get_month :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, false, 1) }
+@(private = "file") date_get_date :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, false, 2) }
+@(private = "file") date_get_day :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, false, 3) }
+@(private = "file") date_get_hours :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, false, 4) }
+@(private = "file") date_get_minutes :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, false, 5) }
+@(private = "file") date_get_seconds :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, false, 6) }
+@(private = "file") date_get_ms :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, false, 7) }
+@(private = "file") date_get_utc_full_year :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, true, 0) }
+@(private = "file") date_get_utc_month :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, true, 1) }
+@(private = "file") date_get_utc_date :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, true, 2) }
+@(private = "file") date_get_utc_day :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, true, 3) }
+@(private = "file") date_get_utc_hours :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, true, 4) }
+@(private = "file") date_get_utc_minutes :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, true, 5) }
+@(private = "file") date_get_utc_seconds :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, true, 6) }
+@(private = "file") date_get_utc_ms :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_get_part(vm, this, true, 7) }
+// (t − LocalTime(t)) / 1 min: positivo a OESTE de Greenwich (UTC-3 → 180)
+@(private = "file") date_get_tz :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    t := date_t(this)
+    if t != t do return math.nan_f64()
+    return (t - local_time(t)) / 60_000 // e não −offset: em UTC daria −0
+}
 
 @(private = "file")
 date_set_time :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
@@ -507,10 +542,9 @@ date_set_time :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
 }
 
 // ── setters de componentes ────────────────────────────────────────────────────
-// Todos: leem os campos atuais, sobrescrevem os informados (com transbordo — spec
-// MakeDay/MakeTime), recompõem e devolvem o novo time value. Um argumento NaN
-// (inclusive AUSENTE → undefined → NaN) torna a data Invalid (#t = NaN). Como
-// local == UTC (tz 0), os setUTC* são os MESMOS procs. `int()` = ToInteger (trunca).
+// Todos: leem os campos atuais (de LocalTime(t) nos locais, de t nos setUTC*),
+// sobrescrevem os informados, recompõem por MakeDay/MakeTime (transbordo e NaN da
+// spec) e, nos locais, voltam a UTC por UTC(t). Devolvem o novo time value.
 
 @(private = "file")
 date_store :: proc(this: Value, t: f64) -> Value {
@@ -519,24 +553,14 @@ date_store :: proc(this: Value, t: f64) -> Value {
     return t
 }
 
-// Recompõe a partir de componentes: normaliza SÓ o mês (não-linear no calendário)
-// carregando p/ o ano; dia/hora/min/seg/ms transbordam linearmente em ms_from_parts
-// (day via days_from_civil). month0 é 0-based (como a API JS).
-@(private = "file")
-date_compose :: proc(year, month0, day, hour, min, sec, ms: int) -> f64 {
-    tm := year * 12 + month0
-    y := tm / 12
-    m0 := tm % 12
-    if m0 < 0 { m0 += 12; y -= 1 }
-    return ms_from_parts(y, m0 + 1, day, hour, min, sec, ms)
-}
-
 // Motor comum dos setters. `start` mapeia arg[0] p/ o campo em
-// [year, month0, day, hour, min, sec, ms]; args seguintes preenchem os campos
-// à direita. `nan_base`: só setFullYear "revive" uma Invalid Date (base = epoch 0);
-// os demais devolvem NaN se a data já é Invalid.
+// [year, month0, day, hour, min, sec, ms]; os args seguintes preenchem os campos à
+// direita, até a aridade do método (setDate(1, 5) NÃO mexe na hora; setHours vai
+// até ms). `nan_base`: só setFullYear "revive" uma Invalid Date (base +0); os
+// demais devolvem NaN. A ordem é a da spec: ToNumber de TODOS os args presentes
+// (valueOf que lança propaga e não modifica a data), só depois o teste de NaN.
 @(private = "file")
-date_set_fields :: proc(vm: ^Interp, this: Value, a: []Value, start: int, nan_base: bool) -> Value {
+date_set_fields :: proc(vm: ^Interp, this: Value, a: []Value, start: int, nan_base, utc: bool) -> Value {
     // brand-check: setter em não-Date (ex.: Date.prototype.setFullYear(2012)) →
     // TypeError. Distingue "Date c/ tempo NaN" (#t presente como f64) de "não-Date".
     o, isobj := this.(^Object)
@@ -544,45 +568,57 @@ date_set_fields :: proc(vm: ^Interp, this: Value, a: []Value, start: int, nan_ba
     if isobj { _, is_date = o.props["#t"].(f64) }
     if !is_date { throw_type_error(vm, "Date.prototype setter called on non-Date object"); return nil }
     t := date_t(this)
+    arity := start <= 2 ? 3 - start : 7 - start
+    vals: [7]f64
+    n := max(1, min(len(a), arity)) // arg[0] obrigatório: ausente → undefined → NaN
+    for k in 0 ..< n {
+        vals[k] = to_number(vm, arg(a, k))
+        if vm.throwing do return nil
+    }
     if t != t {
         if !nan_base do return date_store(this, math.nan_f64())
-        t = 0
+        t = 0 // setFullYear em Invalid Date: base +0 JÁ em hora local (spec)
+    } else if !utc {
+        t = local_time(t)
     }
     p := date_parts(t)
-    f := [7]int{ p.year, p.month - 1, p.day, p.hour, p.min, p.sec, p.ms }
-    // ToNumber de CADA arg via valueOf/toString, na ordem (spec); valueOf que lança
-    // propaga e NÃO modifica a data. Antes usava as_number (objeto → NaN sem valueOf).
-    v0 := to_number(vm, arg(a, 0)) // arg[0] obrigatório: ausente → undefined → NaN
-    if vm.throwing do return nil
-    if v0 != v0 do return date_store(this, math.nan_f64())
-    f[start] = int(v0)
-    for k := 1; k < len(a) && start + k <= 6; k += 1 {
-        v := to_number(vm, a[k])
-        if vm.throwing do return nil
-        if v != v do return date_store(this, math.nan_f64())
-        f[start + k] = int(v)
-    }
-    return date_store(this, date_compose(f[0], f[1], f[2], f[3], f[4], f[5], f[6]))
+    f := [7]f64{ f64(p.year), f64(p.month - 1), f64(p.day), f64(p.hour), f64(p.min), f64(p.sec), f64(p.ms) }
+    for k in 0 ..< n do f[start + k] = vals[k]
+    nt := make_date(make_day(f[0], f[1], f[2]), make_time(f[3], f[4], f[5], f[6]))
+    if !utc do nt = utc_from_local(nt)
+    return date_store(this, nt)
 }
 
-@(private = "file") date_set_full_year :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 0, true) }
-@(private = "file") date_set_month :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 1, false) }
-@(private = "file") date_set_date :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 2, false) }
-@(private = "file") date_set_hours :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 3, false) }
-@(private = "file") date_set_minutes :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 4, false) }
-@(private = "file") date_set_seconds :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 5, false) }
-@(private = "file") date_set_ms :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 6, false) }
+@(private = "file") date_set_full_year :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 0, true, false) }
+@(private = "file") date_set_month :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 1, false, false) }
+@(private = "file") date_set_date :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 2, false, false) }
+@(private = "file") date_set_hours :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 3, false, false) }
+@(private = "file") date_set_minutes :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 4, false, false) }
+@(private = "file") date_set_seconds :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 5, false, false) }
+@(private = "file") date_set_ms :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 6, false, false) }
+@(private = "file") date_set_utc_full_year :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 0, true, true) }
+@(private = "file") date_set_utc_month :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 1, false, true) }
+@(private = "file") date_set_utc_date :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 2, false, true) }
+@(private = "file") date_set_utc_hours :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 3, false, true) }
+@(private = "file") date_set_utc_minutes :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 4, false, true) }
+@(private = "file") date_set_utc_seconds :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 5, false, true) }
+@(private = "file") date_set_utc_ms :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return date_set_fields(vm, this, a, 6, false, true) }
 
-// setYear (legado): 0..99 vira 1900+y; senão o ano cru. Como setFullYear(y).
+// setYear (Annex B): 0..99 vira 1900+y; senão o ano cru. Hora LOCAL, base +0 se
+// Invalid Date.
 @(private = "file")
 date_set_year :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
-    yv := as_number(arg(a, 0))
+    t, ok := date_this(vm, this, "setYear")
+    if !ok do return nil
+    yv := to_number(vm, arg(a, 0))
+    if vm.throwing do return nil
     if yv != yv do return date_store(this, math.nan_f64())
-    yi := int(yv)
+    t = t != t ? 0 : local_time(t)
+    yi := to_integer_f(yv)
     if yi >= 0 && yi <= 99 do yi += 1900
-    t := date_t(this)
-    p := date_parts(t == t ? t : 0)
-    return date_store(this, date_compose(yi, p.month - 1, p.day, p.hour, p.min, p.sec, p.ms))
+    p := date_parts(t)
+    nt := make_date(make_day(yi, f64(p.month - 1), f64(p.day)), make_time(f64(p.hour), f64(p.min), f64(p.sec), f64(p.ms)))
+    return date_store(this, utc_from_local(nt))
 }
 
 // thisTimeValue (spec): o instante de um Date; não-Date → TypeError.
@@ -607,10 +643,18 @@ date_date_part :: proc(p: Date_Parts) -> string {
     return fmt.tprintf("%s %s %02d %s", WDAY_ABBR[p.wday], MONTH_ABBR[p.month - 1], p.day, date_year_str(p.year))
 }
 
-// "00:00:00 GMT+0000 (Coordinated Universal Time)" — local == UTC, fuso fixo
+// TimeString(LocalTime(t)) + TimeZoneString(t): "10:00:00 GMT-0300 (Hora oficial do
+// Brasil)". O nome entre parênteses é o do Windows (no idioma do sistema); a spec
+// deixa o nome a critério da implementação e permite omiti-lo.
 @(private = "file")
-date_time_part :: proc(p: Date_Parts) -> string {
-    return fmt.tprintf("%02d:%02d:%02d GMT+0000 (Coordinated Universal Time)", p.hour, p.min, p.sec)
+date_time_part :: proc(t: f64) -> string {
+    p := date_parts(local_time(t))
+    off := int(local_offset_ms(t) / 60_000)
+    sign := off < 0 ? "-" : "+"
+    off = abs(off)
+    name := tz_name_at(t)
+    if name == "" do return fmt.tprintf("%02d:%02d:%02d GMT%s%02d%02d", p.hour, p.min, p.sec, sign, off / 60, off % 60)
+    return fmt.tprintf("%02d:%02d:%02d GMT%s%02d%02d (%s)", p.hour, p.min, p.sec, sign, off / 60, off % 60, name)
 }
 
 // toString: o formato de navegador (spec 21.4.4.41). Antes devolvia o ISO, e
@@ -620,8 +664,7 @@ date_to_string :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     t, ok := date_this(vm, this, "toString")
     if !ok do return nil
     if t != t do return own_str(vm, "Invalid Date")
-    p := date_parts(t)
-    return own_str(vm, fmt.tprintf("%s %s", date_date_part(p), date_time_part(p)))
+    return own_str(vm, fmt.tprintf("%s %s", date_date_part(date_parts(local_time(t))), date_time_part(t)))
 }
 
 @(private = "file")
@@ -629,7 +672,7 @@ date_to_date_string :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     t, ok := date_this(vm, this, "toDateString")
     if !ok do return nil
     if t != t do return own_str(vm, "Invalid Date")
-    return own_str(vm, date_date_part(date_parts(t)))
+    return own_str(vm, date_date_part(date_parts(local_time(t))))
 }
 
 @(private = "file")
@@ -637,7 +680,7 @@ date_to_time_string :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     t, ok := date_this(vm, this, "toTimeString")
     if !ok do return nil
     if t != t do return own_str(vm, "Invalid Date")
-    return own_str(vm, date_time_part(date_parts(t)))
+    return own_str(vm, date_time_part(t))
 }
 
 // "Thu, 01 Jan 1970 00:00:00 GMT" (RFC 7231 / spec 21.4.4.43)
@@ -688,13 +731,15 @@ date_to_json :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     return call_function(vm, fn, this, nil)
 }
 
-// toLocaleDateString/TimeString — aproximação fixa dd/mm/aaaa e hh:mm:ss
-// (sem locale de verdade; suficiente p/ exibição)
+// toLocaleDateString/TimeString — aproximação fixa dd/mm/aaaa e hh:mm:ss (sem
+// locale de verdade; suficiente p/ exibição), em hora local, ou UTC com
+// `{timeZone: "UTC"}` — o idioma comum para mostrar a data "crua" do servidor.
 @(private = "file")
 date_locale_date :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     t := date_t(this)
     if t != t do return own_str(vm, "Invalid Date")
-    p := date_parts(t)
+    p := date_parts(tz_option_is_utc(vm, arg(a, 1)) ? t : local_time(t))
+    if vm.throwing do return nil
     return own_str(vm, fmt.tprintf("%02d/%02d/%04d", p.day, p.month, p.year))
 }
 
@@ -702,7 +747,8 @@ date_locale_date :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
 date_locale_time :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     t := date_t(this)
     if t != t do return own_str(vm, "Invalid Date")
-    p := date_parts(t)
+    p := date_parts(tz_option_is_utc(vm, arg(a, 1)) ? t : local_time(t))
+    if vm.throwing do return nil
     return own_str(vm, fmt.tprintf("%02d:%02d:%02d", p.hour, p.min, p.sec))
 }
 
@@ -710,7 +756,8 @@ date_locale_time :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
 date_locale_full :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     t := date_t(this)
     if t != t do return own_str(vm, "Invalid Date")
-    p := date_parts(t)
+    p := date_parts(tz_option_is_utc(vm, arg(a, 1)) ? t : local_time(t))
+    if vm.throwing do return nil
     return own_str(vm, fmt.tprintf("%02d/%02d/%04d %02d:%02d:%02d", p.day, p.month, p.year, p.hour, p.min, p.sec))
 }
 
@@ -742,15 +789,14 @@ install_date :: proc(vm: ^Interp) {
     proto.props["getMinutes"]         = mk_native(vm, date_get_minutes)
     proto.props["getSeconds"]         = mk_native(vm, date_get_seconds)
     proto.props["getMilliseconds"]    = mk_native(vm, date_get_ms)
-    // local == UTC: getUTC* são os mesmos procs
-    proto.props["getUTCFullYear"]     = proto.props["getFullYear"]
-    proto.props["getUTCMonth"]        = proto.props["getMonth"]
-    proto.props["getUTCDate"]         = proto.props["getDate"]
-    proto.props["getUTCDay"]          = proto.props["getDay"]
-    proto.props["getUTCHours"]        = proto.props["getHours"]
-    proto.props["getUTCMinutes"]      = proto.props["getMinutes"]
-    proto.props["getUTCSeconds"]      = proto.props["getSeconds"]
-    proto.props["getUTCMilliseconds"] = proto.props["getMilliseconds"]
+    proto.props["getUTCFullYear"]     = mk_native(vm, date_get_utc_full_year)
+    proto.props["getUTCMonth"]        = mk_native(vm, date_get_utc_month)
+    proto.props["getUTCDate"]         = mk_native(vm, date_get_utc_date)
+    proto.props["getUTCDay"]          = mk_native(vm, date_get_utc_day)
+    proto.props["getUTCHours"]        = mk_native(vm, date_get_utc_hours)
+    proto.props["getUTCMinutes"]      = mk_native(vm, date_get_utc_minutes)
+    proto.props["getUTCSeconds"]      = mk_native(vm, date_get_utc_seconds)
+    proto.props["getUTCMilliseconds"] = mk_native(vm, date_get_utc_ms)
     proto.props["getTimezoneOffset"]  = mk_native(vm, date_get_tz)
     proto.props["setTime"]            = mk_native(vm, date_set_time)
     proto.props["setFullYear"]        = mk_native(vm, date_set_full_year)
@@ -761,14 +807,13 @@ install_date :: proc(vm: ^Interp) {
     proto.props["setSeconds"]         = mk_native(vm, date_set_seconds)
     proto.props["setMilliseconds"]    = mk_native(vm, date_set_ms)
     proto.props["setYear"]            = mk_native(vm, date_set_year) // legado
-    // local == UTC: setUTC* são os mesmos procs
-    proto.props["setUTCFullYear"]     = proto.props["setFullYear"]
-    proto.props["setUTCMonth"]        = proto.props["setMonth"]
-    proto.props["setUTCDate"]         = proto.props["setDate"]
-    proto.props["setUTCHours"]        = proto.props["setHours"]
-    proto.props["setUTCMinutes"]      = proto.props["setMinutes"]
-    proto.props["setUTCSeconds"]      = proto.props["setSeconds"]
-    proto.props["setUTCMilliseconds"] = proto.props["setMilliseconds"]
+    proto.props["setUTCFullYear"]     = mk_native(vm, date_set_utc_full_year)
+    proto.props["setUTCMonth"]        = mk_native(vm, date_set_utc_month)
+    proto.props["setUTCDate"]         = mk_native(vm, date_set_utc_date)
+    proto.props["setUTCHours"]        = mk_native(vm, date_set_utc_hours)
+    proto.props["setUTCMinutes"]      = mk_native(vm, date_set_utc_minutes)
+    proto.props["setUTCSeconds"]      = mk_native(vm, date_set_utc_seconds)
+    proto.props["setUTCMilliseconds"] = mk_native(vm, date_set_utc_ms)
     proto.props["toISOString"]        = mk_native(vm, date_iso)
     proto.props["toJSON"]             = mk_native(vm, date_to_json)
     proto.props["toString"]           = mk_native(vm, date_to_string)

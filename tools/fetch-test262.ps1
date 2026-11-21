@@ -111,7 +111,12 @@ $areas = @(
     "built-ins/RegExp/regexp-modifiers",
     "built-ins/RegExp/regexp-modifiers/syntax/valid",
     "built-ins/RegExp/unicodeSets/generated",
-    "language/literals/regexp"
+    "language/literals/regexp",
+    # toFixed/toExponential/toPrecision e o fuso do Date (21/11/2026). O Date
+    # entrou INTEIRO (todas as subpastas de built-ins/Date) por clone esparso;
+    # aqui so as pastas sem subpasta, para um re-fetch pelo -Only.
+    "built-ins/Number/prototype/toExponential",
+    "built-ins/Number/prototype/toPrecision"
 )
 
 # Features que o motor NAO suporta -> pula qualquer teste que as exija (frontmatter

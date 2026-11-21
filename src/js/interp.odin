@@ -3737,6 +3737,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         #partial switch n.op {
         case .AmpAmp, .PipePipe, .QQuestion:
             cur := ref_read(vm, n.left, env, tobj, tkey)
+            if vm.throwing do return nil
             keep := false
             #partial switch n.op {
             case .AmpAmp:    keep = !truthy(cur)
@@ -3745,14 +3746,21 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             }
             if keep do return cur
             rhs := eval(vm, n.right, env)
+            if vm.throwing do return nil
             ref_write(vm, n.left, env, tobj, tkey, rhs, n.strict)
             return rhs
         }
         old: Value
         if n.op != .Assign do old = ref_read(vm, n.left, env, tobj, tkey) // composto lê ANTES do RHS
+        if vm.throwing do return nil // getter do composto lançou
         rhs := eval(vm, n.right, env)
+        // RHS que lança NÃO escreve: antes `x = f()` com f lançando gravava undefined
+        // em x (e o.q ??= f() criava `q`), e no strict o ReferenceError do nome não
+        // declarado sobrescrevia a exceção do RHS.
+        if vm.throwing do return nil
         val: Value = rhs
         if n.op != .Assign do val = binop(vm, n.op, old, rhs) // x += v ≡ x = x <op> v
+        if vm.throwing do return nil // valueOf do binop lançou
         ref_write(vm, n.left, env, tobj, tkey, val, n.strict)
         return val
 

@@ -1972,24 +1972,7 @@ global_string_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 // ── métodos de Number (this = f64; despachados por get_member case f64) ─────
 
-@(private = "file")
-num_to_fixed :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
-    x, ok := this.(f64); if !ok do return own_str(vm, "NaN")
-    d := as_int(arg(a, 0))
-    if d < 0 do d = 0
-    if d > 100 do d = 100
-    return own_str(vm, fmt.tprintf("%.*f", d, x))
-}
-
-@(private = "file")
-num_to_precision :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
-    x, ok := this.(f64); if !ok do return own_str(vm, "NaN")
-    if arg(a, 0) == nil do return num_to_string(vm, this, nil) // sem arg = toString
-    p := as_int(a[0])
-    if p < 1 do p = 1
-    if p > 100 do p = 100
-    return own_str(vm, fmt.tprintf("%.*g", p, x))
-}
+// toFixed / toExponential / toPrecision: numfmt.odin (decimal exato, empate p/ cima)
 
 @(private = "file")
 num_to_string :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
@@ -2880,6 +2863,7 @@ install_builtins :: proc(vm: ^Interp) {
     vm.number_methods["toFixed"]        = mk_native(vm, num_to_fixed)
     vm.number_methods["toString"]       = mk_builtin_method(vm, num_to_string, "toString", 0)
     vm.number_methods["toPrecision"]    = mk_native(vm, num_to_precision)
+    vm.number_methods["toExponential"]  = mk_native(vm, num_to_exponential)
     vm.number_methods["toLocaleString"] = mk_builtin_method(vm, num_to_string, "toLocaleString", 0) // aproximação sem separadores
     vm.number_methods["valueOf"]        = mk_builtin_method(vm, num_value_of, "valueOf", 0)
 

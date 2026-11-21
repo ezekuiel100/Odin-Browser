@@ -23,10 +23,9 @@ package js
 // tcheco, fuso que não seja UTC), degradamos para algo previsível em vez de
 // inventar — e está anotado em cada ponto.
 //
-// ⚠️ FUSO: nossa Date é UTC pura (date.odin, getTimezoneOffset()==0), então
-// `resolvedOptions().timeZone` devolve "UTC". É a resposta CONSISTENTE com o
-// resto do motor — devolver o fuso real da máquina faria o site formatar horas
-// que a nossa própria Date não sabe produzir.
+// ⚠️ FUSO: formata em hora LOCAL (date_tz.odin), ou UTC com `timeZone: "UTC"`;
+// outro nome IANA cai no local (não temos a base de fusos). `resolvedOptions()
+// .timeZone` é o nome IANA da máquina — consistente com o que a Date produz.
 
 import "core:fmt"
 import "core:strings"
@@ -404,6 +403,7 @@ dtf_format :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     locale := "en-US"
     want_date, want_time := true, false
     long_month, short_month, want_weekday := false, false, false
+    utc := false
     if inst != nil {
         if v, ok := inst.props["#loc"].(string); ok do locale = v
         if v, ok := inst.props["#wdate"].(bool); ok do want_date = v
@@ -411,13 +411,14 @@ dtf_format :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
         if v, ok := inst.props["#mlong"].(bool); ok do long_month = v
         if v, ok := inst.props["#mshort"].(bool); ok do short_month = v
         if v, ok := inst.props["#wday"].(bool); ok do want_weekday = v
+        if v, ok := inst.props["#utc"].(bool); ok do utc = v
     }
 
     // sem argumento, formata AGORA (spec)
     t := arg(a, 0) == nil ? date_now_ms() : date_t(arg(a, 0))
     if t != t do t = to_number(vm, arg(a, 0))
     if t != t do return own_str(vm, "Invalid Date")
-    p := date_parts(t)
+    p := date_parts(utc ? t : local_time(t)) // hora LOCAL, salvo timeZone "UTC"
 
     b := strings.builder_make(context.temp_allocator)
     if want_date {
@@ -455,11 +456,13 @@ dtf_resolved :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     o.props["locale"]          = own_str(vm, locale)
     o.props["calendar"]        = own_str(vm, "gregory")
     o.props["numberingSystem"] = own_str(vm, "latn")
-    // ⚠️ "UTC" não é chute: nossa Date É UTC (getTimezoneOffset()==0). Devolver o
-    // fuso real da máquina faria o site formatar horas que a nossa Date não
-    // produz. `Intl.DateTimeFormat().resolvedOptions().timeZone` é O idioma de
-    // detecção de fuso na web — por isso ele responde, em vez de faltar.
-    o.props["timeZone"]        = own_str(vm, "UTC")
+    // `Intl.DateTimeFormat().resolvedOptions().timeZone` é O idioma de detecção de
+    // fuso na web: o nome IANA da máquina ("America/Sao_Paulo", pelo ICU do
+    // Windows) — o MESMO fuso que a nossa Date usa desde 21/11/2026 (date_tz.odin).
+    utc := false
+    if inst != nil do if v, ok := inst.props["#utc"].(bool); ok do utc = v
+    nbuf: [128]u8
+    o.props["timeZone"]        = own_str(vm, utc ? "UTC" : tz_iana_name(nbuf[:]))
     return o
 }
 
@@ -491,6 +494,8 @@ intl_datetime_format :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     inst.props["#mlong"]  = month == "long"
     inst.props["#mshort"] = month == "short"
     inst.props["#wday"]   = opt_str(vm, opts, "weekday", "") != ""
+    inst.props["#utc"]    = tz_option_is_utc(vm, opts)
+    if vm.throwing do return nil
     inst.props["format"]          = mk_bound(vm, inst, dtf_format)
     inst.props["formatToParts"]   = mk_bound(vm, inst, dtf_format_to_parts)
     inst.props["resolvedOptions"] = mk_bound(vm, inst, dtf_resolved)
@@ -1039,7 +1044,7 @@ intl_supported_values_of :: proc(vm: ^Interp, this: Value, a: []Value) -> Value 
         add(vm, arr, {"ARS", "AUD", "BRL", "CAD", "CHF", "CLP", "CNY", "COP", "EUR",
                       "GBP", "INR", "JPY", "KRW", "MXN", "NZD", "RUB", "TRY", "USD"})
     case "timeZone":
-        add(vm, arr, {"UTC"}) // é o único que nossa Date sabe produzir (date.odin)
+        add(vm, arr, {"UTC"}) // o único que sabemos converter além do local (date_tz.odin)
     case "calendar":
         add(vm, arr, {"gregory"})
     case "numberingSystem":
