@@ -713,8 +713,10 @@ run :: proc() {
 
     setup_custom_frame(window)    // subclassa a janela (snap/sombra/animação nativos)
     sdl2.MaximizeWindow(window)   // abre já maximizado (agora nativo)
-    sdl2.ShowWindow(window)
-    sdl2.RaiseWindow(window)      // traz pra frente e dá foco (p/ focar a URL no startup)
+    when !SCROLLPROBE {
+        sdl2.ShowWindow(window)
+        sdl2.RaiseWindow(window)      // traz pra frente e dá foco (p/ focar a URL no startup)
+    }
 
     renderer := sdl2.CreateRenderer(window, -1, {.ACCELERATED, .PRESENTVSYNC})
     assert(renderer != nil)
@@ -813,6 +815,7 @@ run :: proc() {
         imgui_sdlr.NewFrame()
         imgui_sdl2.NewFrame()
         im.NewFrame()
+        if scroll_probe_input(&s) do break
 
         // ANTES de qualquer widget: o clique que encerra a rolagem automática do
         // meio tem de sumir para TODO leitor do mouse neste frame.
@@ -1334,6 +1337,7 @@ draw_content :: proc(s: ^State) {
             // já chega aqui convertida (wheel_shift_to_h). Roda >0 = p/ cima/esquerda.
             io := im.GetIO()
             hov := im.IsWindowHovered({})
+            when SCROLLPROBE { hov = true }
             wy := hov ? -io.MouseWheel * WHEEL_STEP_PX : 0
             wx := hov && s.page_max_x > 0 ? -io.MouseWheelH * WHEEL_STEP_PX : 0
             if s.autoscroll.on {

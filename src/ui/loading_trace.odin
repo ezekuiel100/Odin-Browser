@@ -33,6 +33,7 @@ loading_trace_event :: proc(event: string) {
 
 // UI-thread only; logging and the worker event writer serialize their output.
 loading_trace_stage :: proc(phase: string) {
+    scroll_probe_stage(phase)
     when LOADING_TRACE {
         now := time.tick_now()
         if g_loading_trace_phase != "" {

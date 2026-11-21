@@ -7668,6 +7668,13 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     }
     rx0 := max(minx - mx, 0);  ry0 := max(miny - my, 0)
     rx1 := min(maxx + mx, vw); ry1 := min(maxy + my, vh)
+    // Small unfiltered surfaces keep their complete contents while crossing
+    // the viewport edge. Clipping the texture to the viewport changed its size
+    // and local geometry on every scroll step, forcing a fresh rasterization.
+    if len(filters) == 0 && maxx-minx <= 2048 && maxy-miny <= 2048 &&
+       (maxx-minx)*(maxy-miny) <= 1_048_576 && rx1 > rx0 && ry1 > ry0 {
+        rx0, ry0, rx1, ry1 = minx, miny, maxx, maxy
+    }
     when UIPROF { if rx1 <= rx0 || ry1 <= ry0 do g_uiprof.lay_e_bbox += 1 }
     if rx1 <= rx0 || ry1 <= ry0 do return next
     ix0 := i32(math.floor(rx0)); iy0 := i32(math.floor(ry0))
@@ -7697,6 +7704,13 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
         for k in 0 ..< cn {
             cmdb[k].ClipRect.x -= fx; cmdb[k].ClipRect.z -= fx
             cmdb[k].ClipRect.y -= fy; cmdb[k].ClipRect.w -= fy
+            // Pixels outside the texture cannot affect its contents. Normalize
+            // these clips before hashing so an enclosing clip moving outside
+            // the surface does not invalidate an otherwise identical texture.
+            cmdb[k].ClipRect.x = clamp(cmdb[k].ClipRect.x, 0, f32(iw))
+            cmdb[k].ClipRect.z = clamp(cmdb[k].ClipRect.z, 0, f32(iw))
+            cmdb[k].ClipRect.y = clamp(cmdb[k].ClipRect.y, 0, f32(ih))
+            cmdb[k].ClipRect.w = clamp(cmdb[k].ClipRect.w, 0, f32(ih))
         }
     }
 
@@ -7800,7 +7814,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
             cache^[node] = e
             // o tint tem de seguir a convenção com que a TEXTURA CACHEADA foi feita
             tint := e.custom ? u32(0xFFFFFFFF) : (e.premul ? premul_tint(opacity) : imgui_mul_alpha(0xFFFFFFFF, opacity))
-            im.DrawList_AddImage(dl, im.TextureID(uintptr(e.tex)), {fx, fy}, {fx + f32(iw), fy + f32(ih)}, {0, 0}, {1, 1}, tint)
+            composite_image(dl, e.tex, fx, fy, iw, ih, tint, round_clip, cbx, cby, cbw, cbh, rounding)
             return next
         }
     }
@@ -7855,7 +7869,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     // que o AddImage normal componha αs·B + (1−αs)·backdrop sobre o framebuffer.
     comp_tex := tex
     intermediate: ^sdl2.Texture = nil // a textura .TARGET vira descartável quando processada na CPU
-    if has_filter || cpu_blend || has_clip || has_mask || has_image_mask || round_clip {
+    if has_filter || cpu_blend || has_clip || has_mask || has_image_mask {
         pw, ph := int(iw), int(ih)
         buf := make([]u8, pw * ph * 4, context.temp_allocator)
         rect := sdl2.Rect{0, 0, iw, ih}
@@ -7870,7 +7884,6 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
             if has_clip do apply_clip_mask(buf, pw, ph, clip, cbx - fx, cby - fy, cbw, cbh)
             if has_mask do apply_mask_gradient(buf, pw, ph, mask, cbx - fx, cby - fy, cbw, cbh)
             if has_image_mask do apply_svg_image_mask(buf, pw, ph, mask_image, cbx-fx, cby-fy, cbw, cbh)
-            if round_clip do apply_round_clip(buf, pw, ph, cbx-fx, cby-fy, cbw, cbh, rounding)
             buf_premul(buf) // volta à convenção da textura (ver premul_blend)
             t2 := sdl2.CreateTexture(g_renderer, .ABGR8888, .STATIC, iw, ih)
             if t2 != nil {
@@ -7912,7 +7925,7 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
     if intermediate != nil do sdl2.DestroyTexture(intermediate)
 
     tint := custom ? u32(0xFFFFFFFF) : (premul ? premul_tint(opacity) : imgui_mul_alpha(0xFFFFFFFF, opacity))
-    im.DrawList_AddImage(dl, im.TextureID(uintptr(comp_tex)), {fx, fy}, {fx + f32(iw), fy + f32(ih)}, {0, 0}, {1, 1}, tint)
+    composite_image(dl, comp_tex, fx, fy, iw, ih, tint, round_clip, cbx, cby, cbw, cbh, rounding)
     when UIPROF {
         g_uiprof.ms_lay_tex += time.duration_milliseconds(time.tick_since(t_l))
         g_uiprof.lay_tex_built += 1
@@ -7929,6 +7942,14 @@ composite_layer :: proc(cmds: []Paint_Cmd, start: int, dl: ^im.DrawList, opacity
 // elemento pinta normal, sem frost — degradação graciosa).
 @(private="file")
 apply_backdrop_filter :: proc(dl: ^im.DrawList, v: PC_BackdropFilter) {
+    when SCROLLPROBE {
+        if g_sp_skip_backdrop do return
+        sp_tick := time.tick_now()
+        defer {
+            if g_sp_measuring do fmt.eprintfln("[scrollcost],%d,backdrop,%.3f size=%.0fx%.0f first=%v amount=%.1f", g_sp_frame,
+                time.duration_milliseconds(time.tick_since(sp_tick)), v.x1-v.x0, v.y1-v.y0, v.filters[0].kind, v.filters[0].amount)
+        }
+    }
     if g_renderer == nil || v.n <= 0 do return
     if g_backdrop_count >= BACKDROP_BUDGET do return
     io := im.GetIO()
@@ -7938,11 +7959,31 @@ apply_backdrop_filter :: proc(dl: ^im.DrawList, v: PC_BackdropFilter) {
     rx1 := i32(math.ceil(min(v.x1, vw)));   ry1 := i32(math.ceil(min(v.y1, vh)))
     rw, rh := rx1 - rx0, ry1 - ry0
     if rw < 1 || rh < 1 do return
-    iw, ih := i32(math.ceil(vw)), i32(math.ceil(vh))
+    // Sample the surrounding backdrop too: a blur needs pixels OUTSIDE the
+    // element's border box. Large blurs have no high-frequency detail left;
+    // rasterize them at a lower resolution, keeping sigma in CSS pixels.
+    lf := v.filters
+    pad, scale := backdrop_sampling(lf[:v.n])
+    prefix := 0
+    if scale > 1 {
+        for f in lf[:v.n] {
+            if f.kind == .Blur do break
+            prefix += 1
+        }
+    }
+    sx0 := f32(max(0, int(math.floor(f32(rx0)-pad))))
+    sy0 := f32(max(0, int(math.floor(f32(ry0)-pad))))
+    sx1 := min(vw, f32(math.ceil(f32(rx1)+pad)))
+    sy1 := min(vh, f32(math.ceil(f32(ry1)+pad)))
+    iw := i32(math.ceil((sx1-sx0)/scale))
+    ih := i32(math.ceil((sy1-sy0)/scale))
     if iw < 1 || ih < 1 do return
-
-    // renderiza o dl ATUAL (o backdrop) num target de tela cheia
-    tex := sdl2.CreateTexture(g_renderer, .ABGR8888, .TARGET, iw, ih)
+    // Use the actual padded texture extent for UVs (ceil may add a texel).
+    sx1 = sx0 + f32(iw)*scale; sy1 = sy0 + f32(ih)*scale
+    // Rasterize at native resolution first. Directly shrinking the geometry
+    // aliases thin stripes/text instead of averaging their contribution.
+    ld := backdrop_draw_list(dl, sx0, sy0, 1)
+    tex := sdl2.CreateTexture(g_renderer, .ABGR8888, .TARGET, iw*i32(scale), ih*i32(scale))
     if tex == nil do return
     prev := sdl2.GetRenderTarget(g_renderer)
     sdl2.SetRenderTarget(g_renderer, tex)
@@ -7950,7 +7991,7 @@ apply_backdrop_filter :: proc(dl: ^im.DrawList, v: PC_BackdropFilter) {
     br := u8((g_bg_behind >> 16) & 0xFF); bg := u8((g_bg_behind >> 8) & 0xFF); bb := u8(g_bg_behind & 0xFF)
     sdl2.SetRenderDrawColor(g_renderer, br, bg, bb, 255)
     sdl2.RenderClear(g_renderer)
-    lists := [1]^im.DrawList{dl}
+    lists := [1]^im.DrawList{&ld}
     dd: im.DrawData
     dd.Valid = true
     dd.CmdListsCount = 1
@@ -7958,32 +7999,60 @@ apply_backdrop_filter :: proc(dl: ^im.DrawList, v: PC_BackdropFilter) {
     dd.TotalVtxCount = dl.VtxBuffer.Size
     dd.TotalIdxCount = dl.IdxBuffer.Size
     dd.DisplayPos = {0, 0}
-    dd.DisplaySize = {vw, vh}
+    dd.DisplaySize = {f32(iw)*scale, f32(ih)*scale}
     dd.FramebufferScale = {1, 1}
     imgui_sdlr.RenderDrawData(&dd, g_renderer)
 
+    // Successive 2x linear reductions average every source texel (a single
+    // 4x reduction would skip samples). Only the small result crosses to CPU.
+    remaining := prefix == 0 ? i32(scale) : 1
+    for remaining > 1 {
+        remaining /= 2
+        reduced := sdl2.CreateTexture(g_renderer, .ABGR8888, .TARGET, iw*remaining, ih*remaining)
+        if reduced == nil { sdl2.SetRenderTarget(g_renderer, prev); sdl2.DestroyTexture(tex); return }
+        sdl2.SetTextureBlendMode(tex, .NONE)
+        sdl2.SetTextureScaleMode(tex, .Linear)
+        sdl2.SetRenderTarget(g_renderer, reduced)
+        sdl2.RenderCopy(g_renderer, tex, nil, nil)
+        sdl2.DestroyTexture(tex)
+        tex = reduced
+    }
+
     // lê só a região do elemento, filtra na CPU
-    pw, ph := int(rw), int(rh)
+    pw, ph := int(iw), int(ih)
+    if prefix > 0 { pw *= int(scale); ph *= int(scale) }
     buf := make([]u8, pw * ph * 4, context.temp_allocator)
-    rect := sdl2.Rect{rx0, ry0, rw, rh}
-    ok := sdl2.RenderReadPixels(g_renderer, &rect, u32(sdl2.PixelFormatEnum.ABGR8888), raw_data(buf), rw * 4) == 0
+    rect := sdl2.Rect{0, 0, i32(pw), i32(ph)}
+    ok := sdl2.RenderReadPixels(g_renderer, &rect, u32(sdl2.PixelFormatEnum.ABGR8888), raw_data(buf), i32(pw * 4)) == 0
     sdl2.SetRenderTarget(g_renderer, prev)
     if !ok { sdl2.DestroyTexture(tex); return }
 
-    lf := v.filters
-    apply_filters(buf, pw, ph, lf[:v.n])
-    // cantos arredondados: zera o alpha fora do retângulo arredondado (aprox. do
-    // recorte do backdrop à forma do border-box).
-    if v.radius > 0.5 do round_rect_alpha(buf, pw, ph, v.radius)
+    if prefix > 0 {
+        apply_filters(buf, pw, ph, lf[:prefix])
+        buf = backdrop_reduce(buf, pw, ph, int(scale))
+        pw, ph = int(iw), int(ih)
+    }
 
-    out := sdl2.CreateTexture(g_renderer, .ABGR8888, .STATIC, rw, rh)
+    for &f in lf[:v.n] {
+        if f.kind == .Blur || f.kind == .DropShadow {
+            f.amount /= scale
+            f.dx /= scale; f.dy /= scale
+        }
+    }
+    apply_filters(buf, pw, ph, lf[prefix:v.n])
+    out := sdl2.CreateTexture(g_renderer, .ABGR8888, .STATIC, iw, ih)
     sdl2.DestroyTexture(tex)
     if out == nil do return
-    sdl2.UpdateTexture(out, nil, raw_data(buf), rw * 4)
+    sdl2.UpdateTexture(out, nil, raw_data(buf), iw * 4)
     sdl2.SetTextureBlendMode(out, .BLEND)
+    sdl2.SetTextureScaleMode(out, .Linear)
     append(&g_layer_textures, out) // per-frame (backdrop é dinâmico, sem cache)
     g_backdrop_count += 1
-    im.DrawList_AddImage(dl, im.TextureID(uintptr(out)), {f32(rx0), f32(ry0)}, {f32(rx1), f32(ry1)}, {0, 0}, {1, 1}, 0xFFFFFFFF)
+    r := clamp(v.radius, 0, min(v.x1-v.x0, v.y1-v.y0)*0.5)
+    rounding := Image_Rounding{rx = {r,r,r,r}, ry = {r,r,r,r}}
+    draw_image_rounded(dl, im.TextureID(uintptr(out)), {v.x0,v.y0}, {v.x1,v.y1},
+        sx0, sy0, sx1, sy1, 0xFFFFFFFF,
+        im.DrawList_GetClipRectMin(dl), im.DrawList_GetClipRectMax(dl), rounding)
 }
 
 // Zera o alpha dos pixels fora de um retângulo de cantos arredondados (raio r),
@@ -8630,6 +8699,7 @@ paint_layout :: proc(s: ^State, root: ^Box) {
     when CULLPROBE { g_cullprof.frames += 1 }
     when PAINTPROF { g_pp.frames += 1 }
     when UIPROF { t_rec := time.tick_now() }
+    when SCROLLPROBE { loading_trace_stage("paint-record") }
     paint_box(&pt, s, root, 0, 0)                 // grava
     when UIPROF {
         g_uiprof.ms_record += time.duration_milliseconds(time.tick_since(t_rec))
@@ -8646,6 +8716,7 @@ paint_layout :: proc(s: ^State, root: ^Box) {
         if len(pt.cmds) > g_uiprof.max_cmds do g_uiprof.max_cmds = len(pt.cmds)
         t_rep := time.tick_now()
     }
+    when SCROLLPROBE { loading_trace_stage("paint-replay") }
     replay_paint(&pt, im.GetWindowDrawList())     // desenha
     when UIPROF { g_uiprof.ms_replay += time.duration_milliseconds(time.tick_since(t_rep)) }
     im.SetCursorPos({0, root.h + 8})
@@ -9975,6 +10046,10 @@ paint_box :: proc(pt: ^Painter, s: ^State, b: ^Box, ox, oy: f32, opa: f32 = 1.0,
     // subárvore numa LAYER — o conteúdo é desenhado OPACO (eff←opa) e o dimming
     // vem do composite da textura a own_a (replay_paint/composite_layer). Sem
     // filhos (folha) ou sem renderer, mantém o baking antigo (eff = opa·own_a).
+    // Transition state has now advanced, so a fully transparent group can be
+    // culled even when it declares transitions. In particular its backdrop
+    // must not blur the page while the overlay/menu is invisible.
+    if eff <= 0 do return
     own_a := opa > 0.0001 ? eff / opa : b.opacity
     // layer quando: (opacidade PRÓPRIA<1 com filhos, onde o double-darken de
     // sobreposição apareceria) OU (mix-blend-mode≠normal, que blenda o elemento
