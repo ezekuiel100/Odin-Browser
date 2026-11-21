@@ -73,11 +73,11 @@ host_turn_resumes_microtasks_on_next_pump :: proc(t: ^testing.T) {
 }
 
 @(test)
-host_turn_interrupts_long_callback_despite_task_clock_reset :: proc(t: ^testing.T) {
+host_turn_long_callback_retains_per_task_watchdog :: proc(t: ^testing.T) {
     vm := vm_create()
     defer vm_free(vm)
     vm_run(vm, `setTimeout(function(){while(true){}}, 0);`)
-    vm.time_budget_ms = 0 // even --js-timeout=0 must not disable UI protection
+    vm.time_budget_ms = 20 // frame scheduling must retain the per-task watchdog
     started := time.tick_now()
     vm_begin_host_turn(vm, 20)
     vm_pump_timers(vm, 0)
@@ -86,6 +86,30 @@ host_turn_interrupts_long_callback_despite_task_clock_reset :: proc(t: ^testing.
     testing.expect(t, time.duration_milliseconds(time.tick_since(started)) < 1000)
     testing.expect(t, len(vm.uncaught_log) > 0)
     testing.expect_value(t, as_number(vm_run(vm, "1+2")), 3.0)
+}
+
+@(test)
+host_turn_finishes_started_callback_before_deferring_next :: proc(t: ^testing.T) {
+    vm := host_turn_test_vm()
+    defer vm_free(vm)
+    vm_run(vm, `var result=''; var caught='';
+        setTimeout(function(){
+            try {
+                result+='start'; block();
+                for(var i=0;i<4096;i++) {}
+                result+='finish';
+            } catch(e) { caught=e.name; result='Error'; }
+        },0);
+        setTimeout(function(){result+='next';},0);`)
+    vm_begin_host_turn(vm, 5)
+    vm_pump_timers(vm, 0)
+    vm_end_host_turn(vm)
+    testing.expect_value(t, vm.global.vars["result"], Value("startfinish"))
+    testing.expect_value(t, vm.global.vars["caught"], Value(""))
+    testing.expect_value(t, vm.uncaught_total, 0)
+    testing.expect_value(t, len(vm.timers), 1)
+    vm_pump_timers(vm, 0)
+    testing.expect_value(t, vm.global.vars["result"], Value("startfinishnext"))
 }
 
 @(test)

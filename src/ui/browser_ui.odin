@@ -70,6 +70,7 @@ Tab :: struct {
     rules:       [dynamic]csspkg.Rule,
     kf:          [dynamic]csspkg.Keyframe_Set,
     rules_ready: bool,
+    cssom_revision: u64,
     zoom_applied: f32,                      // g_zoom com que styles/layout foram computados
     // Impressão digital do DOM de quando styles/layout foram computados. Um tick
     // de timer que NÃO mudou o DOM não precisa de restyle (ver dompkg.fingerprint).
@@ -239,6 +240,13 @@ tab_drop_rules :: proc(tab: ^Tab) {
 // Parsed rules own their strings and survive the frame's temporary allocator.
 restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     if tab.dom == nil { tab.zoom_applied = g_zoom; return }
+    if tab.vm != nil && tab.cssom_revision != tab.vm.cssom_revision {
+        text := strings.clone(collect_page_css(tab.dom, tab.url))
+        tab_drop_rules(tab)
+        if tab.css_text != "" do delete(tab.css_text)
+        tab.css_text = text
+        tab.cssom_revision = tab.vm.cssom_revision
+    }
     rules_changed := !tab.rules_ready
     if !tab.rules_ready {
         tab.rules, tab.kf = csspkg.parse(tab.css_text)

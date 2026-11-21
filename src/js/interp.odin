@@ -541,6 +541,7 @@ Interp :: struct {
     uncaught_log:   [dynamic]string, // mensagens das exceções que chegaram ao topo sem catch (clonadas;
                                      // teto UNCAUGHT_LOG_MAX p/ um setInterval que lança não crescer sem fim).
                                      // Consumido pelo --diagnose <url> <saida.json> (gap-miner.ps1).
+    cssom_revision: u64,             // stylesheet mutations requiring rule collection
     uncaught_total: int,             // total REAL de exceções não capturadas (mesmo além do teto do log)
     // REJEIÇÕES de promise que ninguém tratou. PONTO CEGO até o M131: um erro no
     // corpo de uma async function vira rejeição, some do uncaught_log E do console —
@@ -666,7 +667,7 @@ reset_task_clock :: proc(vm: ^Interp) {
 }
 
 // The interactive host shares one deadline across events, timers and observers.
-// Workers/headless leave this disabled and retain the normal per-task watchdog.
+// Callers without a frame budget retain the normal per-task watchdog.
 vm_begin_host_turn :: proc(vm: ^Interp, budget_ms: f64) {
     if vm == nil do return
     vm.host_turn_start = time.tick_now()
@@ -715,15 +716,10 @@ loop_take_continue :: proc(vm: ^Interp, my_label: string) -> bool {
 
 step_guard :: proc(vm: ^Interp) -> bool {
     vm.steps += 1
-    // Check more frequently on the UI thread. A callback that does not return
-    // cannot be deferred by the scheduler; interrupt it using the watchdog.
-    if vm.host_turn_budget_ms > 0 && (vm.steps == 1 || (vm.steps & 0x3FF) == 0) && vm_host_turn_expired(vm) {
-        if !vm.throwing {
-            vm.thrown = mk_error(vm, "RangeError", "tempo de execucao excedido (interface ocupada)")
-            vm.throwing = true
-        }
-        return true
-    }
+    // The host's frame budget defers whole callbacks at scheduler boundaries.
+    // Throwing here interrupts a valid callback halfway through its DOM work:
+    // React catches that artificial error and replaces the page with its error
+    // boundary. Long/infinite callbacks still have the per-task watchdog below.
     // teto por PASSOS
     if vm.steps > vm.step_limit {
         if !vm.throwing {

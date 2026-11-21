@@ -1856,7 +1856,6 @@ install_dom_interfaces :: proc(vm: ^Interp) {
         {"DOMTokenList",      vm.object_proto},
         {"DOMException",      vm.object_proto},
         {"DOMStringMap",      vm.object_proto},
-        {"CSSStyleSheet",     vm.object_proto},
         {"CSSStyleDeclaration", vm.object_proto},
         {"Attr",              node_proto},          // Attr extends Node (spec)
         // HTMLMediaElement NÃO entra aqui: agora é criada com Video/Audio
@@ -1866,6 +1865,7 @@ install_dom_interfaces :: proc(vm: ^Interp) {
         ctor := mk_dom_interface(vm, o.name, o.proto)
         env_define(vm.global, o.name, ctor)
     }
+    install_stylesheets(vm)
     if hc, ok := env_get(vm.global, "HTMLCollection"); ok {
         if nl, nok := env_get(vm.global, "NodeList"); nok {
             hcf, _ := hc.(^Function)
@@ -3863,6 +3863,9 @@ dom_elem_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
         cl.host = o.host
         cl.get = classlist_get
         return cl, true
+    case "sheet":
+        if node.tag == "style" do return element_stylesheet(vm, o), true
+        return nil, false
     case "style": // wrapper: el.style.color / el.style.cssText — apoiado no atributo style=""
         st := new_object(vm)
         st.host = o.host

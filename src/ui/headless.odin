@@ -1012,12 +1012,14 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
             // timer disparou ≠ DOM mudou: só re-estiliza se mudou (ver
             // dompkg.fingerprint e o guarda equivalente no browser_ui)
             when UIPROF { tf = time.tick_now() }
+            jspkg.vm_begin_host_turn(s.tabs[0].vm, 50)
             disparou := animation_dispatch(s.tabs[0].layout, s.tabs[0].vm)
             if jspkg.vm_pump_timers(s.tabs[0].vm, 1000.0 / 60.0) do disparou = true
             // IntersectionObserver: mesmo passo por frame do headless_render. Sem
             // ele o --diagnose mediria uma página em que o observador nunca correu,
             // e os contadores js_io_* seriam sempre zero.
             if jspkg.vm_frame_step(s.tabs[0].vm) do disparou = true
+            jspkg.vm_end_host_turn(s.tabs[0].vm)
             when UIPROF { g_uiprof.ms_js += time.duration_milliseconds(time.tick_since(tf)) }
             if disparou {
                 t := &s.tabs[0]
