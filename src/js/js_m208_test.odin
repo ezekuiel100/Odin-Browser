@@ -138,15 +138,13 @@ m208_null_continua_sem_cadeia :: proc(t: ^testing.T) {
     testing.expect_value(t, val(`(function(){ var o=Object.create(null); o.a=1; return Object.keys(o).length })()`), "1")
     // e um protótipo ^Object comum segue funcionando
     testing.expect_value(t, val(`(function(){ var b={m:function(){return 9}}; return Object.create(b).m() })()`), "9")
-    // 2º arg que não é objeto nem null é NO-OP: não pode DESLIGAR a cadeia que já
-    // existia (a spec lança ali; no-op é a leniência antiga). Um `o.proto=nil` aqui
-    // seria uma regressão silenciosa em cima de código alheio.
+    // Invalid prototype values throw and preserve the previous chain.
     testing.expect_value(t, val(`(function(){
-        var b={m:1}; var o=Object.create(b);
-        Object.setPrototypeOf(o, undefined);
-        Object.setPrototypeOf(o, 5);
-        return o.m
-    })()`), "1")
+        var b={m:1}; var o=Object.create(b), errors=0;
+        try { Object.setPrototypeOf(o, undefined); } catch(e) { if(e instanceof TypeError) errors++; }
+        try { Object.setPrototypeOf(o, 5); } catch(e) { if(e instanceof TypeError) errors++; }
+        return errors + ':' + o.m;
+    })()`), "2:1")
     // null DESLIGA (esse é o caminho válido)
     testing.expect_value(t, val(`(function(){
         var b={m:1}; var o=Object.create(b);

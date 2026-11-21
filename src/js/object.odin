@@ -127,26 +127,39 @@ obj_from_entries :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // transpilada — Babel/TS usam em _inherits). proto null desliga.
 @(private = "file")
 obj_set_prototype_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    // ALVO FUNÇÃO: `Object.setPrototypeOf(Filha, Pai)` é exatamente o que o
-    // `_inherits` do Babel emite p/ classe derivada, e era NO-OP aqui — o
-    // `_getPrototypeOf(Derived)` seguinte devolvia Function.prototype (um objeto
-    // comum) e o `Reflect.construct(Super, args, NewTarget)` do `_createSuper`
-    // morria com "target is not a constructor" → React desmontava a árvore →
-    // npmjs.com em BRANCO. O elo mora em `super_ctor`, que é de onde o
-    // obj_get_prototype_of já lê e por onde a herança ESTÁTICA já anda.
-    if f, fok := arg(args, 0).(^Function); fok {
-        #partial switch p in arg(args, 1) {
-        case ^Function: f.super_ctor = p
-        case JS_Null:   f.super_ctor = nil
-        }
-        return f
+    target, proto := arg(args, 0), arg(args, 1)
+    if target == nil || target == (JS_Null{}) {
+        throw_type_error(vm, "Cannot set prototype of null or undefined")
+        return nil
     }
-    o, ok := arg(args, 0).(^Object)
-    if !ok do return arg(args, 0)
-    // Só null e um objeto de verdade mexem na cadeia — `undefined`/número é no-op
-    // (a spec lança ali), e quem filtra é o set_proto_value.
-    set_proto_value(o, arg(args, 1))
-    return o
+    if is_primitive(proto) && proto != (JS_Null{}) {
+        throw_type_error(vm, "Object prototype may only be an Object or null")
+        return nil
+    }
+    if is_primitive(target) do return target
+    current := obj_get_prototype_of(vm, nil, []Value{target})
+    if current == proto do return target
+    if o, ok := target.(^Object); ok && o.non_extensible {
+        throw_type_error(vm, "Cannot set prototype of a non-extensible object")
+        return nil
+    }
+    // Validate before changing links, including chains crossing functions.
+    for cur := proto; cur != (JS_Null{}) && cur != nil; cur = obj_get_prototype_of(vm, nil, []Value{cur}) {
+        if cur == target {
+            throw_type_error(vm, "Cyclic prototype value")
+            return nil
+        }
+    }
+    #partial switch o in target {
+    case ^Function:
+        #partial switch p in proto {
+        case ^Function: o.super_ctor = p
+        case JS_Null: o.super_ctor = nil
+        }
+    case ^Object:
+        set_proto_value(o, proto)
+    }
+    return target
 }
 
 // Object.is(a, b): SameValue da spec — como === com duas diferenças, e as duas
@@ -609,7 +622,8 @@ proto_accessor_get :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 }
 @(private = "file")
 proto_accessor_set :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    obj_set_prototype_of(vm, nil, []Value{this, arg(args, 0)})
+    proto := arg(args, 0)
+    if !is_primitive(proto) || proto == (JS_Null{}) do obj_set_prototype_of(vm, nil, []Value{this, proto})
     return nil // o setter não devolve valor (spec)
 }
 

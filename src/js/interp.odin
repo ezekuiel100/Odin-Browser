@@ -2024,6 +2024,8 @@ js_instanceof :: proc(vm: ^Interp, l, r: Value) -> bool {
     }
     rf, ok := r.(^Function)
     if !ok do return false
+    // Bound functions delegate OrdinaryHasInstance to their target.
+    if rf.bind_target != nil do return js_instanceof(vm, l, rf.bind_target)
     if coll, cok := l.(^Collection); cok {
         switch rf.name {
         case "Map":     return coll.kind == .Map
@@ -3203,7 +3205,17 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
                 v = get_index(vm, val, f64(i))    // array: pelo índice posicional
             }
         }
-        if v == nil && el.right != nil do v = eval(vm, el.right, env) // default
+        if v == nil && el.right != nil {
+            v = eval(vm, el.right, env)
+            if vm.throwing do break
+            // NamedEvaluation applies only to anonymous definitions used as
+            // defaults for identifiers, never to an existing function value.
+            name := el.name
+            if has_ref && el.left.kind == .Ident do name = el.left.name
+            if name != "" && (el.right.kind == .Func || el.right.kind == .Class) && el.right.name == "" {
+                if f, ok := v.(^Function); ok do f.name = name
+            }
+        }
         if el.left != nil {
             if el.left.kind == .Pattern {
                 bind_pattern(vm, el.left, v, env, declare, is_const) // aninhado
@@ -3370,42 +3382,75 @@ collect_sync_values :: proc(vm: ^Interp, it: Value, out: ^[dynamic]Value) {
     }
 }
 
-// for await (x of it) — drena um async iterator (ou um síncrono envolvido). Cada
-// passo: `res = await it.next()`; se done, para; senão `val = await res.value` e
-// roda o corpo. Awaitar o valor cobre `for await (x of [p1, p2])` (arrays de
-// promises), como o AsyncFromSyncIterator da spec.
+// for-await awaits next() results for async iterators. Sync iterators use
+// AsyncFromSyncIterator, which awaits each value before returning the result.
 @(private = "file")
 eval_for_await :: proc(vm: ^Interp, n: ^Node, env: ^Env, it: Value, my_label: string) -> Value {
-    if iter, ok := get_async_iterator(vm, it); ok {
-        next_fn := iterator_next_fn(iter)
-        if next_fn != nil {
-            for {
-                if step_guard(vm) do break
-                r := call_function(vm, next_fn, iter, nil)
-                if vm.throwing do return nil
-                r = await_value(vm, r) // next() de async gen devolve Promise
-                if vm.throwing do return nil
-                ro, rok := r.(^Object)
-                if !rok || truthy(ro.props["done"]) do break
-                val := await_value(vm, ro.props["value"])
-                if vm.throwing do return nil
-                if for_of_run_body(vm, n, env, val, my_label) {
-                    async_iterator_close(vm, iter) // término abrupto → it.return()
-                    break
-                }
-            }
-            return nil
+    iter: Value
+    by_protocol, is_async := false, false
+    if !is_primitive(it) {
+        method := get_member(vm, it, vm.sym_async_iterator_key)
+        if vm.throwing do return nil
+        if method != nil && method != (JS_Null{}) {
+            fn, ok := method.(^Function)
+            if !ok { throw_type_error(vm, "Symbol.asyncIterator is not callable"); return nil }
+            iter = call_function(vm, fn, it, nil)
+            if vm.throwing do return nil
+            by_protocol, is_async = true, true
         }
     }
-    // fallback: iterável nativo síncrono (array/Collection/string) — awaita cada elemento
+    if !by_protocol do iter, by_protocol = get_iterator(vm, it)
+    if vm.throwing do return nil
+    if by_protocol {
+        next_fn := iterator_next_fn(iter)
+        if next_fn == nil { throw_type_error(vm, "Iterator next is not callable"); return nil }
+        for {
+            if step_guard(vm) do break
+            r := call_function(vm, next_fn, iter, nil)
+            if vm.throwing do return nil
+            if is_async do r = await_value(vm, r)
+            if vm.throwing do return nil
+            if is_primitive(r) { throw_type_error(vm, "Iterator result is not an object"); return nil }
+            done := truthy(get_member(vm, r, "done"))
+            if vm.throwing do return nil
+            value: Value
+            // AsyncFromSyncIterator unwraps the value, including the done step.
+            // A real async iterator already returns its result through Await.
+            if !is_async || !done do value = get_member(vm, r, "value")
+            if vm.throwing do return nil
+            if !is_async do value = await_value(vm, value)
+            if vm.throwing do return nil
+            if done do break
+            if for_of_run_body(vm, n, env, value, my_label) {
+                async_iterator_close(vm, iter)
+                break
+            }
+        }
+        return nil
+    }
+    // Native arrays advance lazily, so mutations made while suspended are seen.
+    if array, ok := it.(^Array); ok {
+        for i := 0; ; i += 1 {
+            if step_guard(vm) do return nil
+            done := i >= len(array.items)
+            value: Value
+            if !done do value = get_index(vm, array, f64(i))
+            if vm.throwing do return nil
+            value = await_value(vm, value)
+            if vm.throwing || done do return nil
+            if for_of_run_body(vm, n, env, value, my_label) do return nil
+        }
+    }
     values: [dynamic]Value
     defer delete(values)
     collect_sync_values(vm, it, &values)
     for v in values {
         av := await_value(vm, v)
         if vm.throwing do return nil
-        if for_of_run_body(vm, n, env, av, my_label) do break
+        if for_of_run_body(vm, n, env, av, my_label) do return nil
     }
+    // Even an empty iterator suspends on its final next() result.
+    await_value(vm, nil)
     return nil
 }
 
