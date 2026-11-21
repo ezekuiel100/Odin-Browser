@@ -238,6 +238,7 @@ Form_Control :: enum u8 { None, Checkbox, Radio, Text, Password, Textarea, Selec
 EDIT_CAP :: 256
 
 Box :: struct {
+    is_document: bool, // anonymous wrapper providing the initial containing block
     // Root-only cache, shared by the frame loop and synchronous CSSOM reads.
     geometry_valid: bool,
     geometry_w, geometry_h: f32,
@@ -685,6 +686,7 @@ build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base
     #partial switch node.kind {
     case .Document:
         b := new_box(); b.kind = .Block
+        b.is_document = true
         // HTML5 sempre tem um <body> (explícito ou implícito). Quando o documento
         // não traz <body>, não existe nó com tag=="body" p/ receber a margem
         // default de 8px do body (aplicada em node_margins/inline). Recuamos o
@@ -3008,11 +3010,14 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
                 }
                 // height:N% do filho resolve contra a altura DEFINIDA deste pai
                 // (avail_h>=0 = veio de height/aspect/force_h; auto = -1 → não resolve).
+                // The root element's percentages use the initial containing
+                // block, even though this anonymous document wrapper is auto.
+                parent_h := b.is_document ? g_viewport_h : avail_h
                 ch_fh: f32 = -1
-                if avail_h >= 0 && child.has_height_pct do ch_fh = max(0, pct_resolve(child.height_pct, child.height_pct_off, avail_h, child.height_bd))
-                resolve_child_minmax_h(child, avail_h) // min/max-height em % (mesma base)
+                if parent_h >= 0 && child.has_height_pct do ch_fh = max(0, pct_resolve(child.height_pct, child.height_pct_off, parent_h, child.height_bd))
+                resolve_child_minmax_h(child, parent_h) // min/max-height em % (mesma base)
                 // avail_h (altura DEFINIDA deste pai) é o CB p/ top/bottom % do filho relativo
-                layout_box(child, cl, cy, cr - cl, force_h = ch_fh, cb_h = avail_h)
+                layout_box(child, cl, cy, cr - cl, force_h = ch_fh, cb_h = parent_h)
                 cy = child.y + child.h + child_bottom_margin(child)
                 prev_mb = child.margin[2]
                 seen = true
@@ -3879,9 +3884,15 @@ image_dims :: proc(b: ^Box) -> (f32, f32) {
 // intacto — só o posicionamento segue esta sequência (paint lê x/y já corretos).
 @(private="file")
 flex_ordered_children :: proc(b: ^Box, reverse: bool) -> []^Box {
-    n := len(b.children)
-    kids := make([]^Box, n, context.temp_allocator)
-    for c, i in b.children do kids[i] = c
+    kids := make([]^Box, len(b.children), context.temp_allocator)
+    n := 0
+    // Out-of-flow children have a separate positioning pass. Their widths,
+    // margins and flex factors must never consume the in-flow free space.
+    for c in b.children {
+        if c.pos == .Absolute || c.pos == .Fixed do continue
+        kids[n] = c; n += 1
+    }
+    kids = kids[:n]
     // insertion sort estável por order
     for i in 1 ..< n {
         j := i
@@ -3915,14 +3926,14 @@ resolve_child_minmax_h :: proc(child: ^Box, avail_h: f32) {
 
 @(private="file")
 layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
-    n := len(b.children)
-    if n == 0 do return 0
     if b.flex_dir == .Column do return layout_flex_column(b, avail_h)
 
     cw := b.content_w
     gap := b.gap
 
     kids := flex_ordered_children(b, false) // collect lines in order-modified document order
+    n := len(kids)
+    if n == 0 do return 0
     bases   := make([]f32, n, context.temp_allocator)
     grows   := make([]f32, n, context.temp_allocator)
     shrinks := make([]f32, n, context.temp_allocator)
@@ -4156,7 +4167,6 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
 
 @(private="file")
 layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
-    n := len(b.children)
     cw := b.content_w
     // A zero row-gap is meaningful; column-gap only separates wrapped columns.
     gap := b.row_gap
@@ -4166,6 +4176,7 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     main_avail: f32 = avail_h >= 0 ? avail_h : 0
 
     kids := flex_ordered_children(b, false) // reverse changes placement, not line collection
+    n := len(kids)
     wrapping := b.flex_wrap && avail_h >= 0
     cross   := make([]f32, n, context.temp_allocator) // largura (cross) de cada item
     bases   := make([]f32, n, context.temp_allocator)
@@ -11763,6 +11774,14 @@ is_ws :: proc(c: u8) -> bool { return c == ' ' || c == '\t' || c == '\n' || c ==
 attr_num :: proc(n: ^dompkg.Node, name: string) -> f32 {
     if n == nil do return 0
     if v, ok := n.attrs[name]; ok {
+        // SVG dimensions accept CSS pixel units as well as unitless numbers.
+        // Treating width="24px" as absent falls back to the viewBox (often
+        // 960 units for icons), making a small icon cover the whole page.
+        // Keep HTML numeric attributes on their existing parsing path.
+        if n.tag == "svg" && (name == "width" || name == "height") {
+            v = strings.trim_space(v)
+            if strings.has_suffix(v, "px") do v = v[:len(v) - 2]
+        }
         if f, k := strconv.parse_f64(v); k do return f32(f)
     }
     return 0

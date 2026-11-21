@@ -1721,6 +1721,8 @@ compute_styles :: proc(root: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, viewpor
 @(private="file")
 apply_ua_defaults :: proc(n: ^dompkg.Node, comp: ^Computed) {
     switch n.tag {
+    case "center":
+        comp.text_align = .Center
     case "h1", "h2", "h3", "h4", "h5", "h6":
         // negrito do UA. Fica AQUI (antes das declarações do autor) e não no
         // layout: assim `h3{font-weight:500}` VENCE, como no Chrome. Antes o

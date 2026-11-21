@@ -74,7 +74,7 @@
           <div#flex_column_fractional_grow-a .> inline x=0 y=1010 w=100 h=175
       <div#flex_intrinsic_out_of_flow_gap .> block x=0 y=1420 w=800 h=10
         <div#flex_intrinsic_out_of_flow_gap-g .> flex x=0 y=1420 w=100 h=10 dir=Row gap=10
-          <div# .> inline x=0 y=1420 w=30 h=10
+          <div# .> inline x=0 y=1420 w=100 h=10
       <div#grid_intrinsic_span_with_base .> block x=0 y=1440 w=800 h=30
         <div#grid_intrinsic_span_with_base-g .> grid x=0 y=1440 w=310 h=30 cols=2 rows=0 gap=10
           <div# .> block x=0 y=1440 w=100 h=10
