@@ -1540,7 +1540,7 @@ stamp_shadow_scopes :: proc(n: ^dompkg.Node) {
 
 // Sobe até a shadow root que contém `n`; devolve o HOST e o id de escopo (estável:
 // o endereço do nó da shadow root). nil se `n` está no documento de luz.
-@(private="file")
+@(private)
 shadow_host_of :: proc(n: ^dompkg.Node) -> (^dompkg.Node, uintptr) {
     for a := n.parent; a != nil; a = a.parent {
         if a.tag == "#shadow" do return a.parent, uintptr(rawptr(a))
@@ -1557,11 +1557,50 @@ shadow_host_of :: proc(n: ^dompkg.Node) -> (^dompkg.Node, uintptr) {
 // ::slotted) e (b) uma shadow root aninhada é descendente da externa, então regras da
 // externa podem alcançá-la. O vazamento GRAVE — regras do componente escapando para a
 // página — está fechado, que é o que importa para renderizar sem estragar o resto.
-@(private="file")
+@(private)
+shadow_selector_parts :: proc(sel: string) -> []string {
+    parts := make([dynamic]string, context.temp_allocator)
+    start, depth := 0, 0
+    quote: u8
+    for i := 0; i < len(sel); i += 1 {
+        ch := sel[i]
+        if ch == '\\' { i += 1; continue }
+        if quote != 0 {
+            if ch == quote do quote = 0
+            continue
+        }
+        if ch == '\'' || ch == '"' { quote = ch; continue }
+        if ch == '(' || ch == '[' do depth += 1
+        if ch == ')' || ch == ']' do depth -= 1
+        if ch == ',' && depth == 0 {
+            append(&parts, sel[start:i])
+            start = i+1
+        }
+    }
+    append(&parts, sel[start:])
+    return parts[:]
+}
+
+@(private)
 shadow_scope_css :: proc(sb: ^strings.Builder, css: string, sid: uintptr) {
     marker := fmt.tprintf("[data-shadow-scope=\"s%d\"]", sid)
     i := 0
     for i < len(css) {
+        // Keep source markers/comments outside the selector and recognize
+        // at-rules even after whitespace emitted by import expansion.
+        if css[i] == ' ' || css[i] == '\n' || css[i] == '\r' || css[i] == '\t' {
+            strings.write_byte(sb, css[i])
+            i += 1
+            continue
+        }
+        if i+1 < len(css) && css[i:i+2] == "/*" {
+            end := strings.index(css[i+2:], "*/")
+            if end < 0 { strings.write_string(sb, css[i:]); return }
+            end += i+4
+            strings.write_string(sb, css[i:end])
+            i = end
+            continue
+        }
         // at-rule: copia o prelúdio e escopa o BLOCO interno (se houver)
         if css[i] == '@' {
             j := i
@@ -1595,18 +1634,25 @@ shadow_scope_css :: proc(sb: ^strings.Builder, css: string, sid: uintptr) {
         body_end := min(k, len(css))
         if sel != "" {
             first := true
-            for part in strings.split(sel, ",", context.temp_allocator) {
+            for part in shadow_selector_parts(sel) {
                 p := strings.trim_space(part)
                 if p == "" do continue
                 if !first do strings.write_string(sb, ",")
                 first = false
-                if p == ":host" {
-                    strings.write_string(sb, marker)
-                } else if strings.has_prefix(p, ":host(") && strings.has_suffix(p, ")") {
-                    // :host(.foo) → marcador + o composto interno
-                    strings.write_string(sb, marker)
-                    strings.write_string(sb, strings.trim_space(p[6:len(p)-1]))
-                } else if strings.has_prefix(p, ":host ") {
+                if strings.has_prefix(p, ":host(") {
+                    depth, end := 1, 6
+                    for end < len(p) && depth > 0 {
+                        if p[end] == '(' do depth += 1
+                        if p[end] == ')' do depth -= 1
+                        end += 1
+                    }
+                    if depth == 0 {
+                        strings.write_string(sb, marker)
+                        strings.write_string(sb, strings.trim_space(p[6:end-1]))
+                        strings.write_string(sb, p[end:])
+                    }
+                } else if strings.has_prefix(p, ":host") &&
+                          (len(p) == 5 || p[5] == ' ' || p[5] == ':' || p[5] == '>' || p[5] == '.' || p[5] == '[') {
                     strings.write_string(sb, marker)
                     strings.write_string(sb, p[5:])
                 } else {
@@ -7895,6 +7941,12 @@ match_left :: proc(sel: csspkg.Selector, pi: int, right: ^dompkg.Node, scope: ^d
     switch sel.combs[pi] {
     case .Child:
         p := right.parent
+        // Scoped :host > selectors cross the synthetic shadow-root node.
+        if p != nil && p.tag == "#shadow" {
+            for a in sel.parts[pi].attrs {
+                if a.name == "data-shadow-scope" { p = p.parent; break }
+            }
+        }
         return p != nil && compound_matches_node(sel.parts[pi], p, scope) && match_left(sel, pi - 1, p, scope)
     case .Descendant:
         for a := right.parent; a != nil; a = a.parent {

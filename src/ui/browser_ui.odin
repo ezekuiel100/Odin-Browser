@@ -2399,7 +2399,13 @@ collect_css_rec :: proc(n: ^dompkg.Node, base: string, sb: ^strings.Builder, imp
         if n.tag == "style" {
             text := strings.builder_make(context.temp_allocator)
             for c in n.children do if c.kind == .Text do strings.write_string(&text, c.text)
-            css_expand_imports(strings.to_string(text), base, sb, imports)
+            if host, sid := shadow_host_of(n); host != nil {
+                expanded := strings.builder_make(context.temp_allocator)
+                css_expand_imports(strings.to_string(text), base, &expanded, imports)
+                shadow_scope_css(sb, strings.to_string(expanded), sid)
+            } else {
+                css_expand_imports(strings.to_string(text), base, sb, imports)
+            }
         } else if n.tag == "link" {
             rel := n.attrs["rel"] if "rel" in n.attrs else ""
             href, has_href := n.attrs["href"]
