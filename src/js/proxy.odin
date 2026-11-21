@@ -265,7 +265,6 @@ proxy_construct :: proc(vm: ^Interp, p: ^Object, args: []Value, new_target: ^Fun
 // cujo alvo é construtor idem. Métodos de Function.prototype (call/apply/bind) e
 // afins NÃO são — mas não distinguimos isso hoje, então só rejeitamos o que
 // claramente não é função.
-@(private = "file")
 is_constructor_like :: proc(vm: ^Interp, v: Value) -> bool {
     #partial switch t in v {
     case ^Function:

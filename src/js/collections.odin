@@ -107,6 +107,59 @@ map_set :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return this // Map.set devolve o próprio (encadeável)
 }
 
+// Group directly into the ordered Map backing; keys retain their JS identity.
+@(private = "file")
+map_group_by :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    src := arg(args, 0)
+    if is_nullish(src) { throw_type_error(vm, "Map.groupBy requires an iterable"); return nil }
+    callback, callable := arg(args, 1).(^Function)
+    if !callable { throw_type_error(vm, "Map.groupBy callback is not callable"); return nil }
+    method := get_member(vm, src, vm.sym_iterator_key)
+    if vm.throwing do return nil
+    fn, ok := method.(^Function)
+    if !ok { throw_type_error(vm, "Map.groupBy requires an iterable"); return nil }
+    iter := call_function(vm, fn, src, nil)
+    if vm.throwing do return nil
+    if is_primitive(iter) { throw_type_error(vm, "Invalid iterator"); return nil }
+    next_value := get_member(vm, iter, "next")
+    if vm.throwing do return nil
+    next, next_ok := next_value.(^Function)
+    if !next_ok { throw_type_error(vm, "Iterator next is not callable"); return nil }
+    out := new_collection(vm, .Map)
+    for i := 0; ; i += 1 {
+        if step_guard(vm) do return nil
+        if f64(i) >= 9007199254740991 {
+            iterator_close(vm, iter)
+            throw_type_error(vm, "Map.groupBy input is too large")
+            return nil
+        }
+        result := call_function(vm, next, iter, nil)
+        if vm.throwing do return nil
+        if is_primitive(result) { throw_type_error(vm, "Invalid iterator result"); return nil }
+        done := get_member(vm, result, "done")
+        if vm.throwing do return nil
+        if truthy(done) do return out
+        value := get_member(vm, result, "value")
+        if vm.throwing do return nil
+        key := call_function(vm, callback, nil, []Value{value, f64(i)})
+        if vm.throwing {
+            exc := vm.thrown
+            vm.throwing = false; vm.thrown = nil
+            iterator_close(vm, iter)
+            vm.throwing = true; vm.thrown = exc
+            return nil
+        }
+        bucket: ^Array
+        if index := coll_find(out, key); index >= 0 {
+            bucket = out.entries[index].val.(^Array)
+        } else {
+            bucket = new_array(vm)
+            coll_put(out, key, bucket)
+        }
+        append(&bucket.items, value)
+    }
+}
+
 @(private = "file")
 set_add :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     c, ok := this.(^Collection)
@@ -410,6 +463,7 @@ install_collections :: proc(vm: ^Interp) {
         proto.props["constructor"] = f
         if f.props == nil do f.props = make(map[string]Value)
         f.props["prototype"] = proto
+        if name == "Map" do f.props["groupBy"] = mk_builtin_method(vm, map_group_by, "groupBy", 2)
         env_define(vm.global, name, f)
     }
     reg(vm, "Map",     map_ctor)

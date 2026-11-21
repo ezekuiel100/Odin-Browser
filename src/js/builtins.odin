@@ -295,7 +295,6 @@ arr_slice :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // e acesso indexado — não só sobre arrays reais. Habilita o idioma ubíquo
 // `Array.prototype.map.call(arguments/nodeList/{length,0:...}, fn)`. ^Array segue
 // pelo caminho rápido (items diretos); ^Object/^Function leem length+índice.
-@(private = "file")
 array_like_len :: proc(vm: ^Interp, this: Value) -> int {
     if is_nullish(this) { throw_type_error(vm, "Array method called on null or undefined"); return 0 }
     #partial switch t in this {
@@ -314,7 +313,6 @@ array_like_len :: proc(vm: ^Interp, this: Value) -> int {
     return 0 // primitivo não-objeto (número/bool): wrapper sem length → 0
 }
 
-@(private = "file")
 array_like_get :: proc(vm: ^Interp, this: Value, i: int) -> Value {
     #partial switch t in this {
     case ^Array:  return get_index(vm, t, f64(i))
@@ -3115,6 +3113,7 @@ install_builtins :: proc(vm: ^Interp) {
     arr_ctor.name = "Array"
     arr_ctor.props = make(map[string]Value)
     arr_ctor.props["from"]    = mk_builtin_method(vm, arr_from, "from", 1)
+    arr_ctor.props["fromAsync"] = mk_builtin_method(vm, arr_from_async, "fromAsync", 1)
     arr_ctor.props["isArray"] = mk_builtin_method(vm, arr_is_array, "isArray", 1)
     arr_ctor.props["of"]      = mk_builtin_method(vm, arr_of, "of", 0)
     arr_ctor.name = "Array"
