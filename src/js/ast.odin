@@ -91,6 +91,9 @@ Node :: struct {
     is_method: bool,        // Func: MÉTODO de literal de objeto (`m(){}`, get/set) — ganha
                             // home object p/ `super`. `k: function(){}` NÃO é. (Mora aqui,
                             // ao lado de `strict`, p/ caber no padding antes do f64.)
+    pos:    u32,            // Call/New/statement: offset+1 no fonte (0 = sem posição) —
+                            // linha:coluna do Error.stack. Ocupa os 4 bytes de padding
+                            // entre os bools acima e o f64: o Node NÃO cresce.
     num:    f64,            // Num
     str:    string,         // Str
     bval:   bool,           // Bool; Func: é arrow; Yield: é yield*
@@ -130,6 +133,9 @@ Node :: struct {
     param_defaults: [dynamic]^Node, // Func: valor default por parâmetro (nil = sem default); paralelo a params
     body:   [dynamic]^Node, // Block / Program: statements; Call: argumentos
 }
+
+// `pos` precisa caber no padding antes do f64 (o Node não pode crescer por ele).
+#assert(offset_of(Node, num) == 8)
 
 make_num :: proc(v: f64) -> ^Node {
     n := new(Node)

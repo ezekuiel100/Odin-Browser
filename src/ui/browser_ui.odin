@@ -2185,7 +2185,7 @@ load_page_scripts :: proc(dom: ^dompkg.Node, base_url: string) -> ^jspkg.Interp 
                     fmt.eprintfln("[script] %d bytes  %s", len(resp.body), abs)
                 }
                 // módulo externo: a URL do próprio script é o referrer dos imports dele
-                if is_module { jspkg.vm_run_module(vm, resp.body, abs) } else { jspkg.vm_run(vm, resp.body) }
+                if is_module { jspkg.vm_run_module(vm, resp.body, abs) } else { jspkg.vm_run(vm, resp.body, abs) }
             } else {
                 fmt.eprintfln("[js] script externo falhou: %s (%s)", abs, resp.err)
             }

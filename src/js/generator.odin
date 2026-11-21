@@ -77,6 +77,11 @@ Generator :: struct {
     // contexto de execução por-pilha, salvo entre trocas (a thread tem outra pilha)
     depth:     int,
     stack_low: uintptr,
+    // Error.stack: o corpo é um frame (cujo pai é QUEM retomou — o chamador na 1ª
+    // vez, o executor de microtasks depois) e lembra onde parou no próprio fonte.
+    frame:  Stack_Frame,
+    script: ^Script_Src,
+    pos:    u32,
 }
 
 // ── criação ──────────────────────────────────────────────────────────────────
@@ -226,6 +231,7 @@ gen_resume :: proc(vm: ^Interp, g: ^Generator, val: Value, kind: Gen_Inject) -> 
             return nil
         }
         g.started = true
+        g.script = g.fn != nil ? g.fn.script : vm.cur_script // program_call: o próprio fonte
         g.transfer = val // (1ª next: descartado — o corpo roda do início)
         g.thread = thread.create_and_start_with_poly_data(g, gen_thread_proc, self_cleanup = false)
     } else {
@@ -246,6 +252,15 @@ gen_resume :: proc(vm: ^Interp, g: ^Generator, val: Value, kind: Gen_Inject) -> 
     saved_short := vm.opt_short
     saved_depth := vm.call_depth
     saved_low := vm.stack_low
+    saved_frame, saved_script, saved_pos := vm.frame, vm.cur_script, vm.cur_pos
+    if g.fn != nil { // programa (await de topo) não é frame: é o fundo da pilha
+        g.frame = Stack_Frame{parent = vm.frame, fn = g.fn, call_pos = vm.cur_pos, call_script = vm.cur_script}
+        vm.frame = &g.frame
+    } else {
+        vm.frame = nil
+    }
+    vm.cur_script = g.script
+    vm.cur_pos = g.pos
     vm.current_gen = g
     vm.current_module = g.module
     vm.opt_short = false
@@ -260,6 +275,8 @@ gen_resume :: proc(vm: ^Interp, g: ^Generator, val: Value, kind: Gen_Inject) -> 
 
     g.depth = vm.call_depth      // salva o progresso da pilha do generator
     g.stack_low = vm.stack_low
+    g.pos = vm.cur_pos
+    vm.frame, vm.cur_script, vm.cur_pos = saved_frame, saved_script, saved_pos
     vm.current_gen = saved_gen
     vm.current_module = saved_module
     vm.opt_short = saved_short

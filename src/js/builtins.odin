@@ -2590,10 +2590,10 @@ make_error_obj :: proc(vm: ^Interp, name: string, args: []Value) -> Value {
         if c, cok := opts.props["cause"]; cok do o.props["cause"] = c
     }
     if proto, ok := vm.error_protos[name]; ok do o.proto = proto
-    if ms, sok := msg.(string); sok && ms != "" {
-        o.props["stack"] = own_str(vm, fmt.tprintf("%s: %s", name, ms)) // mínimo, sem frames
-    } else {
-        o.props["stack"] = name
+    ms, _ := msg.(string)
+    if st, ok := stack_for_error(vm, name, ms); ok {
+        o.props["stack"] = st // com frames; NÃO enumerável (V8): fora de keys/JSON.stringify
+        mark_non_enumerable(o, "stack")
     }
     return o
 }
@@ -2642,6 +2642,27 @@ err_to_string :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     return own_str(vm, strings.to_string(sb))
 }
 
+// Error.captureStackTrace(obj, ctorOpt?) — V8: grava em obj.stack o cabeçalho
+// (Error.prototype.toString de obj) + os frames do ponto da chamada; com `ctorOpt`,
+// omite o frame mais recente dele e tudo acima (esconde o construtor do erro).
+@(private = "file")
+err_capture_stack_trace :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    o, ok := arg(a, 0).(^Object)
+    if !ok {
+        throw_type_error(vm, "Invalid argument") // mesma mensagem do V8
+        return nil
+    }
+    skip, _ := arg(a, 1).(^Function)
+    header, hok := err_to_string(vm, o, nil).(string)
+    if vm.throwing do return nil
+    if !hok do header = "Error"
+    if st, sok := stack_capture(vm, header, skip); sok {
+        o.props["stack"] = st
+        mark_non_enumerable(o, "stack")
+    }
+    return nil
+}
+
 @(private = "file")
 install_errors :: proc(vm: ^Interp) {
     vm.error_protos = make(map[string]^Object)
@@ -2669,6 +2690,14 @@ install_errors :: proc(vm: ^Interp) {
         proto.props["constructor"] = ctor
         mark_non_enumerable(proto, "constructor") // não-enumerável
         env_define(vm.global, name, ctor)
+        if name == "Error" {
+            vm.error_ctor = ctor
+            // API de pilha do V8 (stack_trace.odin). Classe de erro "à Node" chama
+            // `Error.captureStackTrace(this, Ctor)` no construtor; detecção de script
+            // e loggers mexem no limite.
+            ctor.props["stackTraceLimit"] = f64(STACK_TRACE_LIMIT_DEFAULT)
+            ctor.props["captureStackTrace"] = mk_builtin_method(vm, err_capture_stack_trace, "captureStackTrace", 2)
+        }
     }
     reg(vm, "Error",          native_error,           base)
     reg(vm, "TypeError",      native_type_error,      base)

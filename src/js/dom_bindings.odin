@@ -2554,7 +2554,7 @@ maybe_run_injected_script :: proc(vm: ^Interp, node: ^dom.Node) {
         if ok && response_is_not_js(resp.status, resp.content_type, string(resp.body)) {
             ok = false
         } else if ok {
-            run_injected_source(vm, string(resp.body), is_module_script(node) ? url : "")
+            run_injected_source(vm, string(resp.body), is_module_script(node) ? url : "", url)
         }
     } else {
         // inline: mesmo sendo módulo, a URL dele É a da página (spec)
@@ -2609,14 +2609,14 @@ response_is_not_js :: proc(status: int, content_type: string, body: string, stri
 // chunk perdia a própria URL e todo `import()` relativo dentro dele resolvia contra
 // a PÁGINA — `../nodes/0.js` virava /nodes/0.js (crates.io, SvelteKit).
 @(private = "file")
-run_injected_source :: proc(vm: ^Interp, source: string, module_url := "") {
+run_injected_source :: proc(vm: ^Interp, source: string, module_url := "", script_url := "") {
     saved_depth := vm.call_depth
     saved_short := vm.opt_short // mesmo isolamento de fronteira do M109: um script
     vm.opt_short = false        // terminando em `w?.h` não pode pular a cadeia externa
     if module_url != "" {
         vm_run_module(vm, source, module_url)
         vm_clear_uncaught(vm)
-    } else do vm_run(vm, source) // clona a fonte + loga/limpa exceção (não envenena o vm)
+    } else do vm_run(vm, source, script_url) // clona a fonte + loga/limpa exceção (não envenena o vm)
     vm.call_depth = saved_depth
     vm.opt_short = saved_short
 }

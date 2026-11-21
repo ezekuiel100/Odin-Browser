@@ -280,6 +280,7 @@ Function :: struct {
     bind_target: ^Function,   // se != nil, esta é uma função LIGADA de bind_target
     bind_this:   Value,       // `this` fixado pelo bind
     bind_args:   [dynamic]Value, // args pré-fixados (prepended nas chamadas)
+    script: ^Script_Src, // fonte em que a função nasceu (p/ linha:coluna do Error.stack)
 }
 
 // ── ambiente (escopos) ─────────────────────────────────────────────────────────
@@ -516,6 +517,14 @@ Interp :: struct {
     step_limit:     u64,   // teto de iterações por tarefa (STEP_LIMIT; testes reduzem)
     call_depth:     int,   // profundidade atual de call_function (recursão JS)
     call_depth_limit: int, // teto de recursão (CALL_DEPTH_LIMIT; testes reduzem)
+    // pilha-sombra p/ Error.stack (stack_trace.odin): frame da função de usuário em
+    // execução, a posição corrente no código dela e o fonte a que pertence.
+    frame:          ^Stack_Frame,
+    cur_pos:        u32,         // offset+1 no fonte de cur_script; 0 = desconhecido
+    cur_script:     ^Script_Src, // nil = fora de qualquer script (callback do host)
+    all_scripts:    [dynamic]^Script_Src,
+    script_alloc:   Script_Allocator,
+    error_ctor:     ^Function,   // o `Error` instalado (lê Error.stackTraceLimit)
     stack_low:      uintptr, // fundo reservado da stack da thread atual (stack_guard.odin); 0 = guarda off
     task_start:     time.Tick, // relógio REAL do início da tarefa (watchdog por tempo)
     time_budget_ms: f64,   // teto de tempo de parede por tarefa; 0 = desligado (TIME_BUDGET_MS)
@@ -983,7 +992,10 @@ mk_error :: proc(vm: ^Interp, name, msg: string) -> ^Object {
     } else if base, bok := vm.error_protos["Error"]; bok {
         o.proto = base
     }
-    o.props["stack"] = own_str(vm, fmt.tprintf("%s: %s", name, msg)) // mínimo (sem frames)
+    if st, ok := stack_for_error(vm, name, msg); ok {
+        o.props["stack"] = st // com frames; NÃO enumerável (V8): fora de keys/JSON.stringify
+        mark_non_enumerable(o, "stack")
+    }
     return o
 }
 
@@ -1112,6 +1124,7 @@ to_number :: proc(vm: ^Interp, v: Value) -> f64 {
 
 new_function :: proc(vm: ^Interp) -> ^Function {
     f := new(Function)
+    f.script = vm.cur_script
     append(&vm.all_funcs, f)
     return f
 }
@@ -1203,6 +1216,7 @@ vm_destroy :: proc(vm: ^Interp) {
     delete(vm.all_asts)
     for src in vm.owned_sources do delete(src)
     delete(vm.owned_sources)
+    scripts_free(vm) // Script_Src só referenciava as fontes acima
     for _, list in vm.listeners do delete(list)
     delete(vm.listeners)
     delete(vm.array_methods)  // as ^Function já foram liberadas via all_funcs
@@ -3561,6 +3575,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     // exceção em voo: nada mais é avaliado até um try/catch (ou o topo) tratá-la.
     // gen_hard_kill: um generator sendo terminado no vm_destroy — não roda mais JS.
     if vm.throwing || vm.gen_hard_kill do return nil
+    if n.pos != 0 do vm.cur_pos = n.pos // statement/chamada: posição p/ Error.stack
     // fronteira de cadeia opcional: um nó que não é Member/Index/Call encerra
     // qualquer curto-circuito de `?.` em andamento (o valor já foi consumido).
     if n.kind != .Member && n.kind != .Index && n.kind != .Call do vm.opt_short = false
@@ -4032,6 +4047,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         args := eval_args(vm, n.body, env)
         defer delete(args)
         if vm.throwing do return nil // argumento lançou: o construtor não roda
+        if n.pos != 0 do vm.cur_pos = n.pos // os args podem ter chamado algo: volta ao `new`
         return construct_object(vm, fn, args[:])
 
     case .NewTarget:
@@ -4528,6 +4544,7 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         if m.name == "constructor" {
             ctor = build_method(vm, m, cenv, super_fn, super_proto)
             ctor.non_constructor = false
+            ctor.name = n.name // a CLASSE é a função: `E.name` é "E", não "constructor"
         } else if !m.stat {
             fn := build_method(vm, m, cenv, super_fn, super_proto)
             key := class_member_key(vm, m, env) // fixa ou computada [expr]
@@ -5027,6 +5044,7 @@ eval_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             strings.builder_destroy(&esc)
             strings.builder_destroy(&psb)
         }
+        if n.pos != 0 do vm.cur_pos = n.pos
         throw_type_error(vm, fmt.tprintf("%s is not a function", describe_callee(n.callee)))
         return nil
     }
@@ -5037,6 +5055,7 @@ eval_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     // args já avaliados — `console.log("x" + f())` imprimia "xundefined" ANTES do
     // TypeError de f() chegar ao catch.
     if vm.throwing do return nil
+    if n.pos != 0 do vm.cur_pos = n.pos // callee/args podem ter chamado algo: volta a ESTA chamada
     res := call_function(vm, fn, this_val, args[:])
     vm.opt_short = false // esta chamada operou; limpa flag que args/callee possam ter deixado
     return res
@@ -5503,6 +5522,17 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
     if fn.is_generator {
         return make_generator(vm, fn, this, args)
     }
+    // pilha-sombra do Error.stack (stack_trace.odin): frame LOCAL encadeado; a saída
+    // (inclusive por exceção) devolve frame, posição e fonte do chamador.
+    frame := Stack_Frame{parent = vm.frame, fn = fn, call_pos = vm.cur_pos, call_script = vm.cur_script, is_new = nt_pending != nil}
+    vm.frame = &frame
+    vm.cur_script = fn.script
+    vm.cur_pos = 0
+    defer {
+        vm.frame = frame.parent
+        vm.cur_pos = frame.call_pos
+        vm.cur_script = frame.call_script
+    }
     when #config(MEMBERPROBE, false) {
         // nome + PARÂMETROS: em bundle minificado o nome sozinho ("r", "a") não
         // identifica a função; a aridade e os nomes dos params sim (grepáveis).
@@ -5671,6 +5701,7 @@ vm_init :: proc(vm: ^Interp) {
     vm.global.is_fn_scope = true // topo: `var` global binda aqui
     vm.step_limit = STEP_LIMIT
     vm.call_depth_limit = CALL_DEPTH_LIMIT
+    vm.script_alloc = context.allocator // Script_Src/tabela de linhas: nunca no TEMP
     vm.time_budget_ms = g_time_budget_ms // default TIME_BUDGET_MS; ver --js-timeout
     refresh_stack_limit(vm) // valor inicial; cada tarefa re-lê p/ a thread corrente
     reset_task_clock(vm)
@@ -5707,6 +5738,8 @@ vm_init :: proc(vm: ^Interp) {
     install_promise(vm)  // Promise/then/catch (promise.odin)
     install_fetch(vm)    // fetch() assíncrono (fetch.odin)
     finalize_builtin_metadata(vm) // name/length/atributos da spec nos builtins (builtin_meta.odin)
+    // Error.stackTraceLimit é dado COMUM (W/E/C): o finalize trata número como constante
+    if ec := vm.error_ctor; ec != nil && ec.attrs != nil do ec.attrs["stackTraceLimit"] = ATTRS_DEFAULT
 }
 
 // ── VM persistente ───────────────────────────────────────────────────────────
@@ -5729,9 +5762,11 @@ vm_free :: proc(vm: ^Interp) {
 
 // Compila e executa `src` no vm. Clona a fonte e retém a AST (um handler guarda
 // um ^Node do corpo — não pode ser liberado antes do vm).
-vm_run :: proc(vm: ^Interp, src: string) -> Value {
+// `url`: de onde o script veio (src externo) — só p/ as linhas do Error.stack;
+// "" = inline → a URL da página.
+vm_run :: proc(vm: ^Interp, src: string, url := "") -> Value {
     mo_task_enter(vm)     // tarefa de JS: a entrega de MutationRecords sai no exit
-    v := vm_exec(vm, src)
+    v := vm_exec(vm, src, nil, url)
     vm_clear_uncaught(vm) // throw sem catch: loga e não envenena o próximo run
     mo_task_exit(vm)
     return v
@@ -5845,6 +5880,13 @@ vm_eval_source_in :: proc(vm: ^Interp, src: string, env: ^Env, strict := false) 
         delete(p.err_msg)
         return nil
     }
+    // Error.stack: código de eval/Function() é "<anonymous>" (tem fonte próprio)
+    // frame anônimo p/ o código do eval: a linha do CHAMADOR (onde o eval foi feito) fica
+    eval_frame := Stack_Frame{parent = vm.frame, call_pos = vm.cur_pos, call_script = vm.cur_script}
+    vm.frame = &eval_frame
+    vm.cur_script = script_register(vm, "", owned)
+    vm.cur_pos = 0
+    defer { vm.frame = eval_frame.parent; vm.cur_script = eval_frame.call_script; vm.cur_pos = eval_frame.call_pos }
     // eval STRICT (herdado ou por "use strict" no próprio fonte): `var`/funções
     // ficam num ambiente PRÓPRIO — não vazam para o escopo do chamador (spec
     // PerformEval: varEnv = o novo lexEnv quando strict).
@@ -5865,7 +5907,7 @@ do_eval :: proc(vm: ^Interp, code: Value, env: ^Env, strict := false) -> Value {
     return vm_eval_source_in(vm, src, env, strict)
 }
 
-vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil) -> Value {
+vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil, url := "") -> Value {
     when JSPROF {
         t_ini := time.tick_now()
         g_prof.bytes_fonte += u64(len(src))
@@ -5912,6 +5954,15 @@ vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil) -> Value {
         }
         return nil
     }
+
+    // Error.stack: o código de topo deste fonte é o fundo da pilha enquanto ele roda
+    script_url := url
+    if vm.current_module != nil do script_url = vm.current_module.url
+    if script_url == "" do script_url = vm.base_url
+    saved_script, saved_pos := vm.cur_script, vm.cur_pos
+    vm.cur_script = script_register(vm, script_url, owned)
+    vm.cur_pos = 0
+    defer { vm.cur_script = saved_script; vm.cur_pos = saved_pos }
 
     vm.steps = 0 // watchdog: nova tarefa síncrona
     vm.call_depth = 0

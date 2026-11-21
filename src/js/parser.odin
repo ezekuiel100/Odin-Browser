@@ -706,8 +706,27 @@ find_label :: proc(p: ^Parser, name: string) -> (Label_Info, bool) {
     return {}, false
 }
 
+// Posição (offset+1) do token ANTERIOR ao corrente — numa chamada `a.b(…)` é o
+// nome `b`, que é a coluna que o V8 reporta no Error.stack. 0 = sem posição.
+@(private = "file")
+prev_tok_pos :: proc(p: ^Parser) -> u32 {
+    i := p.pos - 1
+    if i < 0 || i >= len(p.toks) || p.toks[i].off < 0 do return 0
+    return u32(p.toks[i].off) + 1
+}
+
+// Statement com posição: o `eval` a copia p/ vm.cur_pos, então um erro LANÇADO PELO
+// MOTOR (null.x, x is not defined) aponta ao menos o statement no Error.stack.
 @(private = "file")
 parse_statement :: proc(p: ^Parser) -> ^Node {
+    off := peek(p).off
+    n := parse_statement_body(p)
+    if n != nil && n.pos == 0 && off >= 0 do n.pos = u32(off) + 1
+    return n
+}
+
+@(private = "file")
+parse_statement_body :: proc(p: ^Parser) -> ^Node {
     t := peek(p)
     if escaped_keyword(p, t) do return make_num(0)
     if t.kind == .Semicolon { // statement VAZIO: `;` (if(x); / ;; de minifier)
@@ -2984,6 +3003,7 @@ parse_unary :: proc(p: ^Parser) -> ^Node {
 // new Ctor(args) / new a.b.Ctor(args) / new Ctor  (parênteses opcionais)
 @(private = "file")
 parse_new :: proc(p: ^Parser) -> ^Node {
+    new_off := peek(p).off
     advance(p) // new
     // meta-property `new.target`: undefined em chamada normal, o construtor
     // sob `new`. Detectado ANTES de parsear o callee (`new` seguido de `.`).
@@ -3004,6 +3024,7 @@ parse_new :: proc(p: ^Parser) -> ^Node {
     }
     n := new(Node)
     n.kind = .New
+    if new_off >= 0 do n.pos = u32(new_off) + 1 // V8: a coluna do `new`
     callee: ^Node
     if t := peek(p); t.kind == .Ident && t.text == "new" {
         callee = parse_new(p) // new new X()()
@@ -3096,8 +3117,10 @@ parse_postfix_from :: proc(p: ^Parser, start: ^Node) -> ^Node {
             in_optional = true
             nk := peek(p).kind
             if nk == .LParen {
+                cpos := prev_tok_pos(p)
                 advance(p)
                 call := new(Node); call.kind = .Call; call.callee = node; call.bval = true
+                call.pos = cpos
                 parse_call_args(p, call)
                 node = call
             } else if nk == .LBracket {
@@ -3128,9 +3151,11 @@ parse_postfix_from :: proc(p: ^Parser, start: ^Node) -> ^Node {
             m.right = idx
             node = m
         } else if k == .LParen {
+            cpos := prev_tok_pos(p)
             advance(p)
             call := new(Node)
             call.kind = .Call
+            call.pos = cpos
             call.strict = p.ctx.strict // `eval(...)` direto herda a strictness do chamador
             call.callee = node
             parse_call_args(p, call)
