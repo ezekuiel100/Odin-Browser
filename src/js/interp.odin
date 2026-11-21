@@ -394,14 +394,15 @@ Interp :: struct {
     // String/Number/Boolean.prototype: [[Prototype]] dos objetos WRAPPER
     // (`new String("a")`, `Object(1)`) — ver make_wrapper.
     string_proto, number_proto, boolean_proto: ^Object,
-    // true só durante a chamada DIRETA de uma nativa por construct_object (`new X()`):
+    // true durante a construção de uma nativa (`new X()` ou super()):
     // é como String/Number/Boolean distinguem `new String(x)` (wrapper) de `String(x)`
-    // (primitivo). call_function o zera ao despachar qualquer nativa, então não vaza
-    // para chamadas aninhadas.
+    // (primitivo). call_function usa seu próprio new.target pendente, então o
+    // estado não vaza para chamadas comuns aninhadas.
     native_new:     bool,
     error_protos:   map[string]^Object,   // Error/TypeError/... → prototype (instanceof)
     object_methods: map[string]^Function, // métodos de todo objeto (hasOwnProperty, ...)
     collection_methods: map[string]^Function, // métodos de Map/Set/WeakMap/WeakSet (set, get, has, ...)
+    collection_protos: [Coll_Kind]^Object, // intrinsic prototypes, independent of replaced globals
     regex_test_fn:  ^Function,             // RegExp.prototype.test/exec (regex.odin)
     regex_exec_fn:  ^Function,
     regex_tostring_fn: ^Function,          // RegExp.prototype.toString ("/fonte/flags")
@@ -2443,6 +2444,12 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         return nil
     case ^Collection:
         if name == "size" do return f64(o.size)
+        // Constructors must observe a replaced/deleted iterator on the source
+        // collection's prototype, rather than always using native dispatch.
+        if name == vm.sym_iterator_key {
+            value, _ := prim_proto_lookup(vm, vm.collection_protos[o.kind], o, name)
+            return value
+        }
         if o.kind != .Set && set_operation_name(name) do return nil
         if fn, ok := vm.collection_methods[name]; ok do return fn
         if name == "constructor" {
@@ -4806,6 +4813,7 @@ super_construct :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value, 
     #partial switch r in ret {
     case ^Object:
         if r == o do return ret // já escreveu direto no this
+        if r.prim != nil do o.prim = r.prim // native super() can return a primitive wrapper
         for k in r.korder {
             if v, vok := r.props[k]; vok do oput(o, k, v)
         }
@@ -5540,7 +5548,7 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
         saved := vm.native_bound
         vm.native_bound = fn.bound
         saved_new := vm.native_new
-        vm.native_new = false // chamada comum: nunca é `new` (ver Interp.native_new)
+        vm.native_new = nt_pending != nil // includes super() constructing a native base
         ret := fn.native(vm, unwrap_prim(vm, fn, this), args)
         vm.native_new = saved_new
         vm.native_bound = saved

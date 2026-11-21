@@ -102,6 +102,9 @@ map_set :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     c, ok := this.(^Collection)
     if !ok { throw_type_error(vm, "Method Map.prototype.set called on incompatible receiver"); return nil }
     k := arg(args, 0); v := arg(args, 1)
+    if c.kind == .Weak_Map && !coll_can_hold_weak(vm, k) {
+        throw_type_error(vm, "Invalid value used as weak map key"); return nil
+    }
     coll_put(c, k, v)
     return this // Map.set devolve o próprio (encadeável)
 }
@@ -164,6 +167,9 @@ set_add :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     c, ok := this.(^Collection)
     if !ok { throw_type_error(vm, "Method Set.prototype.add called on incompatible receiver"); return nil }
     k := arg(args, 0)
+    if c.kind == .Weak_Set && !coll_can_hold_weak(vm, k) {
+        throw_type_error(vm, "Invalid value used in weak set"); return nil
+    }
     coll_put(c, k, k)
     return this // Set.add devolve o próprio
 }
@@ -362,67 +368,117 @@ coll_put :: proc(c: ^Collection, k, v: Value) {
     c.size += 1
 }
 
-// Adiciona UM item já materializado: Set guarda o valor solto; Map espera um par
-// [chave, valor] (lido por índice 0/1 — cobre par ^Array e array-likes).
+// Weak keys include objects and symbols that are not in the global registry.
 @(private = "file")
-coll_add_item :: proc(vm: ^Interp, c: ^Collection, is_set: bool, it: Value) {
-    if is_set { coll_put(c, it, it); return }
-    if pair, ok := it.(^Array); ok {
-        k := pair.items[0] if len(pair.items) >= 1 else nil
-        v := pair.items[1] if len(pair.items) >= 2 else nil
-        coll_put(c, k, v)
-    } else if is_ref_type(it) { // par não-array (typed array / array-like): it[0]/it[1]
-        coll_put(c, get_index(vm, it, f64(0)), get_index(vm, it, f64(1)))
+coll_can_hold_weak :: proc(vm: ^Interp, key: Value) -> bool {
+    if !is_primitive(key) do return true
+    if sym, ok := key.(^Symbol); ok {
+        for _, registered in vm.symbol_registry do if registered == sym do return false
+        return true
     }
+    return false
 }
 
-// Inicializa a partir de um iterável: Map espera pares [k,v]; Set, valores soltos.
-// ^Array/^Collection têm caminho direto (rápido); QUALQUER outro iterável (outro
-// iterador, generator, objeto com Symbol.iterator) passa pelo protocolo de
-// iteração. Sem isso, `new Map(iterávelGenérico)` não consumia nada — e o core-js,
-// ao detectar isso (checkCorrectnessOfIteration falha pois next() nunca é chamado),
-// EMBRULHAVA o construtor Map, disparando o bug do receiver incompatível.
+// Process one entry before requesting the next one. Index reads must run getters
+// in order, and the constructor must call the adder captured from its prototype.
 @(private = "file")
-coll_init_from :: proc(vm: ^Interp, c: ^Collection, src: Value) {
-    is_set := coll_is_set(c)
-    #partial switch s in src {
-    case ^Array:
-        for it in s.items do coll_add_item(vm, c, is_set, it)
-    case ^Collection:
-        for e in s.entries do if !e.dead do coll_put(c, e.key, is_set ? e.key : e.val)
-    case:
-        if is_nullish(src) do return // new Map()/new Map(null/undefined): vazio
-        items: [dynamic]Value
-        defer delete(items)
-        if iterate_protocol(vm, src, &items) {
-            for it in items do coll_add_item(vm, c, is_set, it)
+coll_add_item :: proc(vm: ^Interp, target: Value, adder: ^Function, is_set: bool, item: Value) {
+    if is_set {
+        call_function(vm, adder, target, []Value{item})
+        return
+    }
+    if is_primitive(item) { throw_type_error(vm, "Map iterator value is not an object"); return }
+    key := get_index(vm, item, f64(0))
+    if vm.throwing do return
+    val := get_index(vm, item, f64(1))
+    if vm.throwing do return
+    call_function(vm, adder, target, []Value{key, val})
+}
+
+// All inputs use the iterator protocol, including arrays and collections. Do
+// not drain ahead: entry getters and adders can mutate or close the source.
+@(private = "file")
+coll_init_from :: proc(vm: ^Interp, c: ^Collection, target: Value, adder: ^Function, src: Value) {
+    method := get_member(vm, src, vm.sym_iterator_key)
+    if vm.throwing do return
+    iterator_fn, callable := method.(^Function)
+    if !callable { throw_type_error(vm, "Collection input is not iterable"); return }
+    iter := call_function(vm, iterator_fn, src, nil)
+    if vm.throwing do return
+    if is_primitive(iter) { throw_type_error(vm, "Invalid collection iterator"); return }
+    next_value := get_member(vm, iter, "next")
+    if vm.throwing do return
+    next, next_ok := next_value.(^Function)
+    if !next_ok { throw_type_error(vm, "Iterator next is not callable"); return }
+    for {
+        if step_guard(vm) do return
+        result := call_function(vm, next, iter, nil)
+        if vm.throwing do return
+        if is_primitive(result) { throw_type_error(vm, "Invalid iterator result"); return }
+        done := get_member(vm, result, "done")
+        if vm.throwing do return
+        if truthy(done) do return
+        item := get_member(vm, result, "value")
+        if vm.throwing do return
+        coll_add_item(vm, target, adder, coll_is_set(c), item)
+        if vm.throwing {
+            // IteratorClose with a throw completion preserves the original
+            // exception, even when reading/calling return throws another one.
+            exception := vm.thrown
+            vm.throwing = false; vm.thrown = nil
+            iterator_close(vm, iter)
+            vm.throwing = true; vm.thrown = exception
+            return
         }
     }
 }
 
 @(private = "file")
-map_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    c := new_collection(vm, .Map)
-    coll_init_from(vm, c, arg(args, 0))
+coll_construct :: proc(vm: ^Interp, this: Value, args: []Value, kind: Coll_Kind) -> Value {
+    if !vm.native_new { throw_type_error(vm, "Collection constructor requires 'new'"); return nil }
+    c := new_collection(vm, kind)
+    target: Value = c
+    proto, _ := vm.native_bound.(^Object)
+    // super() initializes the subclass receiver before looking up its adder.
+    if o, ok := this.(^Object); ok {
+        o.prim = c
+        target = o
+        proto = o
+    }
+    src := arg(args, 0)
+    if is_nullish(src) do return c
+    name := "add" if coll_is_set(c) else "set"
+    adder_value: Value
+    for cur := proto; cur != nil; cur = cur.proto {
+        if getter, has := cur.getters[name]; has {
+            if getter != nil do adder_value = call_function(vm, getter, target, nil)
+            break
+        }
+        if value, has := cur.props[name]; has { adder_value = value; break }
+    }
+    if vm.throwing do return nil
+    adder, ok := adder_value.(^Function)
+    if !ok { throw_type_error(vm, "Collection adder is not callable"); return nil }
+    coll_init_from(vm, c, target, adder, src)
+    if vm.throwing do return nil
     return c
+}
+
+@(private = "file")
+map_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    return coll_construct(vm, this, args, .Map)
 }
 @(private = "file")
 set_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    c := new_collection(vm, .Set)
-    coll_init_from(vm, c, arg(args, 0))
-    return c
+    return coll_construct(vm, this, args, .Set)
 }
 @(private = "file")
 weakmap_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    c := new_collection(vm, .Weak_Map)
-    coll_init_from(vm, c, arg(args, 0))
-    return c
+    return coll_construct(vm, this, args, .Weak_Map)
 }
 @(private = "file")
 weakset_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    c := new_collection(vm, .Weak_Set)
-    coll_init_from(vm, c, arg(args, 0))
-    return c
+    return coll_construct(vm, this, args, .Weak_Set)
 }
 
 // get_member de ^Collection consulta este mapa (após tratar "size").
@@ -453,7 +509,7 @@ install_collections :: proc(vm: ^Interp) {
     // `Map.prototype.forEach` ("reading 'forEach' of undefined"). O dispatch normal
     // (`map.forEach()`) continua indo direto no collection_methods (get_member de
     // ^Collection); este proto é p/ o probe/uncurryThis do core-js e `instanceof`.
-    reg :: proc(vm: ^Interp, name: string, fn: Native_Fn) {
+    reg :: proc(vm: ^Interp, name: string, fn: Native_Fn, kind: Coll_Kind) {
         f := mk_native(vm, fn)
         f.name = name
         proto := new_object(vm)
@@ -465,13 +521,15 @@ install_collections :: proc(vm: ^Interp) {
         proto.props["constructor"] = f
         if f.props == nil do f.props = make(map[string]Value)
         f.props["prototype"] = proto
+        f.bound = proto
+        vm.collection_protos[kind] = proto
         if name == "Map" do f.props["groupBy"] = mk_builtin_method(vm, map_group_by, "groupBy", 2)
         env_define(vm.global, name, f)
     }
-    reg(vm, "Map",     map_ctor)
-    reg(vm, "Set",     set_ctor)
-    reg(vm, "WeakMap", weakmap_ctor)
-    reg(vm, "WeakSet", weakset_ctor)
+    reg(vm, "Map",     map_ctor, .Map)
+    reg(vm, "Set",     set_ctor, .Set)
+    reg(vm, "WeakMap", weakmap_ctor, .Weak_Map)
+    reg(vm, "WeakSet", weakset_ctor, .Weak_Set)
 
     // WeakRef / FinalizationRegistry — apareceram NOMEADOS no gap-report depois
     // do M150 (coingecko). Aqui a degradação é CONFORME, não um remendo: a spec
