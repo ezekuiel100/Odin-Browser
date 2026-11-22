@@ -3029,6 +3029,12 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
         if name == "length" && o.prim != nil {
             if a, isarr := o.prim.(^Array); isarr do return array_set_length(vm, a, val)
         }
+        // subclasse de RegExp: `lastIndex` é o estado do exec/test, que mora na ^Regex
+        // embrulhada. Como prop própria do wrapper, `r.lastIndex = 0` não reiniciava
+        // nada e a leitura passava a divergir do que o exec usa.
+        if name == "lastIndex" && o.prim != nil {
+            if re, isre := o.prim.(^Regex); isre do return set_member(vm, re, name, val)
+        }
         // setter na cadeia, NÍVEL a NÍVEL (espelho do get_member): uma data
         // property num nível mais próximo sombreia setter herdado — a escrita
         // vira own em vez de invocar o set de um ancestral.
@@ -5266,6 +5272,14 @@ unwrap_prim :: proc(vm: ^Interp, fn: ^Function, this: Value) -> Value {
         if fn.native == coll_method_dispatch do return this
         for _, m in vm.collection_methods do if m == fn do return o.prim
     case ^Array:      return this
+    // subclasse de RegExp: os nativos do RegExp.prototype (test/exec/toString e os
+    // @@match/@@split/...) leem `this.(^Regex)`. Sem isto TODOS falhavam numa
+    // instância de `class R extends RegExp` (test→false, exec→null, match→TypeError).
+    // Só nativo: um método JS do usuário continua vendo a instância.
+    case ^Regex:
+        if fn.native != nil && vm.regex_proto != nil {
+            for _, m in vm.regex_proto.props do if m == fn do return o.prim
+        }
     // wrapper de primitivo (`new String("a").toUpperCase()`, valueOf no ToPrimitive):
     // os métodos nativos leem `this.(string)`/`.(f64)`/`.(bool)` — é o valor
     // embrulhado ([[StringData]]/[[NumberData]]/[[BooleanData]]) que eles querem.

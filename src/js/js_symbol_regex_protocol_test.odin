@@ -96,3 +96,33 @@ is_regexp_usa_symbol_match :: proc(t: ^testing.T) {
     testing.expect_value(t, run(`var r="nao lancou"; try { "a".matchAll({[Symbol.match]:true, flags:"i", [Symbol.matchAll](){return 1}}) } catch (e) { r = e instanceof TypeError } r`).(bool), true)
     testing.expect_value(t, run(`"a".matchAll({[Symbol.match]:true, flags:"g", [Symbol.matchAll](){return 1}})`).(f64), 1)
 }
+
+// `class R extends RegExp`: a instância é um ^Object com a ^Regex no slot `prim`, e
+// o unwrap_prim não a entregava aos nativos — test dava false, exec null, match
+// TypeError (e, antes do protocolo de símbolos, o padrão VAZIO).
+@(test)
+regex_subclasse_usa_a_regex_embrulhada :: proc(t: ^testing.T) {
+    pre :: `class R extends RegExp {}; var r = new R("a","g"); `
+    testing.expect_value(t, run(pre + `"aa".match(r).join()`).(string), "a,a")
+    testing.expect_value(t, run(pre + `String(r.test("a")) + r.exec("ba")[0]`).(string), "truea")
+    testing.expect_value(t, run(pre + `String(r) + r.source + r.flags + r.global`).(string), "/a/gagtrue")
+    testing.expect_value(t, run(pre + `"bab".split(r).join() + "|" + "aXa".replace(r, "o") + "|" + "ba".search(r)`).(string), "b,b|oXo|1")
+    testing.expect_value(t, run(pre + `[..."aa".matchAll(r)].length`).(f64), 2)
+    testing.expect_value(t, run(pre + `String(r instanceof R) + (r instanceof RegExp)`).(string), "truetrue")
+    // lastIndex é o estado da regex embrulhada (ler e escrever)
+    testing.expect_value(t, run(pre + `r.lastIndex = 1; var m = r.exec("aa"); m.index + "," + r.lastIndex`).(string), "1,2")
+}
+
+@(test)
+regex_subclasse_metodo_proprio_e_super :: proc(t: ^testing.T) {
+    src := `
+        class R extends RegExp {
+            exec(s) { var m = super.exec(s); if (m) m.tag = this instanceof R; return m }
+            hello() { return "oi " + this.source }
+        }
+        var r = new R("b");
+        var m = r.exec("abc");
+        m[0] + m.index + m.tag + "|" + r.hello()
+    `
+    testing.expect_value(t, run(src).(string), "b1true|oi b")
+}
