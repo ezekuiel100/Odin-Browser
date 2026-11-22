@@ -88,6 +88,7 @@ Tab :: struct {
     style_dark: bool,
     restyle_nodes: int, // diagnostics: nodes whose cascade ran on the last restyle
     restyle_layout: bool,
+    restyle_reused_boxes, restyle_reused_roots: int,
 }
 
 // Requisição de rede em andamento, processada numa thread separada.
@@ -315,6 +316,7 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     loading_trace_event(fmt.tprintf("restyle reason=%v viewport=%.0fx%.0f previous=%.0fx%.0f", reason, vw, vh, tab.style_vw, tab.style_vh))
     when UIPROF { g_uiprof.restyle_why[reason] += 1 }
     tab.restyle_nodes = 0
+    tab.restyle_reused_boxes, tab.restyle_reused_roots = 0, 0
     if incremental && len(dirty) == 0 {
         tab.restyle_layout = false
         js_style_source_set(tab.styles, tab.layout, vw, vh)
@@ -358,7 +360,15 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     if repaint {
         refresh_box_paint(tab.layout, previous, tab.styles, dirty)
     } else {
-        tab.layout = build_layout(tab.dom, tab.styles, tab.url)
+        if incremental && old_layout != nil {
+            tab.layout, tab.restyle_reused_boxes, tab.restyle_reused_roots = build_layout_reusing(tab.dom, tab.styles, tab.url, old_layout, dirty)
+            when UIPROF {
+                g_uiprof.rebuild_reused_boxes += tab.restyle_reused_boxes
+                g_uiprof.rebuild_reused_roots += tab.restyle_reused_roots
+            }
+        } else {
+            tab.layout = build_layout(tab.dom, tab.styles, tab.url)
+        }
         animation_restore_tree(tab.layout, old_layout)
         scroll_restore_tree(tab.layout, old_layout)
     }
@@ -379,6 +389,7 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     // carimba `data-shadow-scope` nos hosts de shadow root (idempotente, mas
     // muda o DOM na 1ª passada) — tirar antes daria divergência permanente.
     tab.dom_fp = dompkg.fingerprint(tab.dom)
+    when LAYOUTCHECK { layout_check_reuse(tab, vw, vh) }
 }
 
 // Bootstrap/fallback do conteúdo. font_raster.odin acrescenta rasterizações no

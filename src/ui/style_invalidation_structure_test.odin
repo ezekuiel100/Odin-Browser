@@ -6,6 +6,7 @@ package ui
 
 import "core:strings"
 import "core:testing"
+import "core:mem"
 import dom "../dom"
 import html "../html"
 
@@ -460,4 +461,209 @@ relational_invalidation_nth_filter_and_sheet_replacement :: proc(t: ^testing.T) 
     restyle_tab(&tab, 400, 300)
     testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
     expect_matches_full(t, &tab)
+}
+
+@(private="file")
+expect_reused_box_tree :: proc(t: ^testing.T, a, b: ^Box) {
+    if !testing.expect(t, (a == nil) == (b == nil)) || a == nil do return
+    testing.expect_value(t, a.node, b.node)
+    testing.expect_value(t, a.kind, b.kind)
+    testing.expect_value(t, a.is_inline, b.is_inline)
+    testing.expect_value(t, a.is_flex, b.is_flex)
+    testing.expect_value(t, a.is_grid, b.is_grid)
+    testing.expect_value(t, a.stacking_item, b.stacking_item)
+    testing.expect_value(t, a.x, b.x); testing.expect_value(t, a.y, b.y)
+    testing.expect_value(t, a.w, b.w); testing.expect_value(t, a.h, b.h)
+    testing.expect_value(t, a.content_w, b.content_w)
+    if testing.expect_value(t, len(a.children), len(b.children)) {
+        for child, i in a.children do expect_reused_box_tree(t, child, b.children[i])
+    }
+    if testing.expect_value(t, len(a.inlines), len(b.inlines)) {
+        for item, i in a.inlines {
+            ref := b.inlines[i]
+            testing.expect_value(t, item.kind, ref.kind)
+            testing.expect_value(t, item.text, ref.text)
+            testing.expect_value(t, item.x, ref.x); testing.expect_value(t, item.y, ref.y)
+            testing.expect_value(t, item.w, ref.w); testing.expect_value(t, item.h, ref.h)
+            expect_reused_box_tree(t, item.box, ref.box)
+        }
+    }
+}
+
+@(private="file")
+expect_reused_layout_full :: proc(t: ^testing.T, tab: ^Tab) {
+    styles, _ := compute_styles(tab.dom, &tab.rules, 400, 300, tab.kf[:])
+    layout := build_layout(tab.dom, styles, tab.url)
+    defer { free_layout(layout); free_styles(styles); svg_css_bind(tab.styles) }
+    ensure_tab_geometry(tab.layout, 400, 300)
+    ensure_tab_geometry(layout, 400, 300)
+    expect_reused_box_tree(t, tab.layout, layout)
+}
+
+@(test)
+layout_reuse_preserves_owned_boxes_animation_and_scroll :: proc(t: ^testing.T) {
+    // The default runner only logs bad frees. Assert them with a local tracker
+    // so a double-free caused by sharing old/new trees actually fails this test.
+    tracker: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&tracker, context.allocator)
+    defer mem.tracking_allocator_destroy(&tracker)
+    context.allocator = mem.tracking_allocator(&tracker)
+    defer testing.expect_value(t, len(tracker.bad_free_array), 0)
+    doc := html.parse(`<html><body><div id="target">changed</div><section id="clean"><b>keep</b><span>more</span></section></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`div{width:80px} .wide{width:140px} section{overflow:auto;height:20px;animation:fade 1s linear infinite} section::before{content:'owned'} @keyframes fade{from{opacity:0}to{opacity:1}}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    ensure_tab_geometry(tab.layout, 400, 300)
+    index := make(map[^dom.Node]^Box, context.temp_allocator)
+    test_style_box_index(tab.layout, &index)
+    clean := index[el(doc, "clean")]
+    clean.scroll_y = 10
+    clean.animations[0].elapsed = .4
+    append(&clean.animations[0].pending, Animation_Event{"animationstart", 0})
+    sa(el(doc, "target"), "class", "wide")
+    restyle_tab(&tab, 400, 300)
+    clear(&index)
+    test_style_box_index(tab.layout, &index)
+    testing.expect_value(t, index[el(doc, "clean")], clean)
+    testing.expect(t, tab.restyle_reused_boxes > 0)
+    testing.expect_value(t, clean.scroll_y, f32(10))
+    testing.expect_value(t, clean.animations[0].elapsed, f32(.4))
+    testing.expect_value(t, len(clean.animations[0].pending), 1)
+    expect_reused_layout_full(t, &tab)
+    set_text(el(doc, "target").children[0], "new text")
+    restyle_tab(&tab, 400, 300)
+    expect_reused_layout_full(t, &tab)
+    // Global invalidation must not keep font/viewport-dependent boxes.
+    tab.zoom_applied = -1
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_reused_boxes, 0)
+}
+
+@(test)
+layout_reuse_reflows_clean_flex_sibling_at_new_width :: proc(t: ^testing.T) {
+    doc := html.parse(`<html><body><main><aside id="target"></aside><section id="clean">one two three four five six seven eight nine ten</section></main><footer>keep</footer></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`main{display:flex;width:300px} aside{width:80px;flex-shrink:0} .wide{width:190px} section{flex:1;min-width:0}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    ensure_tab_geometry(tab.layout, 400, 300)
+    index := make(map[^dom.Node]^Box, context.temp_allocator)
+    test_style_box_index(tab.layout, &index)
+    clean := index[el(doc, "clean")]
+    classes := [?]string{"wide", "", "wide", ""}
+    for cls in classes {
+        sa(el(doc, "target"), "class", cls)
+        restyle_tab(&tab, 400, 300)
+        clear(&index)
+        test_style_box_index(tab.layout, &index)
+        testing.expect_value(t, index[el(doc, "clean")], clean)
+        expect_reused_layout_full(t, &tab)
+    }
+}
+
+@(test)
+layout_reuse_inline_context_changes_and_removed_nodes :: proc(t: ^testing.T) {
+    doc := html.parse(`<html><body><main><span id="target">trigger</span><span style="opacity:.5"><b id="atom">inline box</b><i id="abs">positioned</i></span></main><section id="far">keep</section></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`main{position:relative;width:180px} .block{display:block} b{display:inline-block;width:45px} i{position:absolute;left:10px;top:15px}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    ensure_tab_geometry(tab.layout, 400, 300)
+    classes := [?]string{"block", "", "block", ""}
+    for cls in classes {
+        sa(el(doc, "target"), "class", cls)
+        restyle_tab(&tab, 400, 300)
+        testing.expect(t, tab.restyle_reused_boxes > 0)
+        expect_reused_layout_full(t, &tab)
+    }
+    target := el(doc, "target")
+    remove_kid(target.parent, target)
+    dom.free_tree(target)
+    restyle_tab(&tab, 400, 300)
+    expect_reused_layout_full(t, &tab)
+}
+
+@(test)
+layout_boxes_own_nested_transform_resources :: proc(t: ^testing.T) {
+    tracker: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&tracker, context.allocator)
+    defer mem.tracking_allocator_destroy(&tracker)
+    context.allocator = mem.tracking_allocator(&tracker)
+    defer testing.expect_value(t, len(tracker.bad_free_array), 0)
+    doc := html.parse(`<html><body><div id="target"></div></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`div{width:100px;height:30px;transform:translateX(5px);animation:move 1s linear infinite} div:hover{transform:scale(2)} @keyframes move{from{transform:rotate(0deg)}to{transform:rotate(90deg)}}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    index := make(map[^dom.Node]^Box, context.temp_allocator)
+    test_style_box_index(tab.layout, &index)
+    box := index[el(doc, "target")]
+    testing.expect(t, box.xform != tab.styles[box.node].xform)
+    testing.expect(t, box.hover.xform != tab.styles[box.node].hover.xform)
+    testing.expect(t, len(box.owned_xforms) >= 4)
+    original := x_resolve(box.xform, 100, 30)
+    animated := eval_anim(&box.animations[0].anim, .25, 100, 30)
+    free_styles(tab.styles)
+    tab.styles = nil
+    // Geometry and animation must remain valid even after their Computed
+    // entries and animation transform lists have been destroyed.
+    testing.expect_value(t, x_resolve(box.xform, 100, 30), original)
+    actual := eval_anim(&box.animations[0].anim, .25, 100, 30)
+    testing.expect_value(t, actual.xform, animated.xform)
+    x_geometry_tree(tab.layout, 0, 0, 0, 0)
+}
+
+@(test)
+layout_reuse_shadow_slots_depend_on_dirty_light_dom :: proc(t: ^testing.T) {
+    doc := html.parse(`<html><body><x-card id="host"><div id="assigned">first</div></x-card><section id="clean">keep</section></body></html>`)
+    defer dom.free_tree(doc)
+    host := el(doc, "host")
+    shadow := new_el("#shadow", "shadow")
+    wrapper := new_el("div", "wrapper")
+    slot := new_el("slot", "slot")
+    dom.append_child(wrapper, slot)
+    dom.append_child(shadow, wrapper)
+    dom.append_child(host, shadow)
+    tab := Tab{dom=doc, css_text=`x-card,section{display:block;width:150px} div{display:block} .wide{width:80px}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    expect_reused_layout_full(t, &tab)
+    assigned := el(doc, "assigned")
+    // Changing a projected child does not dirty the slot's DOM ancestors.
+    set_text(assigned.children[0], "changed projected text")
+    restyle_tab(&tab, 400, 300)
+    expect_reused_layout_full(t, &tab)
+    added := new_el("div", "added")
+    dom.append_child(host, added)
+    restyle_tab(&tab, 400, 300)
+    expect_reused_layout_full(t, &tab)
+    sa(assigned, "slot", "not-assigned")
+    restyle_tab(&tab, 400, 300)
+    expect_reused_layout_full(t, &tab)
+    remove_kid(host, added)
+    dom.free_tree(added)
+    restyle_tab(&tab, 400, 300)
+    expect_reused_layout_full(t, &tab)
+}
+
+@(test)
+layout_reuse_rebuilds_hoisted_absolute_ownership_paths :: proc(t: ^testing.T) {
+    doc := html.parse(`<html><body><main><article id="branch"><a id="overlay">overlay</a><p id="paragraph">unchanged content</p></article><section id="target">change</section></main><aside id="far">keep</aside></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`main{position:relative;width:300px;height:200px} a{display:block;position:absolute;inset:0;margin-bottom:4px} .wide{width:80px}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    ensure_tab_geometry(tab.layout, 400, 300)
+    index := make(map[^dom.Node]^Box,context.temp_allocator)
+    test_style_box_index(tab.layout,&index)
+    old_overlay := index[el(doc,"overlay")]
+    paragraph := index[el(doc,"paragraph")]
+    sa(el(doc,"target"),"class","wide")
+    restyle_tab(&tab,400,300)
+    clear(&index)
+    test_style_box_index(tab.layout,&index)
+    testing.expect(t,index[el(doc,"overlay")] != old_overlay)
+    testing.expect_value(t,index[el(doc,"paragraph")],paragraph)
+    expect_reused_layout_full(t,&tab)
 }

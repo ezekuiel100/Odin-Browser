@@ -7,7 +7,8 @@ continua lendo o estado atual, inclusive escritas diretas em atributos.
 
 Mudancas de fundo, opacidade e cursor podem atualizar caixas existentes. Outras
 propriedades, texto inline sem caixa propria e mudancas estruturais reconstroem
-a arvore de caixas. Zoom, viewport, tema e folhas novas invalidam tudo.
+os ramos afetados, reaproveitando subarvores intactas quando suas dependencias
+permitem. Zoom, viewport, tema, fontes e folhas novas ainda reconstroem tudo.
 Seletores relacionais com :has() comparam snapshots de casamento para invalidar
 os sujeitos afetados e seus descendentes. Contadores continuam no caminho completo.
 Container queries permitem invalidacao incremental quando suas medidas
@@ -166,3 +167,55 @@ Validacao com STYLECHECK=true: na execucao real do Reddit, 21 rodadas fizeram
 entradas ausentes ou entradas excedentes. O sintetico tambem passou pelo
 oraculo. Logs locais: `_local/reddit-has-oracle.log` e
 `_local/has-oracle-bench.log`. Suites: 1.116 testes de UI e 186 de CSS passaram.
+
+## Reaproveitamento durante a construcao das caixas
+
+Restyles incrementais podem transferir subarvores de caixas intactas para a
+nova raiz. O indice aponta para os slots donos da arvore antiga: ao transferir
+uma caixa, o slot e zerado e as entradas dos descendentes sao retiradas do
+indice. A liberacao da arvore antiga nao libera os ramos transferidos. O estado
+de scroll e os players de animacao desses ramos permanecem nas mesmas caixas;
+os ramos reconstruidos seguem os mecanismos existentes de restauracao.
+
+O indice verifica tanto nos DOM quanto a proveniencia de texto inline.
+Ponteiros de nos removidos servem apenas como chaves. Imagens e marcadores de
+lista nao sao reaproveitados diretamente, pois podem consultar irmaos fora da
+sua subarvore. Um ramo shadow e reconstruido quando seu host esta sujo: slots
+podem projetar nos de luz fora da ancestralidade DOM do proprio slot.
+
+Caixas absolutas/fixas e ambos os caminhos de posse afetados pelo icamento
+continuam sendo reconstruidos. O passe de posicionamento pode mover essas
+caixas para outros pais e guardar ancoras externas; reter esses ramos produziria
+caixas ausentes/duplicadas ou referencias a ancestrais antigos. Nos representados
+por varias caixas e a raiz tambem seguem o caminho completo de construcao.
+
+As caixas possuem copias das listas de transformacao, inclusive hover e stops
+aninhados de animacao. Elas nao dependem da vida util do Computed que as criou.
+Os testes liberam os estilos antes de avaliar a geometria/animacao e usam um
+rastreador de memoria para tornar liberacoes duplicadas uma falha do teste.
+
+Isso reduz a CONSTRUCAO da arvore. O calculo de posicoes e tamanhos continua
+cobrindo o documento todo apos uma reconstrucao; ainda nao ha layout geometrico
+parcial por subarvore. O perfil UIPROF informa caixas e subarvores transferidas.
+
+O define LAYOUTCHECK=true habilita um oraculo opcional que constroi uma arvore
+completa independente dos mesmos estilos e compara caixas anonimas, estrutura,
+geometria e fragmentos inline. Na execucao do Reddit validada, foram 16 rodadas,
+12.386 caixas comparadas e zero divergencias. Os testes de UI passaram (1.122),
+e seis estados de uma fixture com flex, inline-block, absolutos e pseudo-elementos
+produziram pixels identicos entre reaproveitamento e reconstrucao completa.
+Logs/probe locais: `_local/reddit-layout-oracle-3.log`,
+`_local/layout-reuse-complete-tests.log` e `_local/layout_reuse_probe/main.odin`.
+
+Medicao final sintetica (700 ramos estaveis, 22 restyles): a fase de construcao
+caiu de 10,6 para 2,3 ms/chamada (cerca de 4,6x), e o tempo total de restyle de
+366 para 194 ms. Foram transferidas 44.100 caixas em 14.700 subarvores acumuladas.
+Os tempos incluem instrumentacao. Arquivos locais: `_local/layout-before.log`
+e `_local/layout-final-bench.log`.
+
+Na ultima carga real do Reddit, 27 restyles transferiram 9.243 caixas em 1.567
+subarvores acumuladas. A fase de construcao ainda custou 779,5 ms/chamada nessa
+carga. Conteudo, mutacoes e carga da maquina variam; nao ha ganho de tempo total
+comprovado no Reddit a partir dessas cargas distintas. A melhoria controlada
+e a validacao de geometria nao eliminam os caminhos conservadores nem o custo
+do calculo global de posicoes. Log local: `_local/reddit-layout-final.log`.

@@ -581,6 +581,7 @@ Box :: struct {
     inline_parent_effect: ^Inline_Effect, // out-of-flow descendants retain inline opacity
 
     children: [dynamic]^Box,
+    owned_xforms: [dynamic]^XList, // independent of Computed/stylesheet lifetime
 }
 
 Inline_Source :: struct {
@@ -683,6 +684,7 @@ new_box :: proc() -> ^Box {
 }
 
 build_layout :: proc(node: ^dompkg.Node, styles: map[^dompkg.Node]Computed, base: string) -> ^Box {
+    if reused := layout_reuse_take(node); reused != nil do return reused
     #partial switch node.kind {
     case .Document:
         b := new_box(); b.kind = .Block
@@ -2652,6 +2654,7 @@ apply_box :: proc(b: ^Box, comp: Computed, base: string = "") {
     b.grid_row_start = comp.grid_row_start; b.grid_row_span = comp.grid_row_span
     b.grid_col_start_auto = comp.grid_col_start_auto; b.grid_col_end_auto = comp.grid_col_end_auto
     b.grid_row_start_auto = comp.grid_row_start_auto; b.grid_row_end_auto = comp.grid_row_end_auto
+    box_own_transforms(b)
 }
 
 // Somas de borda por eixo (esq+dir / topo+base). Substituem o antigo 2*border_w.
@@ -5391,6 +5394,7 @@ when UIPROF {
         // ── S3: split do restyle (534 ms no github, indivisos até agora) ────
         ms_compute:  f64, // compute_styles
         ms_buildlay: f64, // build_layout
+        rebuild_reused_boxes, rebuild_reused_roots: int,
         restyle_why: [Restyle_Reason]int, // which path each restyle_tab took
         restyle_dirty: int,               // nodes recomputed by incremental restyles
         restyle_total: int,               // nodes in the map at those restyles
@@ -5528,6 +5532,7 @@ when UIPROF {
             fmt.eprintfln("\n[uiprof/S3] %d restyles | compute_styles %.0f ms (%.1f ms cada) | build_layout %.0f ms (%.1f ms cada)",
                 p.restyles, p.ms_compute, p.ms_compute / f64(p.restyles), p.ms_buildlay, p.ms_buildlay / f64(p.restyles))
         }
+        fmt.eprintfln("[uiprof/S3] rebuild reuse: %d boxes in %d subtrees", p.rebuild_reused_boxes, p.rebuild_reused_roots)
         fmt.eprintf("[uiprof/S3] restyle_tab por motivo:")
         for r in Restyle_Reason do if p.restyle_why[r] > 0 do fmt.eprintf(" %v=%d", r, p.restyle_why[r])
         fmt.eprintfln("")
@@ -11817,6 +11822,8 @@ free_layout :: proc(b: ^Box) {
     delete(b.children)
     for &p in b.animations { delete(p.anim.name); delete(p.anim.stops); delete(p.pending) }
     delete(b.animations)
+    for list in b.owned_xforms { delete(list.ops); free(list) }
+    delete(b.owned_xforms)
     for &it in b.inlines {
         if it.text != ""    do delete(it.text)
         if it.href != ""    do delete(it.href)
