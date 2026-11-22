@@ -109,7 +109,9 @@ json_prop :: proc(st: ^Json_Out, holder: Value, key: Value, value: Value, depth:
     // Sem isto `JSON.stringify(new Date)` devolvia `{}`.
     _, is_big := value.(^BigInt)
     if !is_primitive(value) || is_big {
-        if fn, ok := get_member(vm, value, "toJSON").(^Function); ok {
+        to_json := get_member(vm, value, "toJSON")
+        if vm.throwing do return false
+        if fn, ok := to_json.(^Function); ok {
             value = call_function(vm, fn, value, []Value{json_key_value(vm, key)})
             if vm.throwing do return false
         }
@@ -150,15 +152,17 @@ json_prop :: proc(st: ^Json_Out, holder: Value, key: Value, value: Value, depth:
     case JS_Null:
         strings.write_string(sb, "null")
     case ^Object:
-        // subclasse de Array (M136): IsArray é true → serializa como array
-        if a, isarr := x.prim.(^Array); isarr {
-            json_array(st, x, a, depth)
+        // IsArray segue o alvo de proxies sem consultar traps.
+        isarr := json_is_array(vm, x)
+        if vm.throwing do return false
+        if isarr {
+            json_array(st, x, depth)
         } else {
             json_object(st, x, depth)
         }
     case ^Array:
-        if x.args != nil do json_object(st, x, depth) // `arguments` é objeto comum
-        else do json_array(st, x, x, depth)
+        if x.is_arguments do json_object(st, x, depth) // `arguments` é objeto comum
+        else do json_array(st, x, depth)
     case ^Regex, ^Collection:
         strings.write_string(sb, "{}") // sem props próprias enumeráveis: `{}` no JS
     case ^BigInt:
@@ -229,21 +233,52 @@ json_object :: proc(st: ^Json_Out, x: Value, depth: int) {
     strings.write_byte(sb, '}')
 }
 
-// SerializeJSONArray: comprimento lido UMA vez (spec); `holder` é o valor JS do
-// array (o próprio ^Array, ou a instância da subclasse) — é o `this` do replacer.
 @(private = "file")
-json_array :: proc(st: ^Json_Out, holder: Value, a: ^Array, depth: int) {
+json_is_array :: proc(vm: ^Interp, value: Value) -> bool {
+    value := value
+    for {
+        if p := proxy_state(value); p != nil {
+            if !proxy_live(vm, p) do return false
+            value = p.px_target
+            continue
+        }
+        #partial switch v in value {
+        case ^Array: return !v.is_arguments
+        case ^Object:
+            if v.prim != nil { value = v.prim; continue }
+        }
+        return false
+    }
+}
+
+// SerializeJSONArray: length lido UMA vez via Get/ToLength. A identidade, os
+// getters e o this do replacer pertencem ao holder (array, subclasse ou Proxy).
+@(private = "file")
+json_array :: proc(st: ^Json_Out, holder: Value, depth: int) {
     vm := st.vm
-    if !json_enter(st, rawptr(a)) do return
-    defer delete_key(&st.seen, rawptr(a))
+    ptr: rawptr
+    #partial switch v in holder {
+    case ^Array: ptr = v
+    case ^Object: ptr = v
+    }
+    if !json_enter(st, ptr) do return
+    defer delete_key(&st.seen, ptr)
+    length := get_with_receiver(vm, holder, "length", holder)
+    if vm.throwing do return
+    count := to_number(vm, length)
+    if vm.throwing do return
+    n := 0
+    if count == count && count > 0 do n = int(min(count, 9007199254740991.0))
     sb := &st.sb
     strings.write_byte(sb, '[')
-    n := len(a.items)
+    buf: [24]u8
     for i in 0 ..< n {
         if i > 0 do strings.write_byte(sb, ',')
         if st.indent != "" do json_nl_indent(sb, st.indent, depth + 1)
-        // o replacer pode encolher o array no meio: índice sumido lê undefined
-        it: Value = i < len(a.items) ? a.items[i] : nil
+        // Get visita inclusive buracos: getters, protótipos e traps são observáveis.
+        key := strconv.write_int(buf[:], i64(i), 10)
+        it := get_with_receiver(vm, holder, key, holder)
+        if vm.throwing do return
         if !json_prop(st, holder, f64(i), it, depth + 1) {
             if vm.throwing do return
             strings.write_string(sb, "null") // undefined/função em array vira null

@@ -442,6 +442,16 @@ get_with_receiver :: proc(vm: ^Interp, target: Value, name: string, receiver: Va
             }
             if v, exists := cur.props[name]; exists do return v
             if _, exists := cur.setters[name]; exists do return nil
+            // Array subclasses keep their own indexed storage in the wrapper.
+            // Check it before inherited accessors, using the original Receiver.
+            if cur == o {
+                if a, wrapped := o.prim.(^Array); wrapped {
+                    if name == "length" do return f64(len(a.items))
+                    if index, indexed := array_index_name(name); indexed {
+                        if v, exists := array_get_own_index(vm, a, index, name, receiver); exists do return v
+                    }
+                }
+            }
         }
     }
     if f, ok := target.(^Function); ok {
@@ -453,10 +463,18 @@ get_with_receiver :: proc(vm: ^Interp, target: Value, name: string, receiver: Va
             if v, exists := cur.props[name]; exists do return v
         }
     }
-    if a, ok := target.(^Array); ok && a.descriptors != nil {
-        if g, exists := a.descriptors.getters[name]; exists {
-            if g == nil do return nil
-            return call_function(vm, g, receiver, nil)
+    if a, ok := target.(^Array); ok {
+        if index, indexed := array_index_name(name); indexed {
+            if v, exists := array_get_own_index(vm, a, index, name, receiver); exists do return v
+            proto := obj_get_prototype_of(vm, nil, []Value{a})
+            if is_nullish(proto) do return nil
+            return get_with_receiver(vm, proto, name, receiver)
+        }
+        if a.descriptors != nil {
+            if g, exists := a.descriptors.getters[name]; exists {
+                if g == nil do return nil
+                return call_function(vm, g, receiver, nil)
+            }
         }
     }
     return get_index(vm, target, name)

@@ -2,6 +2,20 @@ package js
 
 import "core:math"
 
+// Own indexed Get, preserving Receiver for accessors. A present undefined value
+// must stop lookup; only a hole continues through the prototype chain.
+array_get_own_index :: proc(vm: ^Interp, a: ^Array, index: int, key: string, receiver: Value) -> (Value, bool) {
+    if m := a.descriptors; m != nil {
+        if getter, exists := m.getters[key]; exists {
+            if getter == nil do return nil, true
+            return call_function(vm, getter, receiver, nil), true
+        }
+        if _, exists := m.setters[key]; exists do return nil, true
+    }
+    if arr_has_index(a, index) do return a.items[index], true
+    return nil, false
+}
+
 // Only explicitly defined properties need metadata. Ordinary arrays retain
 // their dense storage and do not allocate an attribute map.
 array_attrs :: proc(a: ^Array, key: string) -> Prop_Attrs {
