@@ -136,22 +136,31 @@ powershell -File tests/test262-runner.ps1
 Os 170/299 antigos são históricos. Resultados do conjunto legado, da seleção
 ampliada e de hosts diferentes não devem ser comparados só pelo total de PASS.
 
-Baseline ampliado de **2026-11-21**: **10.848 arquivos / 21.056 variantes** em
-1.482 diretórios, selecionados de 48.803 testes candidatos. Resultado: **8.971
-PASS / 11.679 FAIL / 66 ERROR / 340 SKIP**. Inclui 163 variantes de módulos e
-916 variantes async (categorias que podem se sobrepor). Os ERROR são 50 timeouts
-de 5 s e 16 abortos nativos; os SKIP são 197 createRealm, 70 IsHTMLDDA, 52 agentes,
-11 ModuleSource e 10 CanBlock. A cobertura anterior documentada era de 2.609
-arquivos / 5.093 variantes, com seleção e host diferentes.
+Baseline ampliado de **2026-11-22** (commit `98cd35e`): **10.848 arquivos /
+21.056 variantes** em 1.482 diretórios, selecionados de 48.803 testes candidatos —
+a MESMA seleção (mesmo manifest) de 2026-11-21. Resultado: **10.089 PASS / 10.565
+FAIL / 62 ERROR / 340 SKIP**. Inclui 163 variantes de módulos e 916 variantes async
+(categorias que podem se sobrepor). Os ERROR são 46 timeouts de 5 s e 16 abortos
+nativos; os SKIP são 197 createRealm, 70 IsHTMLDDA, 52 agentes, 11 ModuleSource e
+10 CanBlock.
 
-O [resumo versionado](../tests/test262-measurements/summary-20261121.json) aponta
-para o manifest exato e os resultados completos comprimidos. Os 28 casos com
-carriage return foram repetidos preservando os bytes originais; nenhum mudou de
-veredito. Controles do coletor/host/comparação passaram, assim como os 2.199 testes
-de unidade de JS. Para comparar a próxima rodada com esta linha de base:
+Contra a linha de base de 2026-11-21 (8.971 PASS / 11.679 FAIL / 66 ERROR): 1.117
+FAIL→PASS, 4 ERROR→PASS e 3 PASS→FAIL. Os 3 são dois testes que dependem da ORDEM
+de chaves e oscilam também no binário de controle
+(`built-ins/Reflect/getOwnPropertyDescriptor/symbol-property.js` e
+`language/computed-property-names/class/method/generator.js`), não regressões.
+Outro caso conhecido: `built-ins/decodeURI/S15.1.3.1_A2.5_T1.js` roda em 4,2–5,5 s e
+estoura o timeout de 5 s conforme a carga da máquina — um ERROR dele não indica
+mudança. A verificação dos casos com carriage return (feita em 2026-11-21) não foi
+repetida nesta rodada; a seleção é a mesma.
+
+O [resumo versionado](../tests/test262-measurements/summary-20261122.json) aponta
+para o manifest exato e os resultados completos comprimidos; o de
+[2026-11-21](../tests/test262-measurements/summary-20261121.json) fica como
+histórico. Para comparar a próxima rodada com esta linha de base:
 
 ```powershell
-.\test262.ps1 -Suite _local/test262-expanded-10 -TimeoutSec 5 -Baseline tests/test262-measurements/baseline-20261121.json.gz -Report _local/reports/test262-depois.json
+.\test262.ps1 -Suite _local/test262-expanded-10 -TimeoutSec 5 -Baseline tests/test262-measurements/baseline-20261122.json.gz -Report _local/reports/test262-depois.json
 ```
 
 `-Baseline` registra transições em `changes`; o comando continua saindo com código
