@@ -2671,6 +2671,14 @@ own_string_keys :: proc(vm: ^Interp, o: ^Object, out: ^[dynamic]string, all: boo
         }
         if all { seen["length"] = true; append(out, "length") }
     }
+    // 0b) TypedArray: os índices 0..length-1 são as chaves próprias (spec 10.4.5.7)
+    if n, is_ta := ta_own_index_count(o); is_ta {
+        for i in 0 ..< n {
+            k := fmt.tprintf("%d", i)
+            seen[k] = true
+            append(out, k)
+        }
+    }
     // 1) chaves-índice, crescente (insertion sort: quase sempre pouquíssimas)
     idx_keys: [dynamic]string
     defer delete(idx_keys)
@@ -5253,6 +5261,15 @@ super_construct :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value, 
     case ^Object:
         if r == o do return ret // já escreveu direto no this
         if r.prim != nil do o.prim = r.prim // native super() can return a primitive wrapper
+        // `class X extends Uint8Array`: a view que o super() construiu vive nos campos
+        // internos (buffer, tipo, offset, tamanho, hooks de índice), não em props — sem
+        // copiá-los a instância não é view: índices não funcionam e os acessores do
+        // %TypedArray%.prototype lançam "incompatible receiver".
+        if r.ab != nil {
+            o.ab, o.ta_kind, o.ta_off, o.ta_len = r.ab, r.ta_kind, r.ta_off, r.ta_len
+            if o.get == nil do o.get = r.get
+            if o.set == nil do o.set = r.set
+        }
         for k in r.korder {
             if v, vok := r.props[k]; vok do oput(o, k, v)
         }

@@ -1090,6 +1090,9 @@ obj_has_own_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     name := key_string(vm, arg(args, 0))
     #partial switch o in this {
     case ^Object:
+        if n, is_ta := ta_own_index_count(o); is_ta {
+            if idx, indexed := array_index_name(name); indexed do return idx < n
+        }
         if _, has := o.props[name]; has do return true
         if o.getters != nil { if _, has := o.getters[name]; has do return true }
         if o.setters != nil { if _, has := o.setters[name]; has do return true }

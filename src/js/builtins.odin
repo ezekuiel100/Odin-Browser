@@ -350,6 +350,7 @@ array_like_has :: proc(vm: ^Interp, this: Value, i: int) -> bool {
         // window) tem get-hook e NÃO serve índices — dizer "presente" ali faria
         // forEach visitar N undefineds.
         if t.geti != nil do return i >= 0
+        if n, is_ta := ta_own_index_count(t); is_ta do return i >= 0 && i < n // TypedArray: índice no range existe
         buf: [24]u8
         key := strconv.write_int(buf[:], i64(i), 10)
         // HasProperty sobe a CADEIA (spec) — e desde o M208 isso importa de verdade:

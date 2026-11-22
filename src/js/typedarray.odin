@@ -12,6 +12,7 @@ package js
 // por tipo (ta_protos[kind]) — instanceof por tipo funciona. Bytes em little-endian
 // (nativo x64); DataView faz endianness explícita (default big-endian, como a spec).
 
+import "core:fmt"
 import "core:math"
 import "core:strings"
 import "core:math/rand"
@@ -195,11 +196,11 @@ make_view :: proc(vm: ^Interp, kind: TA_Kind, ab: ^Array_Buffer, buf_obj: ^Objec
     o.proto = vm.ta_protos[kind]
     o.get = typedarray_get
     o.set = typedarray_set
-    o.props["buffer"]     = buf_obj
-    o.props["length"]     = f64(length)
-    o.props["byteLength"] = f64(length * ta_bpe(kind))
-    o.props["byteOffset"] = f64(off)
-    o.props["BYTES_PER_ELEMENT"] = f64(ta_bpe(kind))
+    // buffer/length/byteLength/byteOffset NÃO são props próprias (spec): vêm dos
+    // acessores do %TypedArray%.prototype, e BYTES_PER_ELEMENT do protótipo do tipo.
+    // Como próprias, `Object.keys(new Uint8Array(3))` dava "buffer,byteLength,…" em
+    // vez de "0,1,2". O buffer fica numa chave interna (`#…` não enumera).
+    o.props[TA_BUFFER_KEY] = buf_obj
     return o
 }
 
@@ -444,7 +445,7 @@ ta_subarray :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     end   := rel_index(len(args) >= 2 ? args[1] : nil, o.ta_len, o.ta_len)
     if end < begin do end = begin
     // VIEW compartilhando o buffer (offset em bytes)
-    buf_obj, _ := o.props["buffer"].(^Object)
+    buf_obj, _ := o.props[TA_BUFFER_KEY].(^Object)
     return make_view(vm, o.ta_kind, o.ab, buf_obj, o.ta_off + begin*ta_bpe(o.ta_kind), end - begin)
 }
 
@@ -929,7 +930,7 @@ ta_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 ctor_kind_of :: proc(vm: ^Interp, ctor: Value) -> TA_Kind {
     f, ok := ctor.(^Function); if !ok do return .U8
     proto, _ := f.props["prototype"].(^Object)
-    for k in TA_Kind do if vm.ta_protos[k] == proto do return k
+    for k in TA_Kind.I8 ..= TA_Kind.F64 do if vm.ta_protos[k] == proto do return k // .None guarda o %TypedArray%.prototype
     return .U8
 }
 
@@ -1237,6 +1238,64 @@ array_buffer_is_view :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return o.ab != nil && o.ta_kind != .None
 }
 
+// ── acessores do %TypedArray%.prototype ─────────────────────────────────────
+TA_BUFFER_KEY :: "#buffer" // o objeto ArrayBuffer de uma view (interno: `#` não enumera)
+
+// Nº de índices PRÓPRIOS de `o` se ele é uma view TypedArray (0 com buffer
+// destacado); ok=false para qualquer outro objeto. Os índices de uma view não moram
+// em `props` (o hook typedarray_get os serve), então quem lista ou testa chaves
+// próprias pergunta aqui — Object.keys, for-in, JSON, hasOwnProperty, e o
+// HasProperty dos métodos genéricos de Array (`Array.prototype.map.call(ta, f)`).
+ta_own_index_count :: proc(o: ^Object) -> (int, bool) {
+    if o == nil || o.ab == nil || o.ta_kind == .None || o.ta_kind == .DataView do return 0, false
+    return 0 if o.ab.detached else o.ta_len, true
+}
+
+// `this` tem de ser uma view TypedArray de verdade (não ArrayBuffer/DataView):
+// senão TypeError. Buffer destacado: tamanhos e offset leem 0 (spec).
+@(private = "file")
+ta_view_of :: proc(vm: ^Interp, this: Value, what: string) -> ^Object {
+    o, ok := this.(^Object)
+    if !ok || o.ab == nil || o.ta_kind == .None || o.ta_kind == .DataView {
+        throw_type_error(vm, fmt.tprintf("get %%TypedArray%%.prototype.%s called on incompatible receiver", what))
+        return nil
+    }
+    return o
+}
+
+@(private = "file")
+ta_get_buffer :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o := ta_view_of(vm, this, "buffer"); if o == nil do return nil
+    return o.props[TA_BUFFER_KEY]
+}
+
+@(private = "file")
+ta_get_byte_length :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o := ta_view_of(vm, this, "byteLength"); if o == nil do return nil
+    return f64(0) if o.ab.detached else f64(o.ta_len * ta_bpe(o.ta_kind))
+}
+
+@(private = "file")
+ta_get_byte_offset :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o := ta_view_of(vm, this, "byteOffset"); if o == nil do return nil
+    return f64(0) if o.ab.detached else f64(o.ta_off)
+}
+
+@(private = "file")
+ta_get_length :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o := ta_view_of(vm, this, "length"); if o == nil do return nil
+    return f64(0) if o.ab.detached else f64(o.ta_len)
+}
+
+// @@toStringTag: o nome do tipo numa view; undefined para qualquer outra coisa
+// (este getter NÃO lança — spec 23.2.3.38).
+@(private = "file")
+ta_get_to_string_tag :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    o, ok := this.(^Object)
+    if !ok || o.ab == nil || o.ta_kind == .None || o.ta_kind == .DataView do return nil
+    return ta_name(o.ta_kind)
+}
+
 // ── instalação ───────────────────────────────────────────────────────────────
 
 install_typed_arrays :: proc(vm: ^Interp) {
@@ -1253,10 +1312,35 @@ install_typed_arrays :: proc(vm: ^Interp) {
     ab_ctor.props["isView"] = mk_native(vm, array_buffer_is_view)
     env_define(vm.global, "ArrayBuffer", ab_ctor)
 
+    // %TypedArray%.prototype (spec 23.2.3): o protótipo COMUM dos nove, com os
+    // acessores buffer/byteLength/byteOffset/length/@@toStringTag. Antes não existia
+    // — `Object.getPrototypeOf(Uint8Array.prototype)` era Object.prototype — e o
+    // propertyHelper.js do Test262 atual MORRIA ao carregar (lê
+    // getOwnPropertyDescriptor(%TypedArray%.prototype, "byteLength").get).
+    // As views seguem com as props próprias de sempre (os caminhos de leitura não
+    // mudam); os getters servem a quem os pede pelo protótipo. Guardado na vaga
+    // ta_protos[.None], já enraizada no GC.
+    base := new_object(vm)
+    base.proto = vm.object_proto
+    base.getters = make(map[string]^Function)
+    base.attrs = make(map[string]Prop_Attrs)
+    Ta_Getter :: struct { name: string, fn: Native_Fn }
+    for g in ([]Ta_Getter{{"buffer", ta_get_buffer}, {"byteLength", ta_get_byte_length},
+                          {"byteOffset", ta_get_byte_offset}, {"length", ta_get_length}}) {
+        base.getters[g.name] = mk_builtin_method(vm, g.fn, own_str_raw(vm, strings.concatenate({"get ", g.name}, context.temp_allocator)), 0)
+        base.attrs[g.name] = {.Configurable}
+    }
+    if vm.sym_tostring_tag_key != "" {
+        base.getters[vm.sym_tostring_tag_key] = mk_builtin_method(vm, ta_get_to_string_tag, "get [Symbol.toStringTag]", 0)
+        base.attrs[vm.sym_tostring_tag_key] = {.Configurable}
+    }
+    vm.ta_protos[.None] = base
+
     // cada TypedArray
     kinds := []TA_Kind{.I8, .U8, .U8C, .I16, .U16, .I32, .U32, .F32, .F64}
     for k in kinds {
         p := new_object(vm)
+        p.proto = base
         p.props["toLocaleString"] = mk_builtin_method(vm, ta_to_locale_string, "toLocaleString", 0)
         p.props["at"] = mk_builtin_method(vm, ta_at, "at", 1)
         p.props["findIndex"] = mk_builtin_method(vm, ta_find_index, "findIndex", 1)
