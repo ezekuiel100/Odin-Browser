@@ -146,3 +146,21 @@ style_filtro_desliga_fora_da_cadeia :: proc(t: ^testing.T) {
     defer free_styles(styles)
     testing.expect_value(t, styles[by_id(doc, "x")].width, f32(6))
 }
+
+@(test)
+style_ancestor_attribute_values_are_conservative :: proc(t: ^testing.T) {
+    doc, styles, rules := idx_styles(
+        `<section data-scope="a"><span id="a"></span></section><section data-scope="b"><span id="b"></span></section>` +
+        `<section data-scope="A"><span id="upper"></span></section><section data-scope=""><span id="empty"></span></section>` +
+        `<div data-scope="a"></div><section><span id="sibling"></span></section>`,
+        `[data-scope="a"] span{width:11px} [data-scope="a" i] span{height:7px} [data-scope=""] span{width:3px}` +
+        `[data-scope^="b"] span{height:9px} [data-scope="a"] + section span{padding:2px}`)
+    defer idx_free(doc, styles, &rules)
+    testing.expect_value(t, styles[by_id(doc, "a")].width, f32(11))
+    testing.expect(t, !styles[by_id(doc, "b")].has_width)
+    testing.expect_value(t, styles[by_id(doc, "b")].height, f32(9))
+    testing.expect(t, !styles[by_id(doc, "upper")].has_width)
+    testing.expect_value(t, styles[by_id(doc, "upper")].height, f32(7))
+    testing.expect_value(t, styles[by_id(doc, "empty")].width, f32(3))
+    testing.expect_value(t, styles[by_id(doc, "sibling")].padding[0], f32(2))
+}

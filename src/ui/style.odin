@@ -2883,11 +2883,22 @@ anc_hash :: #force_inline proc(kind: u8, s: string) -> u64 {
 }
 
 @(private="file")
+anc_attr_value_hash :: #force_inline proc(name, value: string) -> u64 {
+    return anc_hash('=', name) ~ anc_hash('v', value)
+}
+
+@(private="file")
 anc_compound_keys :: proc(c: csspkg.Compound, out: ^[dynamic]u64) {
     if c.tag != "" && c.tag != "*" do append(out, anc_hash('t', c.tag))
     if c.id != "" do append(out, anc_hash('#', c.id))
     for cl in c.classes do append(out, anc_hash('.', cl))
-    for a in c.attrs do append(out, anc_hash('[', a.name))
+    for a in c.attrs {
+        append(out, anc_hash('[', a.name))
+        // Exact attribute values distinguish scoped component styles. The
+        // name alone lets every shadow scope through. Other operators and
+        // case-insensitive matching retain the conservative name-only key.
+        if a.op == .Equals && !a.insensitive do append(out, anc_attr_value_hash(a.name, a.val))
+    }
 }
 
 @(private="file")
@@ -2910,7 +2921,10 @@ anc_push :: proc(n: ^dompkg.Node, delta: int) {
     if id, ok := n.attrs["id"]; ok && id != "" do g_anc_set[anc_hash('#', id)] += delta
     cls_buf: [MAX_INLINE_CLASSES]string
     for c in node_classes_into(n, cls_buf[:]) do g_anc_set[anc_hash('.', c)] += delta
-    for name in n.attrs do g_anc_set[anc_hash('[', name)] += delta
+    for name, value in n.attrs {
+        g_anc_set[anc_hash('[', name)] += delta
+        g_anc_set[anc_attr_value_hash(name, value)] += delta
+    }
 }
 
 // O seletor `si` da regra `ri` pode casar, pelo que os ancestrais oferecem?

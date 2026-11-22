@@ -63,3 +63,32 @@ para preservar as metricas. Renderizacao offline continua promovendo imediatamen
 Isso reduz rebuilds quando os downloads chegam proximos; nao reduz o custo de
 um rebuild isolado nem elimina os fallbacks completos de :has/container queries.
 Ainda nao ha medicao comparativa desta alteracao no Reddit.
+
+## Filtro de valores de atributos nos ancestrais
+
+O filtro de ancestrais tambem registra pares nome/valor para seletores de
+igualdade exata, como `[data-shadow-scope="42"] .item`. Antes, qualquer ancestral
+com `data-shadow-scope` passava pelo filtro, mesmo com outro valor, e o matcher
+precisava percorrer a cadeia para rejeitar a regra. Operadores parciais e
+seletores com flag `i` continuam usando apenas o nome do atributo. Colisoes de
+hash apenas deixam candidatos extras passarem; o matcher completo continua
+sendo a autoridade sobre o casamento.
+
+A medicao do Reddit em 2026-11-22 encontrou 20 restyles: um `Full_Env` e 19
+`Full_CQ`. O filtro torna a cascata mais seletiva, mas nao elimina o fallback
+completo de container queries. Os testes cobrem valores distintos, igualdade
+sem diferenciar maiusculas, valor vazio, prefixos e combinadores de irmaos.
+
+Em uma rodada sequencial com a versao final e a mesma pagina sintetica local
+(24 componentes, 24 itens por componente e 64 regras por componente), foram
+22 restyles por versao. O perfil da cascata caiu de 58,7 para 27,2 ms/restyle
+(2,16x). Esses tempos incluem instrumentacao e nao representam aceleracao de
+navegacao do Reddit. Arquivos locais da medicao: `_local/scoped-style-bench.html`,
+`_local/scoped-before-final.log` e `_local/scoped-final.log`.
+
+Na ultima carga real do Reddit, a versao final registrou 19 restyles (18 Full_CQ,
+1 Full_Env), 497,6 ms de cascata e 618,4 ms de build_layout por restyle. A carga
+anterior registrou 20 restyles, 760,7 ms e 675,9 ms, respectivamente. Conteudo,
+rede e mutacoes diferem entre cargas; esses numeros sao observacoes, nao uma
+comparacao controlada nem prova de um percentual de ganho no Reddit. Relatorios:
+`_local/reddit-css-before.log` e `_local/reddit-css-final.log`.
