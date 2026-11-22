@@ -1084,7 +1084,8 @@ write_replacement :: proc(sb: ^strings.Builder, repl: string, s: string, m: Re_M
                 close := strings.index_byte(repl[i + 2:], '>')
                 if close < 0 { strings.write_string(sb, "$<"); i += 2; break }
                 name := repl[i + 2:][:close]
-                if gi, found := re.gnames[name]; found && 2 * gi + 1 < len(m.groups) {
+                if _, found := re.gnames[name]; found {
+                    gi := regex_named_group(re, name, m)
                     gs2, ge2 := m.groups[2 * gi], m.groups[2 * gi + 1]
                     if gs2 >= 0 do strings.write_string(sb, str_rslice(s, gs2, ge2))
                 }

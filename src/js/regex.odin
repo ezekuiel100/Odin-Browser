@@ -32,7 +32,7 @@ import "core:sort"
 
 REGEX_STEP_LIMIT :: 2_000_000 // trava contra backtracking catastrófico
 
-Re_Op :: enum u8 { Char, Any, Class, Split, Jmp, Save, Match, Begin, End, WordB, NWordB, Look, BackRef }
+Re_Op :: enum u8 { Char, Any, Class, Split, Jmp, Save, Clear, Match, Begin, End, WordB, NWordB, Look, BackRef }
 
 Re_Range :: struct { lo, hi: rune }
 
@@ -58,6 +58,7 @@ Re_Inst :: struct {
     mods:   Re_Mods,      // i/m/s em vigor nesta instrução (Char/Class/BackRef/Any/Begin/End)
     set:    ^Re_CSet,     // Class da flag v (nil nas classes comuns); owned pela instrução
     strings: [][]rune,    // candidatos por tamanho; referenciam strings owned pelo set
+    refs:   []int,       // Named backreference candidates (owned).
     ch:     rune,         // Char
     x, y:   int,          // Split (x,y) / Jmp (x) / Save (x = slot) / BackRef (x = grupo)
     ranges: []Re_Range,   // Class: conjuntos POSITIVOS (c casa se estiver em algum)
@@ -83,7 +84,7 @@ Regex :: struct {
     prog:      []Re_Inst,
     ngroups:   int,     // grupos capturantes (sem o grupo 0)
     last_index: int,    // usado por exec/test com a flag g
-    gnames:    map[string]int, // grupos nomeados: nome (clonado) -> índice do grupo
+    gnames:    map[string][]int, // Owned name -> capture indices in source order.
     props:     map[string]Value, // expandos da instância (chave clonada); nil até a 1ª
 }
 
@@ -120,6 +121,8 @@ Re_Node :: struct {
     set:    ^Re_CSet, // Class da flag v (owned pelo nó; a compilação CLONA)
     greedy: bool,
     gmin, gmax: int, // Repeat: gmax = -1 => infinito
+    name:   string,  // Group name or unresolved named backreference (temp).
+    refs:   []int,
     group:  int,     // Group: índice (>0 capturante; 0 não-capturante)
 }
 
@@ -174,7 +177,7 @@ cset_clone :: proc(s: ^Re_CSet) -> ^Re_CSet {
 @(private="file")
 Re_Parser :: struct {
     pat: []rune, pos: int, ngroup: int, ok: bool,
-    names: map[string]int, // grupos nomeados vistos (chaves em temp; nil até o 1º)
+    names: map[string][dynamic]int, // grupos nomeados vistos (chaves em temp; nil até o 1º)
     unicode: bool,         // flag `u`: habilita `\u{XXXXX}` (code point por extenso).
                            // SEM a flag, `\u{2}` é a spec dizendo "u repetido 2 vezes",
                            // então a forma com chaves só pode ser lida quando ela está
@@ -314,11 +317,7 @@ re_parse_atom :: proc(p: ^Re_Parser) -> ^Re_Node {
                 }
                 // grupo nomeado (?<nome>...)
                 rp_next(p); rp_next(p) // ? <
-                nb := strings.builder_make(context.temp_allocator)
-                for !rp_eof(p) && rp_peek(p) != '>' do strings.write_rune(&nb, rp_next(p))
-                if rp_peek(p) == '>' do rp_next(p)
-                gname = strings.to_string(nb)
-                if gname == "" do p.ok = false
+                gname = re_parse_group_name(p)
             case 'i', 'm', 's', '-':
                 // modificadores (?ims-ims:...) — grupo NÃO capturante cujo corpo é
                 // parseado com as flags ajustadas; fora dele valem as de antes.
@@ -343,8 +342,12 @@ re_parse_atom :: proc(p: ^Re_Parser) -> ^Re_Node {
         g := rp_new(p, .Group)
         if capturing { p.ngroup += 1; g.group = p.ngroup } else { g.group = 0 }
         if gname != "" {
-            if p.names == nil do p.names = make(map[string]int)
-            p.names[gname] = g.group
+            g.name = gname
+            if p.names == nil do p.names = make(map[string][dynamic]int)
+            ids := p.names[gname]
+            if ids == nil do ids = make([dynamic]int, context.temp_allocator)
+            append(&ids, g.group)
+            p.names[gname] = ids
         }
         inner := re_parse_alt(p)
         if rp_peek(p) == ')' do rp_next(p)
@@ -399,13 +402,31 @@ re_parse_modifiers :: proc(p: ^Re_Parser) -> (add, rem: Re_Mods, ok: bool) {
     return {}, {}, false
 }
 
-// Consome os dígitos de \uNNNN (4 hex), \u{XXXXX} (1-6 hex, só com flag `u`) ou
-// \xNN (2 hex) e devolve a rune. Se os dígitos não estiverem completos, devolve o
-// próprio 'u'/'x' (leniente, como tratamos escapes desconhecidos).
-//
-// A forma com CHAVES é a única que alcança code points acima de U+FFFF sem par
-// surrogate — `/\u{1F600}/u`. O motor casa sobre []rune, então o astral vira uma
-// rune só dos dois lados e a comparação é direta.
+// Group names use Unicode escapes even without u/v. Decode before comparing.
+@(private="file")
+re_parse_group_name :: proc(p: ^Re_Parser) -> string {
+    nb := strings.builder_make(context.temp_allocator)
+    for !rp_eof(p) && rp_peek(p) != '>' {
+        c := rp_next(p)
+        if c == '\\' {
+            if rp_peek(p) != 'u' { p.ok = false; p.spec_err = true; break }
+            rp_next(p)
+            saved := p.unicode
+            p.unicode = true
+            c = rp_hex_escape(p, 'u')
+            p.unicode = saved
+        }
+        strings.write_rune(&nb, c)
+    }
+    name := strings.to_string(nb)
+    if rp_peek(p) == '>' { rp_next(p) }
+    else { p.ok = false; p.spec_err = true }
+    if name == "" { p.ok = false; p.spec_err = true }
+    return name
+}
+
+// Read hex escapes. Unicode mode rejects malformed escapes; legacy mode
+// retains Annex B identity escapes. Braced code points range through U+10FFFF.
 @(private="file")
 rp_hex_escape :: proc(p: ^Re_Parser, kind: rune) -> rune {
     if kind == 'u' && p.unicode && p.pos < len(p.pat) && p.pat[p.pos] == '{' {
@@ -414,23 +435,35 @@ rp_hex_escape :: proc(p: ^Re_Parser, kind: rune) -> rune {
         ndig := 0
         for j < len(p.pat) && p.pat[j] != '}' {
             d := rp_hex_digit(p.pat[j])
-            if d < 0 do return kind // não-hex dentro das chaves: escape malformado
+            // Bound before multiplication; leading zeroes have no length limit.
+            if d < 0 || v > (0x10FFFF-d)/16 {
+                p.ok = false; p.spec_err = true
+                return kind
+            }
             v = v*16 + d
             ndig += 1
-            if ndig > 6 do return kind
             j += 1
         }
         // precisa fechar, ter ao menos 1 dígito e caber no espaço de code points
-        if j >= len(p.pat) || ndig == 0 || v > 0x10FFFF do return kind
+        if j >= len(p.pat) || ndig == 0 {
+            p.ok = false; p.spec_err = true
+            return kind
+        }
         p.pos = j + 1 // consome o '}'
         return rune(v)
     }
     n := kind == 'u' ? 4 : 2
-    if p.pos + n > len(p.pat) do return kind
+    if p.pos + n > len(p.pat) {
+        if p.unicode { p.ok = false; p.spec_err = true }
+        return kind
+    }
     v := 0
     for k in 0 ..< n {
         d := rp_hex_digit(p.pat[p.pos + k])
-        if d < 0 do return kind
+        if d < 0 {
+            if p.unicode { p.ok = false; p.spec_err = true }
+            return kind
+        }
         v = v * 16 + d
     }
     p.pos += n
@@ -560,18 +593,13 @@ re_parse_escape :: proc(p: ^Re_Parser) -> ^Re_Node {
         n := rp_new(p, .BackRef); n.group = idx
         return n
     case 'k':
-        // \k<nome>: backreference a grupo nomeado (o nome precisa já ter aparecido)
+        // Named references are resolved after parsing, including forward references.
         if rp_peek(p) == '<' {
             rp_next(p)
-            nb := strings.builder_make(context.temp_allocator)
-            for !rp_eof(p) && rp_peek(p) != '>' do strings.write_rune(&nb, rp_next(p))
-            if rp_peek(p) == '>' do rp_next(p)
-            if idx, found := p.names[strings.to_string(nb)]; found {
-                n := rp_new(p, .BackRef); n.group = idx
-                return n
-            }
-            p.ok = false // nome desconhecido (refs adiantadas não suportadas)
-            return rp_new(p, .Empty)
+            name := re_parse_group_name(p)
+            n := rp_new(p, .BackRef)
+            n.name = name
+            return n
         }
         n := rp_new(p, .Char); n.ch = 'k'
         return n
@@ -946,6 +974,41 @@ re_emit :: proc(prog: ^[dynamic]Re_Inst, inst: Re_Inst) -> int {
     return len(prog) - 1
 }
 
+// Names may overlap only across different branches of the same disjunction.
+@(private="file")
+re_validate_names :: proc(n: ^Re_Node, p: ^Re_Parser) -> map[string]bool {
+    seen := make(map[string]bool, context.temp_allocator)
+    if n.kind == .Group && n.name != "" do seen[n.name] = true
+    if n.kind == .BackRef && n.name != "" {
+        if ids, found := p.names[n.name]; found { n.refs = ids[:] }
+        else { p.ok = false; p.spec_err = true }
+    }
+    for k in n.kids {
+        child := re_validate_names(k, p)
+        for name in child {
+            if seen[name] && n.kind != .Alt { p.ok = false; p.spec_err = true }
+            seen[name] = true
+        }
+    }
+    return seen
+}
+
+// Clear each nested capture on entry to an iteration. Clear unwinds like Save.
+@(private="file")
+re_compile_iteration :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
+    re_compile_clear(n, prog)
+    re_compile_node(n, prog)
+}
+
+@(private="file")
+re_compile_clear :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
+    if n.kind == .Group && n.group > 0 {
+        re_emit(prog, Re_Inst{op = .Clear, x = 2*n.group})
+        re_emit(prog, Re_Inst{op = .Clear, x = 2*n.group+1})
+    }
+    for k in n.kids do re_compile_clear(k, prog)
+}
+
 @(private="file")
 re_compile_node :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
     switch n.kind {
@@ -999,14 +1062,14 @@ re_compile_node :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
     case .Star:
         l1 := re_emit(prog, Re_Inst{op = .Split})
         body := len(prog)
-        re_compile_node(n.kids[0], prog)
+        re_compile_iteration(n.kids[0], prog)
         re_emit(prog, Re_Inst{op = .Jmp, x = l1})
         end := len(prog)
         prog[l1].x = n.greedy ? body : end
         prog[l1].y = n.greedy ? end : body
     case .Plus:
         body := len(prog)
-        re_compile_node(n.kids[0], prog)
+        re_compile_iteration(n.kids[0], prog)
         s := re_emit(prog, Re_Inst{op = .Split})
         end := len(prog)
         prog[s].x = n.greedy ? body : end
@@ -1014,13 +1077,13 @@ re_compile_node :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
     case .Quest:
         s := re_emit(prog, Re_Inst{op = .Split})
         body := len(prog)
-        re_compile_node(n.kids[0], prog)
+        re_compile_iteration(n.kids[0], prog)
         end := len(prog)
         prog[s].x = n.greedy ? body : end
         prog[s].y = n.greedy ? end : body
     case .Repeat:
         // min cópias obrigatórias
-        for _ in 0 ..< n.gmin do re_compile_node(n.kids[0], prog)
+        for _ in 0 ..< n.gmin do re_compile_iteration(n.kids[0], prog)
         if n.gmax < 0 {
             // {n,} => Star do átomo depois das obrigatórias
             star := re_new(.Star); star.greedy = n.greedy
@@ -1051,7 +1114,9 @@ re_compile_node :: proc(n: ^Re_Node, prog: ^[dynamic]Re_Inst) {
         re_emit(&sub, Re_Inst{op = .Match})
         re_emit(prog, Re_Inst{op = .Look, sub = sub[:], negate = n.negate, behind = n.behind})
     case .BackRef:
-        re_emit(prog, Re_Inst{op = .BackRef, x = n.group, mods = n.mods})
+        refs := make([]int, len(n.refs))
+        copy(refs, n.refs)
+        re_emit(prog, Re_Inst{op = .BackRef, x = n.group, refs = refs, mods = n.mods})
     }
 }
 
@@ -1083,18 +1148,17 @@ regex_canonical_flags :: proc(flags: string) -> (string, bool) {
     return strings.clone(string(buf[:n]), context.temp_allocator), true
 }
 
-// Early error de um LITERAL `/.../flags` que o parser de JS deve reportar já no
-// parse (o script nem roda). Só conta o que as gramáticas implementadas à risca
-// rejeitam — modificadores, propriedades Unicode e classes v —, porque o resto do
-// motor é leniente/incompleto e um padrão válido-mas-não-suportado não pode matar
-// o script inteiro (ver check_regex_literal no parser).
+// Literal errors must be detected before executing the containing script.
+// Limit this to the grammar checks implemented strictly: modifiers, named groups,
+// Unicode escapes/properties and v classes. Other unsupported syntax stays lenient.
 regex_early_error :: proc(pattern, flags: string) -> bool {
     vmode := strings.contains(flags, "v")
     has_property := strings.contains(flags, "u") && (strings.contains(pattern, "\\p") || strings.contains(pattern, "\\P"))
-    if !vmode && !has_property && !strings.contains(pattern, "(?") do return false
+    if !vmode && !has_property && !strings.contains(flags, "u") && !strings.contains(pattern, "(?") do return false
     p := Re_Parser{pat = js_string_chars(pattern, vmode || strings.contains(flags, "u")), ok = true,
                    unicode = vmode || strings.contains(flags, "u"), vmode = vmode}
     root := re_parse_alt(&p)
+    re_validate_names(root, &p)
     re_free(root)
     if p.names != nil do delete(p.names)
     return p.spec_err
@@ -1112,6 +1176,7 @@ regex_compile :: proc(vm: ^Interp, pattern, flags_in: string) -> (^Regex, bool) 
     if strings.contains(flags, "m") do p.mods += {.M}
     if strings.contains(flags, "s") do p.mods += {.S}
     root := re_parse_alt(&p)
+    re_validate_names(root, &p)
     defer re_free(root)
     defer if p.names != nil do delete(p.names) // chaves em temp; só o map é nosso
     if !p.ok || !rp_eof(&p) { return nil, false } // sintaxe não suportada / ')' solto
@@ -1128,8 +1193,12 @@ regex_compile :: proc(vm: ^Interp, pattern, flags_in: string) -> (^Regex, bool) 
     re.prog = prog[:]
     re.ngroups = p.ngroup
     if p.names != nil {
-        re.gnames = make(map[string]int)
-        for name, idx in p.names do re.gnames[strings.clone(name)] = idx
+        re.gnames = make(map[string][]int)
+        for name, ids in p.names {
+            owned := make([]int, len(ids))
+            copy(owned, ids[:])
+            re.gnames[strings.clone(name)] = owned
+        }
     }
     for f in flags {
         switch f {
@@ -1333,9 +1402,9 @@ re_backtrack :: proc(prog: []Re_Inst, pc, sp: int, ctx: ^Re_Ctx) -> bool {
         return re_backtrack(prog, inst.y, sp, ctx)
     case .Jmp:
         return re_backtrack(prog, inst.x, sp, ctx)
-    case .Save:
+    case .Save, .Clear:
         old := ctx.caps[inst.x]
-        ctx.caps[inst.x] = sp
+        ctx.caps[inst.x] = -1 if inst.op == .Clear else sp
         if re_backtrack(prog, pc+1, sp, ctx) do return true
         ctx.caps[inst.x] = old
         return false
@@ -1361,6 +1430,9 @@ re_backtrack :: proc(prog: []Re_Inst, pc, sp: int, ctx: ^Re_Ctx) -> bool {
         if ctx.lb_target >= 0 do return sp == ctx.lb_target
         return true
     case .Look:
+        saved_caps := make([]int, len(ctx.caps))
+        defer delete(saved_caps)
+        copy(saved_caps, ctx.caps)
         // zero-width: roda o subprograma sem consumir. Falha do sub restaura as
         // capturas dele (Save desfaz no unwinding); look POSITIVO que casa mantém
         // as capturas (spec-ish). lb_target é salvo/restaurado p/ o Match do sub
@@ -1379,10 +1451,18 @@ re_backtrack :: proc(prog: []Re_Inst, pc, sp: int, ctx: ^Re_Ctx) -> bool {
             hit = re_backtrack(inst.sub, 0, sp, ctx)
         }
         ctx.lb_target = saved_target
-        if hit == inst.negate do return false
-        return re_backtrack(prog, pc+1, sp, ctx)
+        if hit != inst.negate {
+            if inst.negate do copy(ctx.caps, saved_caps)
+            if re_backtrack(prog, pc+1, sp, ctx) do return true
+        }
+        copy(ctx.caps, saved_caps)
+        return false
     case .BackRef:
         g := inst.x
+        for candidate in inst.refs {
+            g = candidate
+            if ctx.caps[2*g] >= 0 && ctx.caps[2*g+1] >= 0 do break
+        }
         if 2*g+1 >= len(ctx.caps) do return re_backtrack(prog, pc+1, sp, ctx) // grupo inexistente: vazio
         gs, ge := ctx.caps[2*g], ctx.caps[2*g+1]
         if gs < 0 || ge < 0 || ge < gs do return re_backtrack(prog, pc+1, sp, ctx) // não capturado: vazio
@@ -1430,7 +1510,7 @@ regex_destroy :: proc(re: ^Regex) {
     delete(re.source)
     delete(re.flags)
     if re.gnames != nil {
-        for name in re.gnames do delete(name)
+        for name, ids in re.gnames { delete(name); delete(ids) }
         delete(re.gnames)
     }
     if re.props != nil {
@@ -1450,6 +1530,7 @@ re_free_prog :: proc(prog: []Re_Inst) {
             if inst.set != nil do cset_free(inst.set)
         }
         if inst.op == .Look do re_free_prog(inst.sub)
+        if inst.op == .BackRef do delete(inst.refs)
     }
     delete(prog)
 }
@@ -1643,18 +1724,24 @@ regex_indices_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> 
     if len(re.gnames) > 0 {
         Pair :: struct { name: string, gi: int }
         pairs := make([dynamic]Pair, 0, len(re.gnames), context.temp_allocator)
-        for name, gi in re.gnames do append(&pairs, Pair{name, gi})
+        for name, ids in re.gnames do append(&pairs, Pair{name, ids[0]})
         for i := 1; i < len(pairs); i += 1 {
             for j := i; j > 0 && pairs[j].gi < pairs[j-1].gi; j -= 1 do pairs[j], pairs[j-1] = pairs[j-1], pairs[j]
         }
         gobj := new_object(vm)
         gobj.proto = nil
-        for p in pairs do oput(gobj, own_str_raw(vm, p.name), pair(vm, s, m, p.gi))
+        for p in pairs do oput(gobj, own_str_raw(vm, p.name), pair(vm, s, m, regex_named_group(re, p.name, m)))
         ind.props["groups"] = gobj
     } else {
         ind.props["groups"] = nil
     }
     return ind
+}
+
+regex_named_group :: proc(re: ^Regex, name: string, m: Re_Match) -> int {
+    ids := re.gnames[name]
+    for gi in ids do if m.groups[2*gi] >= 0 do return gi
+    return ids[0]
 }
 
 // O objeto `groups` de um casamento (exec/match e o último argumento do callback do
@@ -1664,7 +1751,7 @@ regex_indices_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> 
 regex_groups_object :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> ^Object {
     Pair :: struct { name: string, gi: int }
     pairs := make([dynamic]Pair, 0, len(re.gnames), context.temp_allocator)
-    for name, gi in re.gnames do append(&pairs, Pair{name, gi})
+    for name, ids in re.gnames do append(&pairs, Pair{name, ids[0]})
     for i := 1; i < len(pairs); i += 1 { // insertion sort: quase sempre 1–3 grupos
         for j := i; j > 0 && pairs[j].gi < pairs[j-1].gi; j -= 1 do pairs[j], pairs[j-1] = pairs[j-1], pairs[j]
     }
@@ -1672,8 +1759,9 @@ regex_groups_object :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> 
     gobj.proto = nil
     for p in pairs {
         v: Value = nil
-        if 2 * p.gi + 1 < len(m.groups) {
-            gs, ge := m.groups[2 * p.gi], m.groups[2 * p.gi + 1]
+        gi := regex_named_group(re, p.name, m)
+        if 2 * gi + 1 < len(m.groups) {
+            gs, ge := m.groups[2 * gi], m.groups[2 * gi + 1]
             if gs >= 0 do v = own_str(vm, str_rslice(s, gs, ge))
         }
         oput(gobj, own_str_raw(vm, p.name), v)

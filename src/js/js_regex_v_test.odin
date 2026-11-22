@@ -144,3 +144,77 @@ test_regex_source_e_tostring :: proc(t: ^testing.T) {
     // expando própria sombreia o método (antes era descartada em silêncio)
     expect_str(t, `var re = /x/; re.toString = Object.prototype.toString; re.toString()`, "[object RegExp]")
 }
+
+
+@(test)
+test_regex_duplicate_names_validation :: proc(t: ^testing.T) {
+    expect_str(t, `function se(s) { try { new RegExp(s); return "accepted"; } catch(e) { return e.name; } }
+        [se("(?<x>a)(?<x>b)"), se("(?<x>(?<x>a))"),
+         se("(?:(?<x>a)|b)(?:(?<x>c)|d)"),
+         se("(?<x>a)|(?<x>b)"), se("(?:(?<x>a)|(?<x>b))+")].join()`,
+        "SyntaxError,SyntaxError,SyntaxError,accepted,accepted")
+    expect_str(t, `var n = 0, result;
+        try { eval("n = 1; /(?<x>a)(?<x>b)/"); result = "accepted"; }
+        catch(e) { result = n + ":" + e.name; } result`, "0:SyntaxError")
+}
+
+@(test)
+test_regex_duplicate_names_match_and_reference :: proc(t: ^testing.T) {
+    expect_str(t, `var r = /^(?:(?<x>a)|(?<x>b))\k<x>$/;
+        [r.test("aa"), r.test("bb"), r.test("ab"), r.test("ba")].join()`, "true,true,false,false")
+    expect_str(t, `var r = /(?<x>a)|(?<x>b)/d, a = r.exec("a"), b = r.exec("b");
+        [a.groups.x, b.groups.x, JSON.stringify(a.indices.groups.x),
+         JSON.stringify(b.indices.groups.x), "ab".replace(r, "[$<x>]")].join("|")`,
+        "a|b|[0,1]|[0,1]|[a]b")
+    expect_str(t, `/\k<x>(?<x>a)/.test("a") + ""`, "true")
+}
+
+@(test)
+test_regex_unicode_invalid_escapes :: proc(t: ^testing.T) {
+    expect_str(t, `function se(s, f) { try { new RegExp(s, f); return "accepted"; } catch(e) { return e.name; } }
+        [se("\\u{110000}", "u"), se("[\\u{110000}]", "u"),
+         se("\\u{FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF}", "u"), se("\\u{}", "u"),
+         se("\\u{zz}", "u"), se("\\u{123", "u"), se("\\u123", "u"),
+         se("\\xG0", "u"), se("[\\u{110000}]", "v"),
+         se("[\\q{\\u{110000}}]", "v")].join()`,
+        "SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError")
+    expect_str(t, `[/\u{0000000000000010FFFF}/u.test("\u{10FFFF}"),
+        /\u{00000000000000000000}/u.test("\0"), /\u{2}/.test("uu"),
+        /\u{110000}/.unicode, /\uZZZZ/.test("uZZZZ")].join()`, "true,true,true,false,true")
+    expect_str(t, `var n = 0, result;
+        try { eval("n = 1; /[\\u{110000}]/v"); result = "accepted"; }
+        catch(e) { result = n + ":" + e.name; } result`, "0:SyntaxError")
+}
+
+@(test)
+test_regex_captures_cleared_each_iteration :: proc(t: ^testing.T) {
+    expect_str(t, `var m = /(z)((a+)?(b+)?(c))*/.exec("zaacbbbcac"); JSON.stringify(m)`,
+        `["zaacbbbcac","z","ac","a",null,"c"]`)
+    expect_str(t, `function capture(r) { return JSON.stringify(r.exec("aba")); }
+        [capture(/(a(b)?)+/), capture(/(a(b)?)*/), capture(/(a(b)?){2}/),
+         capture(/(a(b)?){2,3}/), capture(/(a(b)?){2,}/),
+         capture(/(a(b)?)+?$/), capture(/(a(b)?)*?$/)].join("|")`,
+        `["aba","a",null]|["aba","a",null]|["aba","a",null]|["aba","a",null]|["aba","a",null]|["aba","a",null]|["aba","a",null]`)
+    expect_str(t, `var m = /(?:(?<a>a)|(?<b>b))+/d.exec("ab");
+        [m.groups.a === undefined, m.groups.b, m.indices.groups.a === undefined,
+         JSON.stringify(m.indices.groups.b)].join()`, "true,b,true,[1,2]")
+    // An unsuccessful extra iteration must restore the preceding captures.
+    expect_str(t, `JSON.stringify(/(a(b)?)+b/.exec("abb"))`, `["abb","ab","b"]`)
+    expect_str(t, `/(a(b)?)+\2$/.exec("aba")[0]`, "aba")
+    expect_str(t, `/^(?:(?<x>a)|(?<x>b))+\k<x>$/.exec("abb").groups.x`, "b")
+}
+
+
+@(test)
+test_regex_duplicate_escaped_names :: proc(t: ^testing.T) {
+    expect_str(t, `var result; try { new RegExp("(?<x>a)(?<\\u0078>b)"); result = "accepted"; }
+        catch(e) { result = e.name; } result`, "SyntaxError")
+    expect_str(t, `/(?:(?<x>a)|(?<\u0078>b))\k<\u0078>/.exec("bb").groups.x`, "b")
+}
+
+@(test)
+test_regex_iteration_lookaround_captures :: proc(t: ^testing.T) {
+    expect_str(t, `var m = /(?:(a)(?=(b))|b)+/.exec("ab"); JSON.stringify(m)`, `["ab",null,null]`)
+    expect_str(t, `JSON.stringify(/(?:(?=(a))b|a)+/.exec("a"))`, `["a",null]`)
+    expect_str(t, `JSON.stringify(/(?:(?!(a))b|a)+/.exec("a"))`, `["a",null]`)
+}

@@ -122,23 +122,13 @@ m162_regex_sem_flag_u_mantem_sentido_antigo :: proc(t: ^testing.T) {
 }
 
 @(test)
-m162_regex_u_chaves_malformado_nao_derruba :: proc(t: ^testing.T) {
-    // Escape malformado cai no tratamento leniente de sempre: o `\u` vira o literal
-    // 'u' e NADA é consumido, sem travar o parser nem estourar. Quando o que sobra
-    // não é um quantificador válido, o resto também vira literal:
-    testing.expect_value(t, run(`/\u{/u.test("u{")`).(bool), true)
-    testing.expect_value(t, run(`/\u{zz}/u.test("u{zz}")`).(bool), true)
-    testing.expect_value(t, run(`/\u{}/u.test("u{}")`).(bool), true)
-
-    // ⚠️ DEGRADAÇÃO ANOTADA: quando o que sobra É um quantificador válido, ele é
-    // lido como tal — `/\u{110000}/u` vira `/u{110000}/` (u repetido 110000 vezes).
-    // O JS real lança SyntaxError aqui (com a flag `u`, escape inválido é erro).
-    // Não lançamos: o parser inteiro é tolerante por opção, e um SyntaxError a mais
-    // derrubaria bundles que hoje carregam. O que garantimos é que compila e casa
-    // NADA, em vez de casar por acidente.
-    testing.expect_value(t, run(`/\u{110000}/u.test("u{110000}")`).(bool), false)
-    testing.expect_value(t, run(`/\u{110000}/u.test("u")`).(bool), false)
-    testing.expect_value(t, run(`/\u{1234567}/u.test("u{1234567}")`).(bool), false)
-    // e o valor no limite superior VÁLIDO continua funcionando
+m162_regex_u_chaves_malformado_syntax_error :: proc(t: ^testing.T) {
+    // Unicode mode rejects malformed escapes before executing a literal.
+    testing.expect_value(t, run(`
+        var n = 0, result;
+        try { eval("n = 1; /\\u{110000}/u"); result = "accepted"; }
+        catch (e) { result = n + ":" + e.name; }
+        result
+    `).(string), "0:SyntaxError")
     testing.expect_value(t, run(`/\u{10FFFF}/u.test("\u{10FFFF}")`).(bool), true)
 }
