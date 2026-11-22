@@ -47,3 +47,19 @@ O caso sintetico nao representa um benchmark de navegacao em paginas reais.
 Depois da atualizacao in-place (mesma maquina e comando), nova observacao:
 completo 39,677 ms/restyle; incremental 1,362 ms, 5 cascatas (29,13x).
 As rodadas variam; os numeros nao medem o cache de geometria nem paginas reais.
+
+## Metadados de folhas e lotes de fontes
+
+As dependencias de seletores e a presenca de container queries ficam em cache
+por aba, junto das regras. A varredura de @font-face tambem ocorre apenas na
+entrada de uma folha, inclusive quando as regras chegam prontas do worker.
+`tab_drop_rules` invalida esses metadados; mudancas no CSSOM seguem esse caminho.
+
+No navegador interativo, fontes prontas e novos tamanhos nativos compartilham
+um lote de atlas. Se ainda houver downloads, o lote aguarda ate 50 ms a partir
+da primeira fonte pronta, sem bloquear a thread. Ao terminar o ultimo download,
+o lote pode sair antes do prazo. O rebuild continua invalidando estilos e layout
+para preservar as metricas. Renderizacao offline continua promovendo imediatamente.
+Isso reduz rebuilds quando os downloads chegam proximos; nao reduz o custo de
+um rebuild isolado nem elimina os fallbacks completos de :has/container queries.
+Ainda nao ha medicao comparativa desta alteracao no Reddit.

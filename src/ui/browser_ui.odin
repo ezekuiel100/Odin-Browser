@@ -70,6 +70,9 @@ Tab :: struct {
     rules:       [dynamic]csspkg.Rule,
     kf:          [dynamic]csspkg.Keyframe_Set,
     rules_ready: bool,
+    sheet_meta_ready: bool,
+    sheet_deps: Sheet_Deps,
+    sheet_has_cq: bool,
     cssom_revision: u64,
     zoom_applied: f32,                      // g_zoom com que styles/layout foram computados
     // Impressão digital do DOM de quando styles/layout foram computados. Um tick
@@ -227,6 +230,7 @@ zoom_step :: proc(dir: int) {
 // Chamar SEMPRE que o css_text for trocado ou a aba for destruída — as rules
 // são donas das próprias strings desde a correção de posse.
 tab_drop_rules :: proc(tab: ^Tab) {
+    tab.sheet_meta_ready = false
     if !tab.rules_ready do return
     csspkg.free_rules(&tab.rules)
     csspkg.free_keyframes(&tab.kf)
@@ -252,9 +256,15 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
         tab.rules, tab.kf = csspkg.parse(tab.css_text)
         tab.rules_ready = true
     }
-    // @font-face na thread PRINCIPAL (dona do atlas): o fetch_worker parseia as
-    // regras numa thread, então o registro das faces mora aqui. Idempotente.
-    fontface_scan(tab.css_text, tab.url)
+    // Rules may arrive pre-parsed from a worker. Prepare metadata once on
+    // the atlas-owning thread, then retain it until the stylesheet changes.
+    if !tab.sheet_meta_ready {
+        fontface_scan(tab.css_text, tab.url)
+        tab.sheet_deps = style_deps(tab.rules[:])
+        tab.sheet_has_cq = false
+        for r in tab.rules do if r.cq_active { tab.sheet_has_cq = true; break }
+        tab.sheet_meta_ready = true
+    }
     previous := tab.styles
     dirty := make(map[^dompkg.Node]bool, context.temp_allocator)
     reason := Restyle_Reason.Incremental
@@ -265,12 +275,12 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     }
     // Container measurements can change without a DOM mutation.
     if reason == .Incremental {
-        for r in tab.rules do if r.cq_active { reason = .Full_CQ; break }
+        if tab.sheet_has_cq do reason = .Full_CQ
     }
     live := make(map[^dompkg.Node]bool, len(previous), context.temp_allocator)
     plan := Style_Plan{old = previous, dirty = &dirty, live = &live}
     if reason == .Incremental {
-        plan.deps = style_deps(tab.rules[:])
+        plan.deps = tab.sheet_deps
         reason = plan_style_invalidation(tab.dom, &plan)
     }
     if reason == .Incremental && len(dirty) == 0 do reason = .Noop
@@ -2645,6 +2655,10 @@ poll_jobs :: proc(s: ^State) {
                 // Registration belongs to the atlas owner. Newly discovered
                 // family IDs require a restyle; already known families don't.
                 fontface_scan(tab.css_text, job.final_url != "" ? job.final_url : tab.url)
+                tab.sheet_deps = style_deps(tab.rules[:])
+                tab.sheet_has_cq = false
+                for r in tab.rules do if r.cq_active { tab.sheet_has_cq = true; break }
+                tab.sheet_meta_ready = true
                 if job.font_families != len(g_face_families) do tab.zoom_applied = -1
                 job.dom = nil
                 job.layout = nil

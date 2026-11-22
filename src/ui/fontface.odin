@@ -693,8 +693,7 @@ fontface_resolve_waiters :: proc(now: time.Tick) {
 fontface_poll :: proc() -> bool {
     io := im.GetIO()
     if io == nil || io.Fonts == nil do return false
-    added := native_fonts_add(io.Fonts)
-    if added do loading_trace_event("font-atlas reason=native-size")
+    if io.Fonts.Locked do return false
 
     sync.mutex_lock(&g_face_lock)
     active := 0
@@ -713,6 +712,20 @@ fontface_poll :: proc() -> bool {
         active += 1
     }
     fontface_resolve_waiters(now)
+    // Briefly collect nearby downloads without blocking the UI. Slow
+    // downloads cannot hold ready fonts indefinitely. Offline stays exact.
+    ready := native_fonts_pending()
+    loading := false
+    for &f in g_faces {
+        if f.state == .Loading do loading = true
+        if f.state == .Ready && f.raw != nil && sync.atomic_load(&f.done) do ready = true
+    }
+    if g_native_font_interactive && !font_atlas_batch_ready(&g_font_atlas_batch, ready, loading, now) {
+        sync.mutex_unlock(&g_face_lock)
+        return false
+    }
+    added := native_fonts_add(io.Fonts)
+    if added do loading_trace_event("font-atlas reason=native-size")
     for &f, i in g_faces {
         if !sync.atomic_load(&f.done) do continue
         sync.atomic_store(&f.done, false)
@@ -937,3 +950,19 @@ em_ratio_medido :: proc(blob: []byte, f: ^im.Font) -> (f32, bool) {
 test_sfnt_usable :: proc(b: []byte) -> bool { return sfnt_usable(b) }
 test_to_sfnt :: proc(b: []byte) -> []byte { return to_sfnt(b) }
 test_pick_src :: proc(srcs: []csspkg.Font_Src) -> (string, bool) { return pick_src(srcs) }
+
+// One batch includes ready webfonts and pending native raster sizes.
+FONT_ATLAS_BATCH_DELAY :: 50 * time.Millisecond
+Font_Atlas_Batch :: struct {
+    waiting: bool,
+    since: time.Tick,
+}
+g_font_atlas_batch: Font_Atlas_Batch
+
+font_atlas_batch_ready :: proc(batch: ^Font_Atlas_Batch, ready, loading: bool, now: time.Tick) -> bool {
+    if !ready { batch.waiting = false; return false }
+    if !batch.waiting { batch.waiting = true; batch.since = now }
+    if loading && time.tick_diff(batch.since, now) < FONT_ATLAS_BATCH_DELAY do return false
+    batch.waiting = false
+    return true
+}

@@ -136,3 +136,26 @@ test_font_automatic_retry_only_for_transient_failures :: proc(t: ^testing.T) {
     f.state = .Ready
     testing.expect(t, !fontface_retry_due(&f, later))
 }
+
+@(test)
+test_font_atlas_batch_coalesces_and_bounds_wait :: proc(t: ^testing.T) {
+    batch: Font_Atlas_Batch
+    now := time.tick_now()
+    testing.expect(t, !font_atlas_batch_ready(&batch, false, true, now))
+    // Three downloads complete across frames: only the last one releases
+    // the batch, so sources share a single rebuild and full page restyle.
+    testing.expect(t, !font_atlas_batch_ready(&batch, true, true, now))
+    testing.expect(t, !font_atlas_batch_ready(&batch, true, true, time.tick_add(now, 16*time.Millisecond)))
+    testing.expect(t, font_atlas_batch_ready(&batch, true, false, time.tick_add(now, 32*time.Millisecond)))
+    testing.expect(t, !batch.waiting)
+    testing.expect(t, !font_atlas_batch_ready(&batch, false, false, now))
+    // A stalled request cannot starve an already downloaded font.
+    testing.expect(t, !font_atlas_batch_ready(&batch, true, true, now))
+    testing.expect(t, font_atlas_batch_ready(&batch, true, true, time.tick_add(now, FONT_ATLAS_BATCH_DELAY)))
+    // An isolated ready font (or native size) never waits.
+    testing.expect(t, font_atlas_batch_ready(&batch, true, false, now))
+    // Cancelling all pending work resets the deadline for a future batch.
+    testing.expect(t, !font_atlas_batch_ready(&batch, true, true, now))
+    testing.expect(t, !font_atlas_batch_ready(&batch, false, false, now))
+    testing.expect(t, !font_atlas_batch_ready(&batch, true, true, time.tick_add(now, FONT_ATLAS_BATCH_DELAY)))
+}

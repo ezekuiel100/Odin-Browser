@@ -272,3 +272,31 @@ incremental_geometry_image_delivery :: proc(t: ^testing.T) {
     }
     testing.expect(t, !ensure_tab_geometry(tab.layout, 400, 300))
 }
+
+@(test)
+incremental_style_sheet_metadata_refresh :: proc(t: ^testing.T) {
+    doc := html.parse("<html><body><div></div><section>keep</section></body></html>")
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=".on{background-color:red}"}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.sheet_meta_ready && tab.sheet_deps == {} && !tab.sheet_has_cq)
+    // CSSOM replacement must replace dependency metadata as well as rules.
+    tab_drop_rules(&tab)
+    tab.css_text = "body:has(.on){background-color:blue}"
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, .Has in tab.sheet_deps)
+    dom.set_attr(dom.find_first(doc, "div"), "class", "on")
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.page_bg, u32(0x0000ff))
+    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+    tab_drop_rules(&tab)
+    // Simulate the pre-parsed rules transferred by a fetch worker.
+    tab.css_text = "@container (min-width:100px){div{color:red}}"
+    tab.rules, tab.kf = css.parse(tab.css_text)
+    tab.rules_ready = true
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.sheet_has_cq && tab.sheet_deps == {})
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+}
