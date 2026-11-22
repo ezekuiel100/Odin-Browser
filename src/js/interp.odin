@@ -2967,6 +2967,8 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         if fn, ok := vm.object_methods[name]; ok do return fn
         return nil
     case ^Regex:
+        if g, has := o.getters[name]; has do return call_function(vm, g, o, nil) if g != nil else nil // acessor próprio (defineProperty)
+        if _, has := o.setters[name]; has do return nil // só setter: leitura é undefined
         if v, has := o.props[name]; has do return v // expando própria (ver set_member)
         switch name {
         case "source":     return regex_source_text(vm, o)
@@ -3076,7 +3078,15 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
         o.props[name] = val
         return true
     case ^Regex:
-        if name == "lastIndex" { o.last_index = as_int(val); return true } // p/ loops de exec global
+        if s, has := o.setters[name]; has {
+            if s == nil do return false
+            call_function(vm, s, o, []Value{val}); return true
+        }
+        if _, has := o.getters[name]; has do return false // acessor sem setter: não grava
+        if name == "lastIndex" { // p/ loops de exec global
+            if o.last_index_ro do return false // writable:false — quem pede Set(..., true) lança
+            o.last_index = as_int(val); return true
+        }
         // demais props: expando PRÓPRIA da instância (`re.toString = ...`, marcas de
         // libs) — sombreia os métodos no get_member, como numa propriedade própria.
         if o.props == nil do o.props = make(map[string]Value)

@@ -241,3 +241,30 @@ regex_exec_nativo_this_invalido_lanca :: proc(t: ^testing.T) {
     testing.expect_value(t, run(`var r="nao lancou"; try { RegExp.prototype.exec.call({}, "a") } catch (e) { r = e instanceof TypeError } r`).(bool), true)
     testing.expect_value(t, run(`/a/.exec("ba").index`).(f64), 1)
 }
+
+// Object.defineProperty numa RegExp: antes "called on non-object". O Test262
+// species-regexp-get-*-throws constrói o matcher assim.
+@(test)
+regex_define_property :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`var re = Object.defineProperty(/a/g, "global", {get() { return "meu" }}); re.global + (re instanceof RegExp)`).(string), "meutrue")
+    testing.expect_value(t, run(`var re = /a/, log = []; Object.defineProperty(re, "x", {get() { return 1 }, set(v) { log.push(v) }}); re.x = 5; re.x + "|" + log`).(string), "1|5")
+    testing.expect_value(t, run(`var re = Object.defineProperty(/a/, "tag", {value: 7}); re.tag`).(f64), 7)
+    // o caso do Test262: o matcher da espécie tem `global` que lança, e o @@matchAll
+    // não pode lê-lo (usa as flags de R)
+    src := `
+        var regexp = /./;
+        regexp.constructor = { [Symbol.species]: function () {
+            return Object.defineProperty(/./, "global", { get() { throw new Error("leu global") } });
+        } };
+        var r = "ok"; try { regexp[Symbol.matchAll]("") } catch (e) { r = e.message } r
+    `
+    testing.expect_value(t, run(src).(string), "ok")
+}
+
+@(test)
+regex_last_index_somente_leitura :: proc(t: ^testing.T) {
+    // writable:false em lastIndex: o @@match global precisa gravá-lo e lança
+    testing.expect_value(t, run(`var re = /a/g; re.exec = function () { return null }; Object.defineProperty(re, "lastIndex", {writable: false}); var r = "nao lancou"; try { re[Symbol.match]("a") } catch (e) { r = e instanceof TypeError } r`).(bool), true)
+    testing.expect_value(t, run(`var re = /a/g; Object.defineProperty(re, "lastIndex", {value: 2}); re.lastIndex`).(f64), 2)
+    testing.expect_value(t, run(`var re = /a/g; Object.defineProperty(re, "lastIndex", {writable: false}); re.lastIndex = 5; re.lastIndex`).(f64), 0)
+}

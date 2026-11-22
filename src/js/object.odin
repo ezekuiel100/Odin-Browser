@@ -763,6 +763,14 @@ obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         fn.props = view.props; fn.getters = view.getters; fn.setters = view.setters; fn.attrs = view.attrs
         return fn
     }
+    if re, rok := arg(args, 0).(^Regex); rok {
+        key := key_string(vm, arg(args, 1))
+        if vm.throwing do return nil
+        desc, dok := arg(args, 2).(^Object)
+        if !dok { throw_type_error(vm, "Property descriptor must be an object"); return nil }
+        regex_define_property(vm, re, key, desc)
+        return re
+    }
     o, ok := arg(args, 0).(^Object)
     if !ok {
         throw_type_error(vm, "Object.defineProperty called on non-object")
@@ -771,6 +779,57 @@ obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     key := key_string(vm, arg(args, 1))
     if desc, dok := arg(args, 2).(^Object); dok { apply_descriptor(vm, o, key, desc) } else { throw_type_error(vm, "Property descriptor must be an object") }
     return o
+}
+
+// Object.defineProperty numa RegExp. Antes lançava "called on non-object" — uma
+// regex É objeto. Acessor (get/set) vira acessor PRÓPRIO da ^Regex (sombreia
+// `global`, `flags`, … no get_member); `value` vira expando como `re.x = v`.
+// Limitação: writable/enumerable/configurable não são modelados numa regex.
+@(private = "file")
+regex_define_property :: proc(vm: ^Interp, re: ^Regex, key: string, desc: ^Object) {
+    get_v := get_member(vm, desc, "get"); if vm.throwing do return
+    set_v := get_member(vm, desc, "set"); if vm.throwing do return
+    has_get := get_v != nil || obj_desc_has(desc, "get")
+    has_set := set_v != nil || obj_desc_has(desc, "set")
+    if has_get || has_set {
+        g, _ := get_v.(^Function)
+        s, _ := set_v.(^Function)
+        if re.props != nil {
+            if k, v, found := map_entry_key(re.props, key); found { _ = v; delete_key(&re.props, key); delete(k) }
+        }
+        if has_get {
+            if re.getters == nil do re.getters = make(map[string]^Function)
+            if _, exists := re.getters[key]; exists { re.getters[key] = g } else { re.getters[strings.clone(key)] = g }
+        }
+        if has_set {
+            if re.setters == nil do re.setters = make(map[string]^Function)
+            if _, exists := re.setters[key]; exists { re.setters[key] = s } else { re.setters[strings.clone(key)] = s }
+        }
+        return
+    }
+    if obj_desc_has(desc, "value") {
+        v := get_member(vm, desc, "value"); if vm.throwing do return
+        if key == "lastIndex" { re.last_index = as_int(v) } else { set_member(vm, re, key, v) }
+    }
+    // `lastIndex` é o ÚNICO atributo modelado: writable:false faz o Set(rx,
+    // "lastIndex", v, true) dos @@métodos lançar TypeError, como na spec.
+    if key == "lastIndex" && obj_desc_has(desc, "writable") {
+        w := get_member(vm, desc, "writable"); if vm.throwing do return
+        re.last_index_ro = !truthy(w)
+    }
+}
+
+@(private = "file")
+obj_desc_has :: proc(desc: ^Object, k: string) -> bool {
+    _, a := desc.props[k]
+    _, b := desc.getters[k]
+    return a || b
+}
+
+@(private = "file")
+map_entry_key :: proc(m: map[string]Value, key: string) -> (string, Value, bool) {
+    for k, v in m do if k == key do return k, v, true
+    return "", nil, false
 }
 
 // Object.defineProperties(obj, {k1: desc1, ...}) — devolve obj.

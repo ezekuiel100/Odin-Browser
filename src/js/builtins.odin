@@ -1171,7 +1171,9 @@ str_replace :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 str_custom_replace :: proc(vm: ^Interp, receiver, pattern, replacement: Value) -> (Value, bool) {
-    if is_nullish(pattern) do return nil, false
+    // Só OBJETO delega (spec atual: "If regexp is an Object"); um primitivo não
+    // consulta String.prototype[@@replace].
+    if is_primitive(pattern) do return nil, false
     method := get_member(vm, pattern, vm.sym_replace_key)
     if vm.throwing do return nil, true
     if is_nullish(method) do return nil, false
@@ -1321,7 +1323,10 @@ str_pad_end :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // `this.exec(...)`, então um `re.exec = fn` sobrescrito NÃO é consultado.
 @(private = "file")
 str_delegate :: proc(vm: ^Interp, pattern: Value, key: string, what: string, call_args: []Value) -> (Value, bool) {
-    if key == "" || is_nullish(pattern) do return nil, false
+    // Só OBJETO delega (spec atual: "If regexp is an Object"). Um separador
+    // primitivo como "," NÃO consulta String.prototype[@@split] — o Test262
+    // (cstm-*-on-*-primitive) instala um getter que lança ali para provar isso.
+    if key == "" || is_primitive(pattern) do return nil, false
     method := get_member(vm, pattern, key)
     if vm.throwing do return nil, true
     if is_nullish(method) do return nil, false
@@ -1607,6 +1612,18 @@ regex_fast :: proc(vm: ^Interp, rx: Value) -> ^Regex {
     return re
 }
 
+// Caminho rápido de @@split/@@matchAll: além do regex_fast, o SpeciesConstructor
+// tem de ser o %RegExp% — e ele roda SEMPRE (um `constructor` inválido lança
+// TypeError mesmo numa regex comum; o Test262 species-constructor-* cobre isso).
+regex_fast_species :: proc(vm: ^Interp, rx: Value) -> ^Regex {
+    re := regex_fast(vm, rx)
+    if re == nil do return nil
+    c := rx_species_ctor(vm, rx)
+    if c == nil do return nil // lançou
+    default_ctor, _ := vm.regex_proto.props["constructor"].(^Function)
+    return re if c == default_ctor else nil
+}
+
 // RegExpExec(R, S) (spec 22.2.7.1): o `exec` do objeto, se chamável (resultado tem de
 // ser objeto ou null); senão R precisa ser RegExp e roda o exec nativo.
 regexp_exec :: proc(vm: ^Interp, rx: Value, s: string) -> Value {
@@ -1797,6 +1814,10 @@ regex_sym_replace :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
             captures[n - 1] = c
         }
         named := get_member(vm, r, "groups"); if vm.throwing do return nil
+        if _, null := named.(JS_Null); null && !functional {
+            throw_type_error(vm, "Cannot convert null to object (exec result groups)") // ToObject(null)
+            return nil
+        }
         replacement: string
         if functional {
             fargs := make([dynamic]Value, context.temp_allocator)
@@ -1869,7 +1890,7 @@ get_substitution :: proc(vm: ^Interp, sb: ^strings.Builder, matched, s: string, 
 regex_sym_split :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if !rx_receiver(vm, this, "Symbol.split") do return nil
     s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
-    if re := regex_fast(vm, this); re != nil {
+    if re := regex_fast_species(vm, this); re != nil {
         limit, lok := split_limit(vm, arg(args, 1))
         if !lok do return nil
         return regex_split_impl(vm, re, s, limit)
@@ -1917,7 +1938,7 @@ regex_sym_split :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 regex_sym_match_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if !rx_receiver(vm, this, "Symbol.matchAll") do return nil
     s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
-    if re := regex_fast(vm, this); re != nil do return regex_match_all_impl(vm, re, s)
+    if re := regex_fast_species(vm, this); re != nil do return regex_match_all_impl(vm, re, s)
     if vm.throwing do return nil
     c := rx_species_ctor(vm, this); if c == nil do return nil
     flags := rx_flags(vm, this); if vm.throwing do return nil

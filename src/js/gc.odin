@@ -127,6 +127,8 @@ gc_drain :: proc(gp: ^GC_State) {
             }
         case ^Regex:
             for _, v in x.props do gc_push(&g, v) // expandos (re.toString = ...)
+            for _, f in x.getters do gc_push(&g, f) // acessores do defineProperty
+            for _, f in x.setters do gc_push(&g, f)
         case ^BigInt:
         case ^Symbol:
         case ^Module:
