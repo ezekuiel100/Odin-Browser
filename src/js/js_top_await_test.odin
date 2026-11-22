@@ -12,8 +12,8 @@ run_top_completion :: proc(src: string, dt: f64 = 0) -> Value {
     if dt > 0 do vm_pump_timers(vm, dt)
     check_parse_recoveries(vm, src)
     if p, ok := result.(^Object); ok {
-        if state, exists := p.props["_state"]; exists && as_number(state) == PROMISE_FULFILLED {
-            return p.props["_value"]
+        if p.promise != nil && p.promise.state == PROMISE_FULFILLED {
+            return p.promise.value
         }
     }
     return result
@@ -46,11 +46,11 @@ test_top_await_resumes_after_later_script :: proc(t: ^testing.T) {
     completion := vm_run(vm, `var release, order = 'before,';
         var pending = new Promise(function(r){ release = r; });
         var value = await pending; order += value; value + 1;`).(^Object)
-    testing.expect_value(t, as_number(completion.props["_state"]), PROMISE_PENDING)
+    testing.expect_value(t, completion.promise.state, PROMISE_PENDING)
     testing.expect_value(t, vm_run(vm, "order").(string), "before,")
     vm_run(vm, "order += 'script,'; release(41)")
     testing.expect_value(t, vm_run(vm, "order").(string), "before,script,41")
-    testing.expect_value(t, as_number(completion.props["_value"]), f64(42))
+    testing.expect_value(t, as_number(completion.promise.value), f64(42))
     testing.expect_value(t, as_number(vm_run(vm, "value")), f64(41))
 }
 
@@ -64,7 +64,7 @@ test_top_await_does_not_pump_timer :: proc(t: ^testing.T) {
     testing.expect_value(t, vm.clock_ms, f64(0))
     vm_pump_timers(vm, 25)
     testing.expect(t, truthy(vm_run(vm, "finished")))
-    testing.expect_value(t, as_number(completion.props["_state"]), PROMISE_FULFILLED)
+    testing.expect_value(t, completion.promise.state, PROMISE_FULFILLED)
 }
 
 @(test)
@@ -183,11 +183,11 @@ test_top_await_never_times_out_or_drains_recursively :: proc(t: ^testing.T) {
         var pending = new Promise(function(r){ release = r; });
         await pending; order += 'await,';`).(^Object)
     vm_pump_timers(vm, 30000)
-    testing.expect_value(t, as_number(completion.props["_state"]), PROMISE_PENDING)
+    testing.expect_value(t, completion.promise.state, PROMISE_PENDING)
     vm_run(vm, `Promise.resolve().then(function(){
         order += 'handler,'; release(); order += 'end,';
         queueMicrotask(function(){ order += 'microtask'; });
     });`)
     testing.expect_value(t, vm_run(vm, "order").(string), "handler,end,await,microtask")
-    testing.expect_value(t, as_number(completion.props["_state"]), PROMISE_FULFILLED)
+    testing.expect_value(t, completion.promise.state, PROMISE_FULFILLED)
 }

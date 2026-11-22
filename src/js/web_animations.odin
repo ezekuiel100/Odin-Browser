@@ -177,7 +177,7 @@ anim_cancel :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
     anim := anim_of(vm); if anim == nil do return nil
     if anim_state(anim) == "idle" do return nil
     anim.props["#gen"] = as_number(anim.props["#gen"]) + 1
-    if p, ok := anim.props["finished"].(^Object); ok && as_number(p.props["_state"]) == PROMISE_PENDING {
+    if p, ok := anim.props["finished"].(^Object); ok && p.promise != nil && p.promise.state == PROMISE_PENDING {
         promise_settle(vm, p, PROMISE_REJECTED, mk_error(vm, "AbortError", "The user aborted a request."))
     }
     anim.props["finished"] = promise_new(vm)

@@ -63,6 +63,14 @@ gc_drain :: proc(gp: ^GC_State) {
             gc_push(&g, x.px_self)
             gc_push(&g, x.ab)
             gc_push(&g, x.prim)
+            if x.promise != nil {
+                gc_push(&g, x.promise.value)
+                for r in x.promise.reactions {
+                    gc_push(&g, r.onf)
+                    gc_push(&g, r.onr)
+                    gc_push(&g, r.next)
+                }
+            }
             if x.coll_iter != nil {
                 gc_push(&g, x.coll_iter.collection)
                 gc_push(&g, x.coll_iter.source)
@@ -374,6 +382,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
         if g.seen[rawptr(o)] { vm.all_objects[live_all_objects] = o; live_all_objects += 1; continue }
 
         coll_iterator_destroy(o)
+        promise_destroy(o)
         delete(o.props)
         delete(o.korder)
         if o.getters != nil do delete(o.getters)

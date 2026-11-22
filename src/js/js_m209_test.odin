@@ -156,8 +156,8 @@ m209_promise_instanceof :: proc(t: ^testing.T) {
     testing.expect_value(t, val(`Promise.withResolvers().promise instanceof Promise`), "true")
     testing.expect_value(t, val(`Promise.resolve(1).then(function(){}) instanceof Promise`), "true")
     testing.expect_value(t, val(`Promise.resolve(1).constructor === Promise`), "true")
-    // CONTROLE: os métodos continuam vindo das props PRÓPRIAS (o caminho quente não
-    // passou a depender da cadeia) e um objeto qualquer não virou promise.
-    testing.expect_value(t, val(`Promise.resolve(1).hasOwnProperty("then")`), "true")
+    // Methods are inherited from Promise.prototype; instances have no own then.
+    testing.expect_value(t, val(`Promise.resolve(1).hasOwnProperty("then")`), "false")
+    testing.expect_value(t, val(`Promise.resolve(1).then === Promise.prototype.then`), "true")
     testing.expect_value(t, val(`({}) instanceof Promise`), "false")
 }

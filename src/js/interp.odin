@@ -59,6 +59,7 @@ Object :: struct {
     set:    Prop_Set,  // hook opcional de escrita
     geti:   Prop_Get_Idx, // hook opcional de leitura por índice inteiro (atalho do `get`)
     gen:    ^Generator, // != nil se este objeto é uma INSTÂNCIA de generator (generator.odin)
+    promise: ^Promise_Data, // private Promise slots; absent on ordinary objects
     coll_iter: ^Coll_Iterator, // private state for live Map/Set iterators
     px_revoked: bool,
     px_self: Value,
@@ -1301,6 +1302,7 @@ vm_destroy :: proc(vm: ^Interp) {
     if vm.module_stubs != nil do delete(vm.module_stubs)
     for o in vm.all_objects {
         coll_iterator_destroy(o)
+        promise_destroy(o)
         delete(o.props)
         delete(o.korder)
         if o.getters != nil do delete(o.getters)
