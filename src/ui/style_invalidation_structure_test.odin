@@ -335,3 +335,129 @@ container_invalidation_after_sibling_layout_change :: proc(t: ^testing.T) {
     testing.expect_value(t, tab.styles[target].width, f32(10))
     expect_matches_full(t, &tab)
 }
+
+@(private="file")
+expect_relational_geometry_full :: proc(t: ^testing.T, tab: ^Tab) {
+    ref, _ := compute_styles(tab.dom, &tab.rules, 400, 300, tab.kf[:])
+    layout := build_layout(tab.dom, ref, tab.url)
+    defer { free_layout(layout); free_styles(ref); svg_css_bind(tab.styles) }
+    ensure_tab_geometry(tab.layout, 400, 300)
+    ensure_tab_geometry(layout, 400, 300)
+    a := make(map[^dom.Node]^Box, context.temp_allocator)
+    b := make(map[^dom.Node]^Box, context.temp_allocator)
+    test_style_box_index(tab.layout, &a)
+    test_style_box_index(layout, &b)
+    testing.expect_value(t, len(a), len(b))
+    for n, box in a {
+        r, found := b[n]
+        if !testing.expect(t, found) do continue
+        testing.expect_value(t, box.x, r.x)
+        testing.expect_value(t, box.y, r.y)
+        testing.expect_value(t, box.w, r.w)
+        testing.expect_value(t, box.h, r.h)
+    }
+}
+
+@(test)
+relational_invalidation_descendant_groups_and_inheritance :: proc(t: ^testing.T) {
+    doc := html.parse(`<html><body><article id="card" class="card"><div id="trigger"><i></i></div><span id="label">text</span><b class="ready"></b></article><section id="far"><span>keep</span></section></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`.card{width:60px;--tone:red} .card:has(.on,.alt):has(.ready){width:180px;--tone:blue} .card:not(:has(.on,.alt)){opacity:.75} .card span{color:var(--tone)} section::before{content:'owned'}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    stable := tab.styles[el(doc, "far")].before
+    cls_cases := [?]string{"on", "alt", "", "on", ""}
+    for cls in cls_cases {
+        sa(el(doc, "trigger"), "class", cls)
+        restyle_tab(&tab, 400, 300)
+        testing.expect(t, tab.restyle_nodes < len(tab.styles))
+        testing.expect_value(t, tab.styles[el(doc, "far")].before, stable)
+        testing.expect_value(t, tab.styles[el(doc, "card")].width, cls == "" ? f32(60) : f32(180))
+        testing.expect_value(t, tab.styles[el(doc, "card")].opacity, cls == "" ? f32(.75) : f32(1))
+        testing.expect_value(t, tab.styles[el(doc, "label")].color, cls == "" ? u32(0xff0000) : u32(0x0000ff))
+        expect_matches_full(t, &tab)
+        expect_relational_geometry_full(t, &tab)
+    }
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, 0)
+}
+
+@(test)
+relational_invalidation_reaches_siblings_and_nested_functions :: proc(t: ^testing.T) {
+    doc := html.parse(`<html><body><aside id="anchor" class="anchor"><span id="inside"></span></aside><div class="panel" id="panel"><i class="label" id="label"></i></div><section id="trigger" class="trigger"><b id="flag"></b></section><footer id="far">keep</footer></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`.anchor:has(+ .panel .on){width:31px} .anchor:has(~ .trigger .on){--tone:blue} .anchor span{color:var(--tone,red)} :is(.anchor:has(.on),.unused) + .panel{width:101px} .panel:not(:has(.on)){height:42px} .panel .label{width:12px}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    id_cases := [?]string{"label", "flag", "inside"}
+    for id in id_cases {
+        cls_cases := [?]string{"on", ""}
+        for cls in cls_cases {
+            sa(el(doc, id), "class", id == "label" ? (cls == "" ? "label" : "label on") : cls)
+            restyle_tab(&tab, 400, 300)
+            testing.expect(t, tab.restyle_nodes < len(tab.styles))
+            expect_matches_full(t, &tab)
+            expect_relational_geometry_full(t, &tab)
+        }
+    }
+}
+
+@(test)
+relational_invalidation_structure_text_moves_and_freed_subjects :: proc(t: ^testing.T) {
+    doc := html.parse(`<html><body><main><article id="left" class="card"><i id="moving" class="on">x</i></article><article id="right" class="card"><b id="empty"></b></article></main><aside id="far"><span>keep</span></aside></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`.card:has(>.on){width:80px} .card:not(:has(>.on)){width:20px} .card:has(:empty){height:31px}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    left, right, moving := el(doc, "left"), el(doc, "right"), el(doc, "moving")
+    text := dom.make_node(.Text)
+    text.text = strings.clone("filled")
+    dom.append_child(el(doc, "empty"), text)
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.restyle_nodes < len(tab.styles))
+    expect_matches_full(t, &tab)
+    set_text(text, " ")
+    restyle_tab(&tab, 400, 300)
+    expect_matches_full(t, &tab)
+    remove_kid(left, moving)
+    dom.append_child(right, moving)
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.restyle_nodes < len(tab.styles))
+    testing.expect_value(t, tab.styles[left].width, f32(20))
+    testing.expect_value(t, tab.styles[right].width, f32(80))
+    expect_matches_full(t, &tab)
+    expect_relational_geometry_full(t, &tab)
+    // Free a matched subject before planning. Its cached pointer is a key only.
+    remove_kid(right.parent, right)
+    dom.free_tree(right)
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.restyle_nodes < len(tab.styles))
+    expect_matches_full(t, &tab)
+}
+
+@(test)
+relational_invalidation_nth_filter_and_sheet_replacement :: proc(t: ^testing.T) {
+    doc := html.parse(`<html><body><ul><li id="a"><i id="flag"></i></li><li id="b"><b class="on"></b></li><li id="c"><em class="on"></em></li></ul><aside>keep</aside></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`li:nth-child(2 of :has(.on)){width:77px}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    cls_cases := [?]string{"on", ""}
+    for cls in cls_cases {
+        sa(el(doc, "flag"), "class", cls)
+        restyle_tab(&tab, 400, 300)
+        testing.expect(t, tab.restyle_nodes < len(tab.styles))
+        expect_matches_full(t, &tab)
+    }
+    tab_drop_rules(&tab)
+    testing.expect(t, !tab.relational_ready && tab.relational_matches == nil && len(tab.relational_selectors) == 0)
+    tab.css_text = `li:has(.on){height:20px}`
+    restyle_tab(&tab, 400, 300)
+    expect_matches_full(t, &tab)
+    // A tab transferred from a worker has no membership snapshot yet.
+    tab.relational_ready = false
+    sa(el(doc, "flag"), "class", "on")
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+    expect_matches_full(t, &tab)
+}

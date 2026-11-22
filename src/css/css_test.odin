@@ -1319,3 +1319,20 @@ test_decls_preserva_case_custom :: proc(t: ^testing.T) {
     _, tem_color := d["color"]
     testing.expect(t, tem_color, "COLOR deve virar minúsculo")
 }
+
+@(test)
+test_relational_arguments_are_preserved_in_functional_selectors :: proc(t: ^testing.T) {
+    rules, kf := parse(`.card:not(:has(>.on)){width:20px} :is(:has(.on),.other){width:30px} :where(:has(+.next)){height:4px}`)
+    defer { free_rules(&rules); free_keyframes(&kf) }
+    testing.expect_value(t, len(rules), 3)
+    neg := rules[0].selectors[0].parts[0]
+    if testing.expect_value(t, len(neg.nots), 1) {
+        testing.expect_value(t, len(neg.nots[0].parts[0].has), 1)
+    }
+    for i in 1..<3 {
+        group := rules[i].selectors[0].parts[0]
+        if testing.expect(t, len(group.ors) > 0 && !group.never) {
+            testing.expect_value(t, len(group.ors[0].parts[0].has), 1)
+        }
+    }
+}

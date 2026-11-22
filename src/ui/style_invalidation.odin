@@ -25,7 +25,7 @@ Restyle_Reason :: enum u8 {
     Full_Structure,  // child list changed (kids_ver)
     Full_Counter,    // counters/quotes involved
     Full_Text,       // text node changed
-    Full_Cross_Sel,  // sheet has sibling/:has/nth/empty/dir selectors
+    Full_Cross_Sel,  // missing relational snapshot / direct planner fallback
 }
 
 // What in the sheet makes one node's style depend on nodes OUTSIDE its own
@@ -34,7 +34,7 @@ Restyle_Reason :: enum u8 {
 //            subtrees) → recompute the parent's subtree.
 //   Nth_Of   `:nth-child(… of S)`: position counts siblings MATCHING S → same.
 //   Empty    `:empty`: a child-list/text change flips the PARENT's match.
-//   Has      `:has()`: reaches ANCESTORS and their other descendants → full.
+//   Has      `:has()`: compare selector membership across the live document.
 //   Counter  counters/quotes run in document order → full.
 // Plain `:nth-child`/`:first-child` depend only on the child list, which is
 // already covered by recomputing the subtree of the node whose children changed.
@@ -42,7 +42,9 @@ Sheet_Dep :: enum u8 { Sibling, Nth_Of, Empty, Has, Counter }
 Sheet_Deps :: bit_set[Sheet_Dep]
 
 selector_deps :: proc(s: css.Selector, out: ^Sheet_Deps, depth := 0) {
-    if depth > 8 do return
+    // Deep functional nesting uses an exact relational snapshot instead of
+    // silently dropping dependencies at the traversal limit.
+    if depth > 8 { out^ += {.Has}; return }
     for c in s.combs do if c == .Adjacent || c == .Sibling do out^ += {.Sibling}
     for p in s.parts {
         if len(p.has) > 0 do out^ += {.Has}
@@ -82,6 +84,37 @@ container_inputs_fingerprint :: proc(styles: map[^dom.Node]Computed) -> u64 {
         h += part
     }
     return h
+}
+
+// A selector's membership is stored exactly, rather than hashing boolean
+// matches: entering/leaving a functional selector group must not cancel out.
+Relational_Match :: struct { node: ^dom.Node, selector: int }
+
+collect_relational_selectors :: proc(rules: []css.Rule) -> (out: [dynamic]css.Selector) {
+    for r in rules do for s in r.selectors {
+        deps: Sheet_Deps
+        selector_deps(s, &deps)
+        if .Has in deps do append(&out, s) // borrowed from retained rules
+    }
+    return
+}
+
+plan_relational_invalidation :: proc(root: ^dom.Node, old, fresh: map[Relational_Match]bool, p: ^Style_Plan) {
+    changed := make(map[^dom.Node]bool, context.temp_allocator)
+    for key in fresh {
+        if key not_in old do changed[dir_auto_root(key.node)] = true
+    }
+    for key in old {
+        // Removed nodes are only keys. Never dereference a freed DOM node.
+        if key not_in fresh && key.node in p.live^ do changed[dir_auto_root(key.node)] = true
+    }
+    // Select topmost changed subjects so nested matches do not repeatedly
+    // mark the same descendant subtree.
+    walk :: proc(n: ^dom.Node, changed: map[^dom.Node]bool, p: ^Style_Plan) {
+        if changed[n] { plan_mark(n, p); return }
+        for child in n.children do walk(child, changed, p)
+    }
+    if len(changed) > 0 do walk(root, changed, p)
 }
 
 Style_Plan :: struct {

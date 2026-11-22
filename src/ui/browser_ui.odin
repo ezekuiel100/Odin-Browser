@@ -73,6 +73,9 @@ Tab :: struct {
     sheet_meta_ready: bool,
     sheet_deps: Sheet_Deps,
     sheet_has_cq: bool,
+    relational_selectors: [dynamic]csspkg.Selector, // borrowed selector payloads
+    relational_matches: map[Relational_Match]bool,
+    relational_ready: bool,
     container_inputs_ready: bool,
     container_inputs_fp: u64,
     cssom_revision: u64,
@@ -232,6 +235,11 @@ zoom_step :: proc(dir: int) {
 // Chamar SEMPRE que o css_text for trocado ou a aba for destruída — as rules
 // são donas das próprias strings desde a correção de posse.
 tab_drop_rules :: proc(tab: ^Tab) {
+    delete(tab.relational_matches)
+    delete(tab.relational_selectors)
+    tab.relational_matches = nil
+    tab.relational_selectors = nil
+    tab.relational_ready = false
     tab.sheet_meta_ready = false
     tab.container_inputs_ready = false
     if !tab.rules_ready do return
@@ -264,6 +272,7 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     if !tab.sheet_meta_ready {
         fontface_scan(tab.css_text, tab.url)
         tab.sheet_deps = style_deps(tab.rules[:])
+        tab.relational_selectors = collect_relational_selectors(tab.rules[:])
         tab.sheet_has_cq = false
         for r in tab.rules do if r.cq_active { tab.sheet_has_cq = true; break }
         tab.sheet_meta_ready = true
@@ -282,12 +291,25 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     if reason == .Incremental && tab.sheet_has_cq {
         if !tab.container_inputs_ready || tab.container_inputs_fp != container_inputs_fingerprint(previous) do reason = .Full_CQ
     }
+    fresh_relational: map[Relational_Match]bool
+    if .Has in tab.sheet_deps {
+        fresh_relational = relational_matches(tab.dom, tab.relational_selectors[:])
+        if reason == .Incremental && !tab.relational_ready do reason = .Full_Cross_Sel
+    }
     live := make(map[^dompkg.Node]bool, len(previous), context.temp_allocator)
     plan := Style_Plan{old = previous, dirty = &dirty, live = &live}
     if reason == .Incremental {
-        plan.deps = tab.sheet_deps
+        // Relational matches widen the normal mutation plan after the live
+        // walk. Direct callers without snapshots retain the old full fallback.
+        plan.deps = tab.sheet_deps - {.Has}
         reason = plan_style_invalidation(tab.dom, &plan)
+        if reason == .Incremental && tab.relational_ready {
+            plan_relational_invalidation(tab.dom, tab.relational_matches, fresh_relational, &plan)
+        }
     }
+    delete(tab.relational_matches)
+    tab.relational_matches = fresh_relational
+    tab.relational_ready = true
     if reason == .Incremental && len(dirty) == 0 do reason = .Noop
     incremental := reason == .Incremental || reason == .Noop
     loading_trace_event(fmt.tprintf("restyle reason=%v viewport=%.0fx%.0f previous=%.0fx%.0f", reason, vw, vh, tab.style_vw, tab.style_vh))
@@ -2665,6 +2687,7 @@ poll_jobs :: proc(s: ^State) {
                 // family IDs require a restyle; already known families don't.
                 fontface_scan(tab.css_text, job.final_url != "" ? job.final_url : tab.url)
                 tab.sheet_deps = style_deps(tab.rules[:])
+                tab.relational_selectors = collect_relational_selectors(tab.rules[:])
                 tab.sheet_has_cq = false
                 for r in tab.rules do if r.cq_active { tab.sheet_has_cq = true; break }
                 tab.sheet_meta_ready = true

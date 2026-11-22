@@ -7936,7 +7936,25 @@ parse_font_family :: proc(value: string) -> (Font_Family, u8, bool) {
     return .Sans, 0, false
 }
 
-// Casa um seletor complexo contra um nó, subindo pela cadeia de ancestrais.
+// Snapshot relational selectors before planning style invalidation. Stamping
+// first makes implicit shadow-scope attribute changes visible to the planner;
+// compute_styles repeats the idempotent stamp without changing the snapshot.
+relational_matches :: proc(root: ^dompkg.Node, selectors: []csspkg.Selector) -> map[Relational_Match]bool {
+    stamp_shadow_scopes(root)
+    out := make(map[Relational_Match]bool)
+    walk :: proc(n: ^dompkg.Node, selectors: []csspkg.Selector, out: ^map[Relational_Match]bool) {
+        if n.kind == .Element {
+            for sel, i in selectors {
+                if selector_matches_node(sel, n) do out[Relational_Match{n, i}] = true
+            }
+        }
+        for child in n.children do walk(child, selectors, out)
+    }
+    walk(root, selectors, &out)
+    return out
+}
+
+// Match a complex selector by walking its ancestor/sibling chain.
 @(private="file")
 selector_matches_node :: proc(sel: csspkg.Selector, n: ^dompkg.Node, scope0: ^dompkg.Node = nil) -> bool {
     scope := scope0

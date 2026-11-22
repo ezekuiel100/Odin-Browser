@@ -77,7 +77,7 @@ incremental_style_relational_and_structure_fallback :: proc(t: ^testing.T) {
     dom.append_child(n, dom.make_node(.Text))
     restyle_tab(&tab, 400, 300)
     testing.expect(t, tab.restyle_layout)
-    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+    testing.expect(t, tab.restyle_nodes < len(tab.styles))
     restyle_tab(&tab, 500, 300)
     testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
     tab_drop_rules(&tab)

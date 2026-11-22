@@ -8,8 +8,9 @@ continua lendo o estado atual, inclusive escritas diretas em atributos.
 Mudancas de fundo, opacidade e cursor podem atualizar caixas existentes. Outras
 propriedades, texto inline sem caixa propria e mudancas estruturais reconstroem
 a arvore de caixas. Zoom, viewport, tema e folhas novas invalidam tudo.
-Seletores relacionais entre ramos e contadores usam o caminho completo por
-seguranca. Container queries permitem invalidacao incremental quando suas medidas
+Seletores relacionais com :has() comparam snapshots de casamento para invalidar
+os sujeitos afetados e seus descendentes. Contadores continuam no caminho completo.
+Container queries permitem invalidacao incremental quando suas medidas
 estao estaveis; medidas novas ou alteradas invalidam mesmo sem mudanca no DOM.
 
 As entradas intactas permanecem no mesmo mapa: apenas os valores substituidos
@@ -123,3 +124,45 @@ Na carga do Reddit observada, os 10 restyles foram classificados como Full_Env=1
 Full_Structure=5 e Full_Cross_Sel=4. A cascata completa ainda e necessaria pelos
 seletores relacionais: remover o gatilho incondicional de CQ nao elimina esses
 fallbacks. Conteudo e mutacoes variam entre cargas; a medicao nao e controlada.
+
+## Invalidacao relacional de :has()
+
+Cada aba ret?m os seletores que contem :has(), inclusive dentro de :not(),
+:is(), :where() e filtros de :nth-child. Antes do planejamento, a UI carimba os
+escopos de shadow DOM e registra o conjunto exato de pares (no, seletor) que
+casam. O plano normal cuida de atributos, texto e estrutura; diferencas entre o
+snapshot antigo e o novo marcam tambem os sujeitos relacionais e suas subarvores.
+Ancestrais desses sujeitos continuam participando para reconstruir a heranca.
+Sujeitos encaixados sao agrupados pela raiz mais alta, evitando marcar a mesma
+subarvore varias vezes. Ponteiros removidos sao usados apenas como chaves.
+
+Folhas novas e navegacao descartam os snapshots. Uma aba recebida do worker
+sem snapshot ainda usa uma primeira cascata completa para estabelecer a base.
+Contadores, fontes, ambiente e medidas de container queries preservam seus
+fallbacks. A deteccao relacional ainda percorre o DOM e reavalia os seletores
+relacionais; nao ha indice de dependencias por mutacao nesta etapa.
+
+O parser tambem passa a preservar argumentos cujo alvo e apenas :has() dentro
+de :not/:is/:where. Antes eles eram considerados nao avaliaveis e descartados,
+por exemplo em `.card:not(:has(>.on))`. Os testes conferem esse parsing, a
+cascata completa e a geometria em sequencias com descendentes, irmaos,
+heranca, grupos funcionais, texto, insercao/remocao, movimentos e troca de folhas.
+
+Em teste sintetico local de 700 cards, com 22 restyles por versao, o tempo TOTAL
+de restyle (incluindo a comparacao relacional) caiu de 1.049 para 134 ms
+(47,7 -> 6,1 ms/chamada, cerca de 7,8x). O caminho incremental recalculou
+147 de 58.989 entradas acumuladas, cerca de 0,25%. Tempos incluem instrumentacao;
+nao sao um percentual de ganho no Reddit. Arquivos locais:
+`_local/has-invalidation-bench.html`, `_local/has-before.log`, `_local/has-final.log`.
+
+Na carga real observada, 21 restyles foram classificados como Incremental=20 e
+Full_Env=1. As chamadas incrementais recalcularam 54.435 de 103.376 nos acumulados
+(52,7%). A reconstrucao global das caixas permaneceu cara (688,9 ms/chamada
+nessa carga) e segue sendo um gargalo. Conteudo e mutacoes diferem entre cargas,
+portanto a medicao real nao e uma comparacao controlada de tempo total.
+
+Validacao com STYLECHECK=true: na execucao real do Reddit, 21 rodadas fizeram
+101.815 comparacoes de estilos com a cascata completa, sem divergencias,
+entradas ausentes ou entradas excedentes. O sintetico tambem passou pelo
+oraculo. Logs locais: `_local/reddit-has-oracle.log` e
+`_local/has-oracle-bench.log`. Suites: 1.116 testes de UI e 186 de CSS passaram.

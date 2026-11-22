@@ -1466,7 +1466,7 @@ parse_compound :: proc(key: string) -> (Compound, bool) {
                     safe := len(sel.parts) > 1 || tgt.tag != "" || tgt.id != "" ||
                             len(tgt.classes) > 0 || len(tgt.attrs) > 0 ||
                             tgt.nth_kind != .None || tgt.empty_req || tgt.defined_req || tgt.scope_req || tgt.never ||
-                            tgt.ui_states != {} || len(tgt.nots) > 0 || len(tgt.ors) > 0 || tgt.dir_req != .None
+                            tgt.ui_states != {} || len(tgt.nots) > 0 || len(tgt.ors) > 0 || len(tgt.has) > 0 || tgt.dir_req != .None
                     if is_not && safe {
                         append(&out.nots, sel)
                     } else if keep_or && safe {
