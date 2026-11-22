@@ -954,7 +954,7 @@ module_export_name :: proc(p: ^Parser) -> string {
 
 // `from "especificador"` obrigatório + atributos opcionais (`with { type: "json" }`).
 @(private = "file")
-module_from :: proc(p: ^Parser) -> string {
+module_from :: proc(p: ^Parser, n: ^Node) -> string {
     if !expect_word(p, "from") do return ""
     t := peek(p)
     if t.kind != .Str {
@@ -962,22 +962,32 @@ module_from :: proc(p: ^Parser) -> string {
         return ""
     }
     advance(p)
-    skip_import_attributes(p)
+    parse_import_attributes(p, n)
     return t.text
 }
 
 @(private = "file")
-skip_import_attributes :: proc(p: ^Parser) {
+parse_import_attributes :: proc(p: ^Parser, n: ^Node) {
     t := peek(p)
     if t.kind != .Ident || (t.text != "with" && !(t.text == "assert" && !t.nl_before)) do return
     advance(p)
+    n.third = new(Node)
+    n.third.kind = .ObjectLit
+    n.third.name = t.text // with / legacy assert
     if !expect(p, .LBrace) do return
     for peek(p).kind != .RBrace && peek(p).kind != .EOF {
         if k := peek(p).kind; k != .Ident && k != .Str { unexpected(p); return }
-        advance(p)
+        key := advance(p).text
+        for attr in n.third.body {
+            if attr.name == key { syntax_error(p, "Duplicate import attribute"); return }
+        }
         if !expect(p, .Colon) do return
         if peek(p).kind != .Str { unexpected(p); return }
-        advance(p)
+        attr := new(Node)
+        attr.kind = .Str
+        attr.name = key
+        attr.str = advance(p).text
+        append(&n.third.body, attr)
         if peek(p).kind == .Comma { advance(p); continue }
         break
     }
@@ -1025,7 +1035,7 @@ parse_export :: proc(p: ^Parser) -> ^Node {
         }
         expect(p, .RBrace)
         if is_kw(peek(p), "from") {
-            n.str = module_from(p) // re-export
+            n.str = module_from(p, n) // re-export
         }
         consume_semicolon(p)
         return n
@@ -1034,7 +1044,7 @@ parse_export :: proc(p: ^Parser) -> ^Node {
         advance(p) // *
         n.aux = true
         if is_kw(peek(p), "as") { advance(p); n.name = module_export_name(p) }
-        n.str = module_from(p)
+        n.str = module_from(p, n)
         consume_semicolon(p)
         return n
     }
@@ -1060,7 +1070,7 @@ parse_import :: proc(p: ^Parser) -> ^Node {
     n := new(Node); n.kind = .ImportDecl
     if peek(p).kind == .Str { // import "./efeito.js" (só efeitos colaterais)
         n.str = advance(p).text
-        skip_import_attributes(p)
+        parse_import_attributes(p, n)
         consume_semicolon(p)
         return n
     }
@@ -1106,7 +1116,7 @@ parse_import :: proc(p: ^Parser) -> ^Node {
             return n
         }
     }
-    n.str = module_from(p)
+    n.str = module_from(p, n)
     consume_semicolon(p)
     return n
 }

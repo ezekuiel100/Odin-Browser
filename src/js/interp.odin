@@ -229,6 +229,7 @@ Module :: struct {
     error: Value,
     parent: ^Module, // evaluation ancestry, for static cycles
     deferred: [dynamic]Deferred_Export,
+    program: ^Node, // retained AST, used for ResolveExport across star graphs
 }
 
 // Hooks de resolução/busca — instalados por dom_bindings (o interp não importa

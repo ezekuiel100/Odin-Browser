@@ -22,6 +22,101 @@ package js
 import "core:fmt"
 import "core:strings"
 
+Module_Resolution :: struct {
+    module: ^Module,
+    local: string,
+    ambiguous: bool,
+}
+Module_Resolve_Visit :: struct { module: ^Module, name: string }
+
+// Look up an already started request without fetching or evaluating it again.
+module_requested :: proc(vm: ^Interp, m: ^Module, spec: string) -> ^Module {
+    if vm.module_resolve == nil do return nil
+    url := vm.module_resolve(vm, spec, m.url)
+    defer delete(url)
+    return vm.modules[url]
+}
+
+module_resolve_export :: proc(vm: ^Interp, m: ^Module, name: string) -> Module_Resolution {
+    visits: [dynamic]Module_Resolve_Visit
+    defer delete(visits)
+    return module_resolve_export_walk(vm, m, name, &visits)
+}
+
+// Resolve binding identity, never its current value. A repeated (module,name)
+// terminates only that path; two paths to the same binding are not ambiguous.
+module_resolve_export_walk :: proc(vm: ^Interp, m: ^Module, name: string, visits: ^[dynamic]Module_Resolve_Visit) -> Module_Resolution {
+    if m == nil || m.program == nil do return {}
+    for v in visits^ do if v.module == m && v.name == name do return {}
+    append(visits, Module_Resolve_Visit{m, name})
+    for n in m.program.body {
+        if n.kind != .ExportDecl || n.str == "" do continue
+        dep := module_requested(vm, m, n.str)
+        if n.aux {
+            if n.name == name do return Module_Resolution{module = dep, local = "#namespace"}
+        } else {
+            for c in n.body do if c.str == name do return module_resolve_export_walk(vm, dep, c.name, visits)
+        }
+    }
+    if local := module_local_of(m, name); local != "" {
+        // A locally exported import still identifies the original binding.
+        for n in m.program.body {
+            if n.kind != .ImportDecl do continue
+            dep := module_requested(vm, m, n.str)
+            if n.rest_param == local do return Module_Resolution{module = dep, local = "#namespace"}
+            if n.name == local do return module_resolve_export_walk(vm, dep, "default", visits)
+            for c in n.body do if c.name == local do return module_resolve_export_walk(vm, dep, c.str, visits)
+        }
+        return Module_Resolution{module = m, local = local}
+    }
+    if name == "default" do return {}
+    result: Module_Resolution
+    for n in m.program.body {
+        if n.kind != .ExportDecl || !n.aux || n.name != "" do continue
+        r := module_resolve_export_walk(vm, module_requested(vm, m, n.str), name, visits)
+        if r.ambiguous do return r
+        if r.module == nil do continue
+        if result.module != nil && (r.module != result.module || r.local != result.local) {
+            return Module_Resolution{ambiguous = true}
+        }
+        result = r
+    }
+    return result
+}
+
+module_export_names :: proc(vm: ^Interp, m: ^Module, names: ^map[string]bool, seen: ^map[^Module]bool) {
+    if m == nil || m.program == nil || seen^[m] do return
+    seen^[m] = true
+    for d in m.deferred do names^[d.exported] = true
+    for n in m.program.body {
+        if n.kind != .ExportDecl || !n.aux do continue
+        if n.name != "" { names^[n.name] = true; continue }
+        module_export_names(vm, module_requested(vm, m, n.str), names, seen)
+    }
+}
+
+module_refresh_stars :: proc(vm: ^Interp, m: ^Module) {
+    if m == nil || m.program == nil do return
+    has_stars := false
+    for n in m.program.body {
+        if n.kind == .ExportDecl && n.aux && n.name == "" { has_stars = true; break }
+    }
+    if !has_stars do return
+    names := make(map[string]bool)
+    seen := make(map[^Module]bool)
+    defer delete(names)
+    defer delete(seen)
+    module_export_names(vm, m, &names, &seen)
+    for name in names {
+        r := module_resolve_export(vm, m, name)
+        if r.module != nil && !r.ambiguous {
+            oput(m.ns, name, nil)
+        } else {
+            delete_key(&m.ns.props, name)
+        }
+    }
+}
+
 MAX_MODULES :: 160 // teto de módulos ÚNICOS buscados por página (anti-runaway de rede).
 // Era 64, e virou o gargalo assim que o M206 fez o grafo de módulos ANDAR (antes ele
 // morria no 1º módulo, então o teto quase nunca era alcançado: no github.com o aviso
@@ -120,6 +215,7 @@ module_snapshot_exports :: proc(vm: ^Interp, m: ^Module) {
         if v, ok := env_get(m.env, d.local); ok do oput(m.ns, d.exported, v)
         else do oput(m.ns, d.exported, nil) // existe como chave, ainda sem valor
     }
+    module_refresh_stars(vm, m)
     module_bind_ns_live(m)
 }
 
@@ -134,6 +230,13 @@ module_ns_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
             v, _ := env_get(m.env, d.local, vm)
             return v, true
         }
+    }
+    r := module_resolve_export(vm, m, name)
+    if r.ambiguous do return nil, true
+    if r.module != nil {
+        if r.local == "#namespace" do return r.module.ns, true
+        v, _ := env_get(r.module.env, r.local, vm)
+        return v, true
     }
     return nil, false // default/props comuns seguem pelo caminho normal
 }
@@ -211,10 +314,23 @@ eval_import_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) {
         if vm.throwing do vm_clear_uncaught(vm) // dep lançou: loga e não envenena o importador
     }
     if n.name != "" {
-        if local := module_local_of(m, "default"); ok && local != "" do env_alias(env, n.name, m.env, local)
-        else do env_define(env, n.name, ok ? get_member(vm, m.ns, "default") : nil)
+        if ok {
+            r := module_resolve_export(vm, m, "default")
+            if r.module == nil || r.ambiguous {
+                vm.throwing = true
+                vm.thrown = mk_error(vm, "SyntaxError", "Unresolvable default export")
+                return
+            }
+            if r.local == "#namespace" do env_define(env, n.name, r.module.ns)
+            else do env_alias(env, n.name, r.module.env, r.local)
+        } else {
+            env_define(env, n.name, nil)
+        }
     }
-    if n.rest_param != "" do env_define(env, n.rest_param, ok ? m.ns : nil)
+    if n.rest_param != "" {
+        if ok do module_refresh_stars(vm, m)
+        env_define(env, n.rest_param, ok ? m.ns : nil)
+    }
     for c in n.body { // {a, b as c}: c.str = exportado, c.name = local
         // LIVE BINDING (M139): quando o export vem de uma variável do exportador, o
         // importador ALIASA essa variável em vez de copiar o valor. Sem isto, um
@@ -223,11 +339,16 @@ eval_import_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) {
         // exporta vazio" (crates.io: `var Ln,Rn; function Hn(){Ln=window,Rn=document}`
         // com `export{Ln as tt, Rn as et}`).
         if ok {
-            if local := module_local_of(m, c.str); local != "" {
-                env_alias(env, c.name, m.env, local)
-                env_escaped(vm) // o alias segura o escopo do exportador por referência
-                continue
+            r := module_resolve_export(vm, m, c.str)
+            if r.ambiguous || r.module == nil {
+                vm.throwing = true
+                vm.thrown = mk_error(vm, "SyntaxError", fmt.tprintf("Unresolvable export '%s' from '%s'", c.str, n.str))
+                return
             }
+            if r.local == "#namespace" { env_define(env, c.name, r.module.ns); continue }
+            env_alias(env, c.name, r.module.env, r.local)
+            env_escaped(vm)
+            continue
         }
         v: Value = ok ? get_member(vm, m.ns, c.str) : nil
         // breadcrumb de grafo: binding undefined = export que não materializou
@@ -288,7 +409,7 @@ eval_export_decl :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             if n.name != "" { // export * as ns from "x"
                 oput(m.ns, n.name, dep.ns)
             } else { // export * from "x" — copia tudo exceto default (spec)
-                for k in dep.ns.props do if k != "default" do module_link_export(vm, m, k, dep, k)
+                module_refresh_stars(vm, m)
             }
         } else { // export {a, b as c} from "x"
             for c in n.body do module_link_export(vm, m, c.str, dep, c.name)
@@ -354,8 +475,10 @@ module_wait_dependency :: proc(vm: ^Interp, dep: ^Module) -> bool {
 module_start_dependencies :: proc(vm: ^Interp, program: ^Node) -> (pending: bool) {
     if vm.module_resolve == nil || vm.module_fetch == nil do return false
     referrer := vm.current_module != nil ? vm.current_module.url : vm.base_url
+    started := false
     for node in program.body {
         if node.kind == .ImportDecl || (node.kind == .ExportDecl && node.str != "") {
+            started = true
             dep := load_module(vm, node.str, referrer)
             if dep != nil && dep.state == .Loading {
                 cycle := false
@@ -370,11 +493,15 @@ module_start_dependencies :: proc(vm: ^Interp, program: ^Node) -> (pending: bool
             vm.thrown = nil
         }
     }
+    // A cycle may have completed a barrel before another branch was started.
+    // Once requests are available, publish its final unambiguous key set too.
+    if started do for m in vm.all_modules do module_refresh_stars(vm, m)
     return pending
 }
 
 // Prepare the namespace and declaration bindings before any dependency executes.
 module_instantiate :: proc(vm: ^Interp, m: ^Module, program: ^Node, env: ^Env) {
+    m.program = program
     prepare :: proc(n: ^Node, env: ^Env) {
         if n == nil do return
         if n.kind == .VarDecl {
@@ -431,17 +558,23 @@ module_collect_pattern_exports :: proc(m: ^Module, pat: ^Node) {
 
 // Reexports remain aliases rather than snapshots, preserving later writes and TDZ.
 module_link_export :: proc(vm: ^Interp, m: ^Module, exported: string, dep: ^Module, imported: string) {
+    r := module_resolve_export(vm, dep, imported)
+    if r.ambiguous || r.module == nil {
+        vm.throwing = true
+        vm.thrown = mk_error(vm, "SyntaxError", fmt.tprintf("Unresolvable re-export '%s'", imported))
+        return
+    }
     local := module_local_of(m, exported)
     if local == "" {
         local = own_str(vm, fmt.tprintf("#reexport:%s", exported)).(string)
         append(&m.deferred, Deferred_Export{local = local, exported = exported})
     }
-    if source := module_local_of(dep, imported); source != "" {
+    if r.local != "#namespace" {
         delete_key(&m.env.vars, local)
         if m.env.uninitialized != nil do delete_key(&m.env.uninitialized, local)
-        env_alias(m.env, local, dep.env, source)
+        env_alias(m.env, local, r.module.env, r.local)
     } else {
-        env_define(m.env, local, dep.ns.props[imported])
+        env_define(m.env, local, r.module.ns)
     }
     oput(m.ns, exported, nil)
 }

@@ -51,6 +51,7 @@ Node_Kind :: enum u8 {
     // ── módulos ES (M109) ───────────────────────
     ImportCall, // import(expr) dinâmico   -> left(expressão do especificador)
     ImportMeta, // import.meta             -> (sem campos; url resolvida no eval)
+    // ImportDecl/ExportDecl: third holds attribute .ObjectLit (name=with/assert, body=.Str name/value).
     ImportDecl, // import estático         -> str(especificador), name(default local ou ""),
                 //                            rest_param(nome de `* as ns` ou ""),
                 //                            body(nós .Ident: str=nome exportado, name=alias local)
