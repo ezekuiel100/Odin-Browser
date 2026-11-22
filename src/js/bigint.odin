@@ -11,7 +11,6 @@ package js
 //
 // APROXIMAÇÕES: bitwise & | ^ com operandos NEGATIVOS pode divergir do two's
 // complement infinito da spec (big usa sinal-magnitude; ~x = -(x+1) é exato);
-// comparação relacional BigInt×Number usa f64 (perde precisão p/ valores enormes).
 
 import "core:math"
 import "core:math/big"
@@ -122,6 +121,22 @@ bigint_equals :: proc(a, b: ^BigInt) -> bool {
 
 // ── aritmética (novo ^BigInt tracked no vm) ──────────────────────────────────
 
+// Compare using the exact rational representation of the Number.
+bigint_compare_number :: proc(b: ^BigInt, n: f64) -> (order: int, ordered: bool) {
+    if n != n do return 0, false
+    if n > max(f64) do return -1, true
+    if n < -max(f64) do return 1, true
+    rational: big.Rat
+    scaled: big.Int
+    defer big.destroy(&rational.a)
+    defer big.destroy(&rational.b)
+    defer big.destroy(&scaled)
+    big.rat_set_f64(&rational, n)
+    big.mul(&scaled, &b.val, &rational.b)
+    c, _ := big.compare(&scaled, &rational.a)
+    return c, true
+}
+
 bigint_add :: proc(vm: ^Interp, a, b: ^BigInt) -> ^BigInt {
     r := new_bigint(vm); big.add(&r.val, &a.val, &b.val); return r
 }
@@ -226,23 +241,22 @@ bigint_binop :: proc(vm: ^Interp, op: Token_Kind, l, r: Value) -> Value {
     case .EqEq:    return bigint_loose_eq(l, r)
     case .NotEq:   return !bigint_loose_eq(l, r)
     case .Lt, .Gt, .LtEq, .GtEq:
-        // ambos BigInt: comparação EXATA; misto: via f64
+        c: int
         if lisb && risb {
-            c := bigint_compare(lb, rb)
-            #partial switch op {
-            case .Lt:   return c < 0
-            case .Gt:   return c > 0
-            case .LtEq: return c <= 0
-            case .GtEq: return c >= 0
-            }
+            c = bigint_compare(lb, rb)
+        } else {
+            bi := lisb ? lb : rb
+            other := lisb ? r : l
+            ordered: bool
+            c, ordered = bigint_compare_number(bi, as_number(other))
+            if !ordered do return false
+            if !lisb do c = -c
         }
-        lf := lisb ? bigint_to_f64(lb) : as_number(l)
-        rf := risb ? bigint_to_f64(rb) : as_number(r)
         #partial switch op {
-        case .Lt:   return lf < rf
-        case .Gt:   return lf > rf
-        case .LtEq: return lf <= rf
-        case .GtEq: return lf >= rf
+        case .Lt:   return c < 0
+        case .Gt:   return c > 0
+        case .LtEq: return c <= 0
+        case .GtEq: return c >= 0
         }
     }
 
@@ -309,7 +323,8 @@ bigint_loose_eq :: proc(l, r: Value) -> bool {
     n := as_number(other)
     if n != n do return false           // NaN
     if n != math.trunc(n) do return false // não-inteiro nunca iguala um BigInt
-    return bigint_to_f64(bi) == n
+    c, ordered := bigint_compare_number(bi, n)
+    return ordered && c == 0
 }
 
 // ── BigInt(x) global + prototype ─────────────────────────────────────────────

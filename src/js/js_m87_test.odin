@@ -209,3 +209,35 @@ test_bigint_set_dedup :: proc(t: ^testing.T) {
     src := `var s = new Set(); s.add(1n); s.add(1n); s.add(2n); s.size.toString()`
     testing.expect(t, sbig(src) == "2", "Set deve deduplicar BigInts iguais")
 }
+
+@(test)
+test_bigint_number_exact_comparisons :: proc(t: ^testing.T) {
+    cases := []string {
+        `9007199254740993n > 9007199254740992`,
+        `9007199254740992 < 9007199254740993n`,
+        `!(9007199254740993n <= 9007199254740992)`,
+        `!(9007199254740992 >= 9007199254740993n)`,
+        `9007199254740993n != 9007199254740992`,
+        `9007199254740992 != 9007199254740993n`,
+        `9007199254740992n == 9007199254740992`,
+        `-9007199254740993n < -9007199254740992`,
+        `-9007199254740992 > -9007199254740993n`,
+        `1n < 1.5 && 1.5 > 1n && -1n > -1.5 && -1.5 < -1n`,
+        `1n != 1.5 && -1n != -1.5`,
+        `0n == -0 && 0n <= -0 && -0 >= 0n`,
+        `0n < 5e-324 && 0n > -5e-324`,
+        `0n < Infinity && 0n > -Infinity && Infinity > 0n && -Infinity < 0n`,
+        `0n != Infinity && 0n != -Infinity`,
+        `!(0n < NaN) && !(0n > NaN) && !(0n <= NaN) && !(0n >= NaN) && 0n != NaN`,
+        `!(NaN < 0n) && !(NaN > 0n) && !(NaN <= 0n) && !(NaN >= 0n)`,
+        `(10n ** 400n) > 1.7976931348623157e308`,
+        `(10n ** 400n) < Infinity && (10n ** 400n) != Infinity`,
+        `(-(10n ** 400n)) < -1.7976931348623157e308`,
+        `(2n ** 100n) == 1.2676506002282294e30`,
+        `(2n ** 100n + 1n) > 1.2676506002282294e30`,
+    }
+    for source in cases {
+        result, ok := run(source).(bool)
+        testing.expect(t, ok && result, source)
+    }
+}
