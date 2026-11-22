@@ -380,7 +380,13 @@ Interp :: struct {
     sym_species_key: string,
     sym_concat_spreadable_key: string,
     sym_replace_key: string,
-    sym_iterator_key: string,              // chave-string do Symbol.iterator (p/ protocolo de iterador)
+    // Symbol.match/matchAll/search/split: String.prototype.<m> delega a arg[@@m]
+    // (como o replace); @@match também é o critério do IsRegExp.
+    sym_match_key: string,
+    sym_match_all_key: string,
+    sym_search_key: string,
+    sym_split_key: string,
+    sym_iterator_key: string,             // chave-string do Symbol.iterator (p/ protocolo de iterador)
     sym_async_iterator_key: string,        // chave-string do Symbol.asyncIterator (for-await + async generators)
     sym_toprimitive_key: string,           // chave-string do Symbol.toPrimitive (ToPrimitive consulta antes de valueOf/toString)
     sym_has_instance_key: string,          // chave-string do Symbol.hasInstance (instanceof consulta antes da cadeia de proto)
@@ -427,6 +433,7 @@ Interp :: struct {
     collection_iter_protos: [Coll_Kind]^Object,
     regex_test_fn:  ^Function,             // RegExp.prototype.test/exec (regex.odin)
     regex_exec_fn:  ^Function,
+    regex_proto:    ^Object, // RegExp.prototype: o get_member de ^Regex cai aqui depois dos casos fixos
     regex_tostring_fn: ^Function,          // RegExp.prototype.toString ("/fonte/flags")
     dom_element_ctor:     ^Function,             // constructor compartilhado dos elementos DOM (node.constructor.prototype — inputValueTracking do React); é o HTMLElement da hierarquia de interfaces
     dom_element_proto:     ^Object,               // HTMLElement.prototype (proto dos wrappers de elemento; base p/ instanceof + polyfills em Element/Node/HTMLElement.prototype)
@@ -2946,6 +2953,11 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         case "toString":   return vm.regex_tostring_fn // antes caía no de Object: "[object RegExp]"
         case "constructor": return global_ctor(vm, "RegExp")
         }
+        // RegExp.prototype de verdade: os @@match/@@split/... nativos e o que o
+        // código do usuário pendurar ali. Antes a instância não via o protótipo.
+        if vm.regex_proto != nil {
+            if v, ok := vm.regex_proto.props[name]; ok do return v
+        }
         if fn, ok := vm.object_methods[name]; ok do return fn
         return nil
     case ^BigInt:
@@ -3218,8 +3230,13 @@ set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) -> bool {
     case nil, JS_Null, f64, bool, string, ^Symbol, ^BigInt:
         // `null[k] = v` lança como `null.x = v`; primitivo devolve false (set_member)
         return set_member(vm, obj, key_string(vm, key), val)
+    case ^Regex:
+        // `re[k] = v` computado: expando própria via set_member, como `re.x = v`.
+        // Antes era IGNORADO, e `re[Symbol.match] = false` (o jeito da spec de fazer
+        // uma regex passar por string no startsWith/includes) não tinha efeito.
+        return set_member(vm, o, key_string(vm, key), val)
     }
-    return true // ^Regex/^Collection: o motor não guarda a prop (limitação)
+    return true // ^Collection: o motor não guarda a prop (limitação)
 }
 
 // Lê/escreve um alvo cuja base/chave JÁ foram avaliadas (obj/key) — o .Assign

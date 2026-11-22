@@ -1204,12 +1204,10 @@ write_str_replacement :: proc(sb: ^strings.Builder, repl: string, s: string, idx
 str_replace_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if is_nullish(this) { throw_type_error(vm, "String.prototype.replaceAll requires a receiver"); return nil }
     pattern := arg(args, 0)
-    if re, rok := pattern.(^Regex); rok {
-        if !re.global {
-            vm.thrown = mk_error(vm, "TypeError", "replaceAll com regex exige flag global")
-            vm.throwing = true
-            return nil
-        }
+    if !is_nullish(pattern) {
+        isre := is_regexp(vm, pattern) // IsRegExp + flags, como no matchAll
+        if vm.throwing do return nil
+        if isre && !regexp_has_flag(vm, pattern, 'g', "replaceAll") do return nil
     }
     if result, handled := str_custom_replace(vm, this, pattern, arg(args, 1)); handled do return result
     s := to_js_string(vm, this)
@@ -1261,7 +1259,9 @@ str_search_args :: proc(vm: ^Interp, this: Value, args: []Value, method: string)
         if is_nullish(this) { throw_type_error(vm, fmt.tprintf("String.prototype.%s called on null or undefined", method)); return "", "", false }
         s = to_js_string(vm, this); if vm.throwing do return "", "", false
     }
-    if _, isre := arg(args, 0).(^Regex); isre {
+    isre := is_regexp(vm, arg(args, 0)) // IsRegExp: @@match decide (não só ^Regex)
+    if vm.throwing do return "", "", false
+    if isre {
         throw_type_error(vm, fmt.tprintf("First argument to String.prototype.%s must not be a regular expression", method))
         return "", "", false
     }
@@ -1308,20 +1308,123 @@ str_pad_end :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return str_pad(vm, this, args, false)
 }
 
+// ── protocolo dos símbolos de regex (@@match/@@matchAll/@@search/@@split) ─────
+// Os métodos de String que aceitam regex (spec 22.1.3) não sabem nada de RegExp:
+// se o argumento não é null/undefined e tem um método @@x, a chamada é DELEGADA a
+// ele. É o que permite um objeto qualquer se comportar como padrão, e o que o
+// core-js/babel testam (`''.split({[Symbol.split]: () => 7}) === 7`) antes de
+// decidir se substituem o método nativo.
+//
+// A RegExp NATIVA chega aqui também: o RegExp.prototype tem @@x nativos (ver
+// install_regex_symbol_methods), que rodam os *_impl abaixo. Desvio consciente: os
+// nativos exigem `this` ^Regex e usam o motor direto — a spec os escreve em cima de
+// `this.exec(...)`, então um `re.exec = fn` sobrescrito NÃO é consultado.
+@(private = "file")
+str_delegate :: proc(vm: ^Interp, pattern: Value, key: string, what: string, call_args: []Value) -> (Value, bool) {
+    if key == "" || is_nullish(pattern) do return nil, false
+    method := get_member(vm, pattern, key)
+    if vm.throwing do return nil, true
+    if is_nullish(method) do return nil, false
+    if fn, ok := method.(^Function); ok {
+        return call_function(vm, fn, pattern, call_args), true
+    }
+    throw_type_error(vm, fmt.tprintf("%s must be callable", what))
+    return nil, true
+}
+
+// IsRegExp (spec 7.2.8): objeto com @@match ⇒ ToBoolean dele; sem @@match, só uma
+// RegExp de verdade. `re[Symbol.match] = false` faz a regex passar por string em
+// startsWith/includes; `{[Symbol.match]: true}` faz um objeto qualquer ser recusado.
+// Quem chama confere vm.throwing (o getter de @@match pode lançar).
+is_regexp :: proc(vm: ^Interp, v: Value) -> bool {
+    if is_primitive(v) do return false
+    if vm.sym_match_key != "" {
+        m := get_member(vm, v, vm.sym_match_key)
+        if vm.throwing do return false
+        if m != nil do return truthy(m)
+    }
+    _, isre := v.(^Regex)
+    return isre
+}
+
+// RegExpCreate(arg, flags) dos métodos de String: ToString do padrão (undefined →
+// padrão vazio) e regex inválida LANÇA SyntaxError. Antes um não-string virava o
+// padrão vazio (`"x1".match(1)` casava "" na posição 0) e regex inválida dava null.
+@(private = "file")
+str_regex_create :: proc(vm: ^Interp, pattern: Value, flags: string) -> ^Regex {
+    pat := ""
+    if pattern != nil {
+        pat = to_js_string(vm, pattern)
+        if vm.throwing do return nil
+    }
+    re, ok := regex_compile(vm, pat, flags)
+    if !ok {
+        vm.thrown = mk_error(vm, "SyntaxError", fmt.tprintf("Invalid regular expression: /%s/", pat))
+        vm.throwing = true
+        return nil
+    }
+    return re
+}
+
+// `this` dos métodos de String: RequireObjectCoercible + ToString.
+@(private = "file")
+str_this :: proc(vm: ^Interp, this: Value, method: string) -> (string, bool) {
+    if is_nullish(this) {
+        throw_type_error(vm, fmt.tprintf("String.prototype.%s called on null or undefined", method))
+        return "", false
+    }
+    s := to_js_string(vm, this)
+    return s, !vm.throwing
+}
+
+// limit do split: ToUint32 (undefined = 2^32−1).
+@(private = "file")
+split_limit :: proc(vm: ^Interp, v: Value) -> (int, bool) {
+    if v == nil do return int(0xFFFFFFFF), true
+    number := to_number(vm, v)
+    if vm.throwing do return 0, false
+    return int(to_uint32(Value(number))), true
+}
+
 @(private = "file")
 str_split :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    res := new_array(vm)
     if is_nullish(this) { throw_type_error(vm, "String.prototype.split requires a receiver"); return nil }
-    s := to_js_string(vm, this); if vm.throwing do return nil
     sep_val := arg(args, 0)
-    limit := int(0xFFFFFFFF)
-    if v := arg(args, 1); v != nil {
-        number := to_number(vm, v); if vm.throwing do return nil
-        limit = int(to_uint32(Value(number)))
-    }
+    if r, handled := str_delegate(vm, sep_val, vm.sym_split_key, "Symbol.split", []Value{this, arg(args, 1)}); handled do return r
+    s := to_js_string(vm, this); if vm.throwing do return nil
+    limit, lok := split_limit(vm, arg(args, 1))
+    if !lok do return nil
+    res := new_array(vm)
     if limit == 0 do return res
     n := str_rlen(s)
-    if re, rok := sep_val.(^Regex); rok {
+    if re, rok := sep_val.(^Regex); rok do return regex_split_impl(vm, re, s, limit)
+    if sep_val == nil { append(&res.items, own_str(vm, s)); return res }
+    sep := to_js_string(vm, sep_val); if vm.throwing do return nil
+    if sep == "" {
+        for i in 0 ..< min(n,limit) do append(&res.items, own_str(vm, str_rslice(s, i, i+1)))
+        return res
+    }
+    last := 0
+    for {
+        found := js_string_find(s, sep, last)
+        if found < 0 do break
+        append(&res.items, own_str(vm, str_rslice(s, last, found)))
+        if len(res.items) == limit do return res
+        last = found + str_rlen(sep)
+    }
+    append(&res.items, own_str(vm, str_rslice(s, last, n)))
+    return res
+}
+
+// Split por regex: tentativa ANCORADA (sticky) em cada posição — o equivalente ao
+// splitter com flag "y" da spec. Corpo de String.prototype.split e de
+// RegExp.prototype[@@split].
+@(private = "file")
+regex_split_impl :: proc(vm: ^Interp, re: ^Regex, s: string, limit: int) -> Value {
+    res := new_array(vm)
+    if limit == 0 do return res
+    n := str_rlen(s)
+    {
         points := re.unicode || re.unicode_sets
         if n == 0 {
             m := regex_run(re, s, 0, true)
@@ -1352,39 +1455,25 @@ str_split :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         append(&res.items, own_str(vm, str_rslice(s, last, n)))
         return res
     }
-    if sep_val == nil { append(&res.items, own_str(vm, s)); return res }
-    sep := to_js_string(vm, sep_val); if vm.throwing do return nil
-    if sep == "" {
-        for i in 0 ..< min(n,limit) do append(&res.items, own_str(vm, str_rslice(s, i, i+1)))
-        return res
-    }
-    last := 0
-    for {
-        found := js_string_find(s, sep, last)
-        if found < 0 do break
-        append(&res.items, own_str(vm, str_rslice(s, last, found)))
-        if len(res.items) == limit do return res
-        last = found + str_rlen(sep)
-    }
-    append(&res.items, own_str(vm, str_rslice(s, last, n)))
-    return res
 }
 
-// match(regex) — sem g: [match, g1, ...] ou null; com g: [match1, match2, ...] ou null.
+// match(regexp): delega a regexp[@@match]; senão RegExpCreate + o match da regex.
 @(private = "file")
 str_match :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return JS_Null{}
-    re: ^Regex
-    if r, rok := arg(args, 0).(^Regex); rok {
-        re = r
-    } else {
-        pat := ""
-        if p, pok := arg(args, 0).(string); pok do pat = p
-        re2, cok := regex_compile(vm, pat, "")
-        if !cok do return JS_Null{}
-        re = re2
-    }
+    if is_nullish(this) { throw_type_error(vm, "String.prototype.match called on null or undefined"); return nil }
+    if r, handled := str_delegate(vm, arg(args, 0), vm.sym_match_key, "Symbol.match", []Value{this}); handled do return r
+    s := to_js_string(vm, this); if vm.throwing do return nil
+    re := str_regex_create(vm, arg(args, 0), "")
+    if re == nil do return nil
+    return regex_match_impl(vm, re, s)
+}
+
+// sem g: [match, g1, ...] ou null; com g: [match1, match2, ...] ou null (lastIndex
+// termina em 0, como no laço de exec da spec).
+@(private = "file")
+regex_match_impl :: proc(vm: ^Interp, re: ^Regex, s: string) -> Value {
     if re.global {
+        re.last_index = 0
         arr := new_array(vm)
         start := 0
         for {
@@ -1404,62 +1493,145 @@ str_match :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return regex_result_array(vm, re, s, m)
 }
 
-// search(regex) — índice da primeira correspondência, ou -1.
+// search(regexp): delega a regexp[@@search]; senão RegExpCreate + o search da regex.
 @(private = "file")
 str_search :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return f64(-1)
-    re: ^Regex
-    if r, rok := arg(args, 0).(^Regex); rok {
-        re = r
-    } else {
-        pat := ""
-        if p, pok := arg(args, 0).(string); pok do pat = p
-        re2, cok := regex_compile(vm, pat, "")
-        if !cok do return f64(-1)
-        re = re2
-    }
-    m := regex_run(re, s, 0)
-    if !m.ok do return f64(-1)
-    defer delete(m.groups)
-    return f64(m.groups[0]) // índice em unidades UTF-16
+    if is_nullish(this) { throw_type_error(vm, "String.prototype.search called on null or undefined"); return nil }
+    if r, handled := str_delegate(vm, arg(args, 0), vm.sym_search_key, "Symbol.search", []Value{this}); handled do return r
+    s := to_js_string(vm, this); if vm.throwing do return nil
+    re := str_regex_create(vm, arg(args, 0), "")
+    if re == nil do return nil
+    return regex_search_impl(vm, re, s)
 }
 
-// matchAll(regex) — iterador de TODOS os matches, cada um com grupos/.index/
-// .input/.groups (regex_result_array). Exige a flag g (spec); string compila
-// com g implícito. Não mexe no lastIndex do regex original (spec clona).
+// Índice (UTF-16) da 1ª correspondência, ou -1. Busca desde 0 e não toca no
+// lastIndex (a spec o salva e restaura); com a flag y, ancorada em 0.
+@(private = "file")
+regex_search_impl :: proc(vm: ^Interp, re: ^Regex, s: string) -> Value {
+    m := regex_run(re, s, 0, re.sticky)
+    if !m.ok do return f64(-1)
+    defer delete(m.groups)
+    return f64(m.groups[0])
+}
+
+// matchAll(regexp): regex (IsRegExp) sem a flag g é TypeError ANTES da delegação;
+// depois delega a regexp[@@matchAll]; senão RegExpCreate(regexp, "g").
 @(private = "file")
 str_match_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    s, ok := this.(string); if !ok do return make_array_iterator(vm, new_array(vm))
-    re: ^Regex
-    if r, rok := arg(args, 0).(^Regex); rok {
-        if !r.global {
-            throw_type_error(vm, "matchAll exige uma regex com a flag g")
-            return nil
-        }
-        re = r
-    } else {
-        pat := ""
-        if p, pok := arg(args, 0).(string); pok do pat = p
-        re2, cok := regex_compile(vm, pat, "g")
-        if !cok {
-            vm.thrown = mk_error(vm, "SyntaxError", "matchAll: regex inválida")
-            vm.throwing = true
-            return nil
-        }
-        re = re2
+    if is_nullish(this) { throw_type_error(vm, "String.prototype.matchAll called on null or undefined"); return nil }
+    pattern := arg(args, 0)
+    if !is_nullish(pattern) {
+        isre := is_regexp(vm, pattern)
+        if vm.throwing do return nil
+        if isre && !regexp_has_flag(vm, pattern, 'g', "matchAll") do return nil
     }
+    if r, handled := str_delegate(vm, pattern, vm.sym_match_all_key, "Symbol.matchAll", []Value{this}); handled do return r
+    s := to_js_string(vm, this); if vm.throwing do return nil
+    re := str_regex_create(vm, pattern, "g")
+    if re == nil do return nil
+    return regex_match_all_impl(vm, re, s)
+}
+
+// Para matchAll/replaceAll com um padrão IsRegExp: Get(flags), RequireObjectCoercible,
+// ToString, e TypeError se faltar a flag. false = já lançou.
+@(private = "file")
+regexp_has_flag :: proc(vm: ^Interp, pattern: Value, flag: byte, method: string) -> bool {
+    flags := get_member(vm, pattern, "flags")
+    if vm.throwing do return false
+    if is_nullish(flags) {
+        throw_type_error(vm, fmt.tprintf("String.prototype.%s: regexp flags is null or undefined", method))
+        return false
+    }
+    fs := to_js_string(vm, flags)
+    if vm.throwing do return false
+    if strings.index_byte(fs, flag) < 0 {
+        throw_type_error(vm, fmt.tprintf("String.prototype.%s called with a non-global RegExp argument", method))
+        return false
+    }
+    return true
+}
+
+// Iterador de TODOS os matches desde lastIndex, cada um com grupos/.index/.input/
+// .groups. Não mexe no lastIndex da regex (a spec itera um CLONE). Sem a flag g
+// (só via RegExp.prototype[@@matchAll] direto), dá só o 1º casamento, como na spec.
+@(private = "file")
+regex_match_all_impl :: proc(vm: ^Interp, re: ^Regex, s: string) -> Value {
     out := new_array(vm)
     start := max(0, re.last_index)
-    for {
+    for start <= str_rlen(s) {
         m := regex_run(re, s, start)
         if !m.ok do break
         defer delete(m.groups)
         append(&out.items, regex_result_array(vm, re, s, m))
+        if !re.global do break
         gs, ge := m.groups[0], m.groups[1]
         start = js_advance_index(s, ge, re.unicode || re.unicode_sets) if ge == gs else ge
-        if start > str_rlen(s) do break
     }
     return make_array_iterator(vm, out)
+}
+
+// RegExp.prototype[@@match/@@matchAll/@@search/@@split/@@replace]: os mesmos corpos
+// que os métodos de String usam com uma ^Regex. Instalados por install_regex.
+@(private = "file")
+regex_this :: proc(vm: ^Interp, this: Value, what: string) -> ^Regex {
+    re, ok := this.(^Regex)
+    if !ok do throw_type_error(vm, fmt.tprintf("RegExp.prototype[%s] requires that 'this' be a RegExp", what))
+    return re
+}
+
+@(private = "file")
+regex_sym_match :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    re := regex_this(vm, this, "Symbol.match"); if re == nil do return nil
+    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    return regex_match_impl(vm, re, s)
+}
+
+@(private = "file")
+regex_sym_match_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    re := regex_this(vm, this, "Symbol.matchAll"); if re == nil do return nil
+    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    return regex_match_all_impl(vm, re, s)
+}
+
+@(private = "file")
+regex_sym_search :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    re := regex_this(vm, this, "Symbol.search"); if re == nil do return nil
+    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    return regex_search_impl(vm, re, s)
+}
+
+@(private = "file")
+regex_sym_split :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    re := regex_this(vm, this, "Symbol.split"); if re == nil do return nil
+    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    limit, lok := split_limit(vm, arg(args, 1))
+    if !lok do return nil
+    return regex_split_impl(vm, re, s, limit)
+}
+
+@(private = "file")
+regex_sym_replace :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    re := regex_this(vm, this, "Symbol.replace"); if re == nil do return nil
+    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    return regex_replace_impl(vm, s, re, arg(args, 1), re.global)
+}
+
+install_regex_symbol_methods :: proc(vm: ^Interp, proto: ^Object) {
+    Entry :: struct { key: string, name: string, n: int, fn: proc(^Interp, Value, []Value) -> Value }
+    for e in ([]Entry{
+        {vm.sym_match_key,     "[Symbol.match]",    1, regex_sym_match},
+        {vm.sym_match_all_key, "[Symbol.matchAll]", 1, regex_sym_match_all},
+        {vm.sym_search_key,    "[Symbol.search]",   1, regex_sym_search},
+        {vm.sym_split_key,     "[Symbol.split]",    2, regex_sym_split},
+        {vm.sym_replace_key,   "[Symbol.replace]",  2, regex_sym_replace},
+    }) {
+        if e.key == "" do continue
+        f := mk_native(vm, e.fn)
+        f.name = e.name
+        f.native_length = e.n
+        f.non_constructor = true
+        proto.props[e.key] = f
+    }
 }
 
 // Locale-aware ordering shares the same ICU path as Intl.Collator.

@@ -1614,6 +1614,8 @@ install_regex :: proc(vm: ^Interp) {
     rproto.props["exec"]        = vm.regex_exec_fn
     rproto.props["toString"]    = vm.regex_tostring_fn
     rproto.props["constructor"] = rctor
+    install_regex_symbol_methods(vm, rproto) // @@match/@@matchAll/@@search/@@split/@@replace
+    vm.regex_proto = rproto
     rctor.props["prototype"] = rproto
     rctor.name = "RegExp"
     env_define(vm.global, "RegExp", rctor)

@@ -228,6 +228,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
     for proto in vm.collection_iter_protos do gc_push(&g, proto)
     gc_push(&g, vm.regex_test_fn)
     gc_push(&g, vm.regex_exec_fn)
+    gc_push(&g, vm.regex_proto)
     gc_push(&g, vm.regex_tostring_fn)
     gc_push(&g, vm.dom_element_ctor)
     gc_push(&g, vm.dom_element_proto)

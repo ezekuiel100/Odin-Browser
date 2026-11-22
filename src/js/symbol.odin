@@ -47,8 +47,14 @@ new_symbol :: proc(vm: ^Interp, desc: string) -> ^Symbol {
 // Symbol(desc): um símbolo NOVO e único a cada chamada.
 @(private = "file")
 symbol_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    // Descrição = ToString(arg), exceto undefined (Symbol() não tem descrição; aqui
+    // vira ""). Antes só string era aceita: Symbol(1) saía sem descrição, e
+    // Symbol(Symbol()) não lançava.
     desc := ""
-    if s, ok := arg(args, 0).(string); ok do desc = s
+    if a := arg(args, 0); a != nil {
+        desc = collation_string(vm, a) // ToString da spec (ToPrimitive; Symbol lança)
+        if vm.throwing do return nil
+    }
     return new_symbol(vm, desc)
 }
 
@@ -56,12 +62,31 @@ symbol_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // chaves distintas devolvem símbolos distintos. É disso que o React depende.
 @(private = "file")
 symbol_for :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    key := ""
-    if s, ok := arg(args, 0).(string); ok do key = s
+    // key = ToString(arg) — inclusive undefined, que vira "undefined" (spec 20.4.2.2).
+    // Antes só string era aceita e todo o resto caía na chave "": Symbol.for(1),
+    // Symbol.for(true) e Symbol.for() eram o MESMO símbolo.
+    key := collation_string(vm, arg(args, 0))
+    if vm.throwing do return nil
     if sym, ok := vm.symbol_registry[key]; ok do return sym
     sym := new_symbol(vm, key)
     vm.symbol_registry[strings.clone(key)] = sym // chave owned (liberada em vm_free)
     return sym
+}
+
+// Symbol.keyFor(sym): o inverso do Symbol.for — a chave do registro GLOBAL sob a qual
+// `sym` foi registrado, ou undefined para símbolo que não veio do registro (Symbol("x")
+// e os bem conhecidos). Argumento que não é símbolo é TypeError (spec 20.4.2.6).
+// Busca linear: o registro é pequeno (o React usa ~20 chaves) e evita um 2º mapa a
+// manter em sincronia — é o mesmo critério do teste de "registrado" do WeakMap.
+@(private = "file")
+symbol_key_for :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    sym, ok := arg(args, 0).(^Symbol)
+    if !ok {
+        throw_type_error(vm, "Symbol.keyFor: argument is not a symbol")
+        return nil
+    }
+    for key, registered in vm.symbol_registry do if registered == sym do return key
+    return nil
 }
 
 // Symbol.prototype.toString() → "Symbol(desc)". A spec exige `this` SÍMBOLO
@@ -94,6 +119,7 @@ install_symbol :: proc(vm: ^Interp) {
     ctor.name = "Symbol"
     ctor.props = make(map[string]Value)
     ctor.props["for"] = mk_native(vm, symbol_for)
+    ctor.props["keyFor"] = mk_native(vm, symbol_key_for)
     // símbolos "bem conhecidos" — cada um único e distinto
     iter_sym := new_symbol(vm, "Symbol.iterator")
     ctor.props["iterator"]      = iter_sym
@@ -134,6 +160,20 @@ install_symbol :: proc(vm: ^Interp) {
     ctor.props["replace"] = replace
     vm.sym_replace_key = symbol_key(vm, replace)
     ctor.attrs["replace"] = {}
+    // @@match/@@matchAll/@@search/@@split: protocolo dos métodos de String (ver
+    // str_delegate em builtins.odin) e métodos nativos do RegExp.prototype (regex.odin).
+    Well_Known :: struct { prop: string, desc: string, key: ^string }
+    for wk in ([]Well_Known{
+        {"match",    "Symbol.match",    &vm.sym_match_key},
+        {"matchAll", "Symbol.matchAll", &vm.sym_match_all_key},
+        {"search",   "Symbol.search",   &vm.sym_search_key},
+        {"split",    "Symbol.split",    &vm.sym_split_key},
+    }) {
+        sym := new_symbol(vm, wk.desc)
+        ctor.props[wk.prop] = sym
+        wk.key^ = symbol_key(vm, sym)
+        ctor.attrs[wk.prop] = {}
+    }
 
     // %SymbolPrototype% (M220). Symbol era o último primitivo SEM `.prototype` — a
     // mesma falta que o M127 consertou no Boolean, e pelo mesmo motivo: o padrão
