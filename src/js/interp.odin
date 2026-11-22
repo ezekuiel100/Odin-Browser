@@ -1511,21 +1511,6 @@ is_internal_binding :: proc(name: string) -> bool {
     return false
 }
 
-// Os nomes de Array.prototype[@@unscopables] (spec 23.1.3.41). Este motor não tem
-// um objeto Array.prototype onde pendurar a propriedade, então o `with` sobre um
-// array consulta a lista direto — é o caso que motivou o @@unscopables
-// (`with (arr) { values }` quebrou código real quando Array ganhou `values`).
-@(private = "file")
-array_unscopable :: proc(name: string) -> bool {
-    switch name {
-    case "at", "copyWithin", "entries", "fill", "find", "findIndex", "findLast",
-         "findLastIndex", "flat", "flatMap", "includes", "keys", "toReversed",
-         "toSorted", "toSpliced", "values":
-        return true
-    }
-    return false
-}
-
 // HasBinding de um ambiente de objeto (spec 9.1.1.2.1): HasProperty(obj, N) e, se
 // sim, N não pode estar marcado em obj[@@unscopables]. Com exceção em voo devolve
 // true — o chamador para a busca e a exceção propaga.
@@ -1541,8 +1526,6 @@ with_has_binding :: proc(vm: ^Interp, obj: Value, name: string) -> bool {
             blocked := get_member(vm, u, name)
             if vm.throwing do return true
             if truthy(blocked) do return false
-        } else if u == nil {
-            if _, is_arr := obj.(^Array); is_arr && array_unscopable(name) do return false
         }
     }
     return true
@@ -2075,6 +2058,17 @@ key_string :: proc(vm: ^Interp, v: Value) -> string {
     // caminho genérico abaixo usaria to_text, que dá só "Symbol(desc)" — e aí dois
     // símbolos homônimos indexariam a MESMA propriedade.
     if sym, ok := v.(^Symbol); ok do return symbol_key(vm, sym)
+    // Objeto como chave: ToPropertyKey = ToPrimitive(hint string) — o toString/
+    // @@toPrimitive do objeto decide. Antes ia direto ao to_text (formatador de
+    // DEBUG): `o[{toString(){return "a"}}]` não achava `o.a`, e `o[Object(sym)]`
+    // não chegava ao símbolo. Se o ToPrimitive lançar, a chave é "" e a exceção
+    // propaga pelo vm.throwing do chamador.
+    if !is_primitive(v) {
+        p := to_primitive(vm, v, false, "string")
+        if vm.throwing do return ""
+        if !is_primitive(p) do return "" // não deveria: to_primitive devolve primitivo ou lança
+        return key_string(vm, p)
+    }
     sb: strings.Builder
     strings.builder_init(&sb)
     to_text(&sb, v)
@@ -2877,7 +2871,7 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         value, _ := prim_proto_lookup(vm, vm.collection_protos[o.kind], o, name)
         return value
     case ^Symbol:
-        if name == "description" do return own_str(vm, o.desc)
+        if name == "description" do return nil if o.no_desc else Value(own_str(vm, o.desc))
         if name == "constructor" do return global_ctor(vm, "Symbol")
         // resto (toString/valueOf/[Symbol.toPrimitive]) vem do %SymbolPrototype% —
         // mesmo objeto que `Symbol.prototype` expõe, para não haver duas cópias (M220)
@@ -5287,6 +5281,11 @@ unwrap_prim :: proc(vm: ^Interp, fn: ^Function, this: Value) -> Value {
     case string: for _, m in vm.string_methods do if m == fn do return o.prim
     case f64:    for _, m in vm.number_methods do if m == fn do return o.prim
     case bool:   for _, m in vm.boolean_methods do if m == fn do return o.prim
+    // Object(sym): toString/valueOf/[Symbol.toPrimitive] nativos leem `this.(^Symbol)`
+    case ^Symbol:
+        if vm.symbol_proto != nil {
+            for _, m in vm.symbol_proto.props do if m == fn do return o.prim
+        }
     }
     return this
 }
@@ -5301,6 +5300,7 @@ make_wrapper :: proc(vm: ^Interp, v: Value) -> Value {
     case string: proto = vm.string_proto
     case f64:    proto = vm.number_proto
     case bool:   proto = vm.boolean_proto
+    case ^Symbol: proto = vm.symbol_proto // Object(sym) / ToObject(sym): `instanceof Symbol`
     case:        return v
     }
     o := new_object(vm)

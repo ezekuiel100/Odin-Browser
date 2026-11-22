@@ -14,6 +14,7 @@ import "core:strings"
 
 Symbol :: struct {
     desc: string, // descrição (owned); só p/ debug/toString
+    no_desc: bool, // `Symbol()` sem argumento: description é undefined (≠ Symbol(""))
     key:  string, // chave-string ÚNICA sob a qual este símbolo indexa um objeto
                   // (owned pelo vm via owned_strings; "" até o 1º uso como chave).
                   // Ver symbol_key — cacheada aqui porque `o[sym]` a recalcularia
@@ -47,14 +48,22 @@ new_symbol :: proc(vm: ^Interp, desc: string) -> ^Symbol {
 // Symbol(desc): um símbolo NOVO e único a cada chamada.
 @(private = "file")
 symbol_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    // Descrição = ToString(arg), exceto undefined (Symbol() não tem descrição; aqui
-    // vira ""). Antes só string era aceita: Symbol(1) saía sem descrição, e
-    // Symbol(Symbol()) não lançava.
-    desc := ""
-    if a := arg(args, 0); a != nil {
-        desc = collation_string(vm, a) // ToString da spec (ToPrimitive; Symbol lança)
-        if vm.throwing do return nil
+    // `new Symbol()` é TypeError (spec 20.4.1.1): símbolo é primitivo, sem wrapper por
+    // `new` — o wrapper só nasce por Object(sym).
+    if vm.native_new {
+        throw_type_error(vm, "Symbol is not a constructor")
+        return nil
     }
+    // Descrição = ToString(arg), exceto undefined: aí NÃO há descrição
+    // (`Symbol().description === undefined`, diferente de `Symbol("")`).
+    a := arg(args, 0)
+    if a == nil {
+        sym := new_symbol(vm, "")
+        sym.no_desc = true
+        return sym
+    }
+    desc := collation_string(vm, a) // ToString da spec (ToPrimitive; Symbol lança)
+    if vm.throwing do return nil
     return new_symbol(vm, desc)
 }
 
@@ -191,6 +200,13 @@ install_symbol :: proc(vm: ^Interp) {
     sym_proto.props["valueOf"]  = mk_native(vm, symbol_value_of)
     if vm.sym_toprimitive_key != "" do sym_proto.props[vm.sym_toprimitive_key] = mk_native(vm, symbol_value_of)
     sym_proto.props["constructor"] = ctor
+    // Symbol.prototype[@@toStringTag] = "Symbol" (spec 20.4.3.6): é o que faz
+    // Object.prototype.toString.call(Object(sym)) dar "[object Symbol]".
+    if vm.sym_tostring_tag_key != "" {
+        sym_proto.props[vm.sym_tostring_tag_key] = "Symbol"
+        if sym_proto.attrs == nil do sym_proto.attrs = make(map[string]Prop_Attrs)
+        sym_proto.attrs[vm.sym_tostring_tag_key] = {.Configurable}
+    }
     ctor.props["prototype"] = sym_proto
     vm.symbol_proto = sym_proto
 

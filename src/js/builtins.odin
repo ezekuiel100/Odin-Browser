@@ -3747,6 +3747,22 @@ install_builtins :: proc(vm: ^Interp) {
     arr_ctor.attrs = make(map[string]Prop_Attrs)
     arr_ctor.attrs[vm.sym_species_key] = {.Configurable}
     arr_ctor.getters[vm.sym_species_key] = mk_builtin_method(vm, array_species_get, "get [Symbol.species]", 0)
+    // Array.prototype[@@unscopables] (spec 23.1.3.41): objeto de protótipo NULO com os
+    // métodos que o `with` NÃO pode ligar — os que entraram no Array depois de 2015 e
+    // quebravam código antigo do tipo `with (arr) { values }`. Antes o `with` usava uma
+    // lista fixa por dentro e `[][Symbol.unscopables]` era undefined.
+    if vm.sym_unscopables_key != "" {
+        unscop := new_object(vm)
+        unscop.proto = nil
+        for name in ([]string{"at", "copyWithin", "entries", "fill", "find", "findIndex", "findLast",
+                              "findLastIndex", "flat", "flatMap", "includes", "keys", "toReversed",
+                              "toSorted", "toSpliced", "values"}) {
+            oput(unscop, name, true)
+        }
+        arr_proto.props[vm.sym_unscopables_key] = unscop
+        if arr_proto.attrs == nil do arr_proto.attrs = make(map[string]Prop_Attrs)
+        arr_proto.attrs[vm.sym_unscopables_key] = {.Configurable}
+    }
 
     // Boolean ficou de fora deste bloco: não tinha .prototype NEM métodos, então
     // `true.toString()` lançava e `Boolean.prototype.valueOf` era undefined. O helper

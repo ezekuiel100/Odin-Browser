@@ -252,7 +252,7 @@ obj_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     #partial switch _ in a {
     case ^Object, ^Array, ^Function, ^Regex, ^Collection:
         return a
-    case string, f64, bool:
+    case string, f64, bool, ^Symbol:
         return make_wrapper(vm, a)
     }
     return new_object(vm)
