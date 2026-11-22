@@ -321,6 +321,42 @@ Env :: struct {
                          // espelha o valor no item (ver Args_Info). nil no caso comum.
 }
 
+// ── Valor de conclusão VAZIO (spec: `empty`) ──────────────────────────────────
+// O valor de conclusão de um statement é o que eval()/vm_exec devolvem do script.
+// `break`, `continue`, `var`/`let`/`const`, `;`, `debugger` e declaração de classe
+// não têm valor — e "sem valor" não é `undefined`: numa lista de statements o
+// vazio HERDA o valor anterior (UpdateEmpty), então `3; break;` conclui com 3 e
+// `1; var x;` com 1. Representado por um ^Symbol estático que NUNCA chega ao JS:
+// só statements o devolvem, só listas/laços/if/try/with/rótulo o consomem, e as
+// fronteiras (vm_eval_source_in, vm_exec, resultado do programa assíncrono)
+// passam por completion_value. Corpo de função descarta o resultado.
+@(private = "file")
+g_empty_completion: Symbol
+
+empty_completion :: #force_inline proc() -> Value {
+    return &g_empty_completion
+}
+
+is_empty_completion :: #force_inline proc(v: Value) -> bool {
+    s, ok := v.(^Symbol)
+    return ok && s == &g_empty_completion
+}
+
+// Fronteira: o vazio vira undefined (spec: o script conclui com `undefined`).
+completion_value :: #force_inline proc(v: Value) -> Value {
+    return nil if is_empty_completion(v) else v
+}
+
+// UpdateEmpty(C, V) da spec para uma LISTA de statements: o resultado `r` de `s`
+// só substitui o acumulado se não for vazio. Declaração de classe é vazia, mas o
+// eval dela devolve a classe (o `export default class` precisa do valor), então
+// é tratada aqui, no único contexto em que ela aparece como statement.
+@(private = "file")
+update_empty :: #force_inline proc(acc: Value, s: ^Node, r: Value) -> Value {
+    if is_empty_completion(r) || (s.kind == .Class && s.decl) do return acc
+    return r
+}
+
 // Chave do objeto de um `with` no `vars` do ambiente de objeto. NUL não aparece em
 // identificador JS, então nenhum nome do fonte colide; e o mapa já é marcado pelo GC
 // e esvaziado pelo pool — sem campo novo no Env.
@@ -1634,7 +1670,7 @@ eval_with :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     wenv.vars[WITH_OBJ_KEY] = make_wrapper(vm, ov)
     wenv.is_with = true
     vm.with_used = true
-    return eval(vm, n.right, wenv)
+    return completion_value(eval(vm, n.right, wenv)) // UpdateEmpty(C, undefined)
 }
 
 // `delete x` (sloppy) depois de algum `with`: se `x` resolve num ambiente de objeto,
@@ -3651,7 +3687,7 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
 // capturam bindings distintos). Devolve true se o loop deve PARAR (break/return/throw
 // ou um continue/break rotulado que mira um loop externo).
 @(private = "file")
-for_of_run_body :: proc(vm: ^Interp, n: ^Node, env: ^Env, v: Value, my_label: string) -> (stop: bool) {
+for_of_run_body :: proc(vm: ^Interp, n: ^Node, env: ^Env, v: Value, my_label: string, cv: ^Value) -> (stop: bool) {
     iter_env := new_env(vm, env)
     if n.third != nil {
         // alvo de ATRIBUIÇÃO sem declaração: `for (o.k in obj)` / `for ([a, b] of pares)`
@@ -3684,7 +3720,8 @@ for_of_run_body :: proc(vm: ^Interp, n: ^Node, env: ^Env, v: Value, my_label: st
     } else {
         env_assign(vm, env, n.name, v, n.strict) // for (x of ...) sem declaração
     }
-    eval(vm, n.callee, iter_env)
+    // conclusão do laço: o último valor NÃO vazio do corpo (como no .While)
+    if r := eval(vm, n.callee, iter_env); !is_empty_completion(r) do cv^ = r
     if vm.continuing { if loop_take_continue(vm, my_label) do return false; return true }
     if vm.breaking { loop_take_break(vm, my_label); return true }
     if vm.returning || vm.throwing do return true
@@ -3803,59 +3840,60 @@ collect_sync_values :: proc(vm: ^Interp, it: Value, out: ^[dynamic]Value) {
 // AsyncFromSyncIterator, which awaits each value before returning the result.
 @(private = "file")
 eval_for_await :: proc(vm: ^Interp, n: ^Node, env: ^Env, it: Value, my_label: string) -> Value {
+    cv: Value = nil // valor de conclusão do laço (atualizado pelo for_of_run_body)
     iter: Value
     by_protocol, is_async := false, false
     if !is_primitive(it) {
         method := get_member(vm, it, vm.sym_async_iterator_key)
-        if vm.throwing do return nil
+        if vm.throwing do return cv
         if method != nil && method != (JS_Null{}) {
             fn, ok := method.(^Function)
-            if !ok { throw_type_error(vm, "Symbol.asyncIterator is not callable"); return nil }
+            if !ok { throw_type_error(vm, "Symbol.asyncIterator is not callable"); return cv }
             iter = call_function(vm, fn, it, nil)
-            if vm.throwing do return nil
+            if vm.throwing do return cv
             by_protocol, is_async = true, true
         }
     }
     if !by_protocol do iter, by_protocol = get_iterator(vm, it)
-    if vm.throwing do return nil
+    if vm.throwing do return cv
     if by_protocol {
         next_fn := iterator_next_fn(iter)
-        if next_fn == nil { throw_type_error(vm, "Iterator next is not callable"); return nil }
+        if next_fn == nil { throw_type_error(vm, "Iterator next is not callable"); return cv }
         for {
             if step_guard(vm) do break
             r := call_function(vm, next_fn, iter, nil)
-            if vm.throwing do return nil
+            if vm.throwing do return cv
             if is_async do r = await_value(vm, r)
-            if vm.throwing do return nil
-            if is_primitive(r) { throw_type_error(vm, "Iterator result is not an object"); return nil }
+            if vm.throwing do return cv
+            if is_primitive(r) { throw_type_error(vm, "Iterator result is not an object"); return cv }
             done := truthy(get_member(vm, r, "done"))
-            if vm.throwing do return nil
+            if vm.throwing do return cv
             value: Value
             // AsyncFromSyncIterator unwraps the value, including the done step.
             // A real async iterator already returns its result through Await.
             if !is_async || !done do value = get_member(vm, r, "value")
-            if vm.throwing do return nil
+            if vm.throwing do return cv
             if !is_async do value = await_value(vm, value)
-            if vm.throwing do return nil
+            if vm.throwing do return cv
             if done do break
-            if for_of_run_body(vm, n, env, value, my_label) {
+            if for_of_run_body(vm, n, env, value, my_label, &cv) {
                 async_iterator_close(vm, iter)
                 break
             }
         }
-        return nil
+        return cv
     }
     // Native arrays advance lazily, so mutations made while suspended are seen.
     if array, ok := it.(^Array); ok {
         for i := 0; ; i += 1 {
-            if step_guard(vm) do return nil
+            if step_guard(vm) do return cv
             done := i >= len(array.items)
             value: Value
             if !done do value = get_index(vm, array, f64(i))
-            if vm.throwing do return nil
+            if vm.throwing do return cv
             value = await_value(vm, value)
-            if vm.throwing || done do return nil
-            if for_of_run_body(vm, n, env, value, my_label) do return nil
+            if vm.throwing || done do return cv
+            if for_of_run_body(vm, n, env, value, my_label, &cv) do return cv
         }
     }
     values: [dynamic]Value
@@ -3863,19 +3901,20 @@ eval_for_await :: proc(vm: ^Interp, n: ^Node, env: ^Env, it: Value, my_label: st
     collect_sync_values(vm, it, &values)
     for v in values {
         av := await_value(vm, v)
-        if vm.throwing do return nil
-        if for_of_run_body(vm, n, env, av, my_label) do return nil
+        if vm.throwing do return cv
+        if for_of_run_body(vm, n, env, av, my_label, &cv) do return cv
     }
     // Even an empty iterator suspends on its final next() result.
     await_value(vm, nil)
-    return nil
+    return cv
 }
 
 @(private = "file")
 eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
+    cv: Value = nil // valor de conclusão do laço (atualizado pelo for_of_run_body)
     my_label := vm.pending_label; vm.pending_label = ""
     it := eval(vm, n.right, env)
-    if vm.throwing do return nil
+    if vm.throwing do return cv
 
     // for await (x of it): drena um iterável ASSÍNCRONO (ou síncrono, awaitando
     // cada valor). Cada passo suspende a corrotina até assentar.
@@ -3889,17 +3928,17 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 for {
                     if step_guard(vm) do break
                     r := call_function(vm, next_fn, iter, nil)
-                    if vm.throwing do return nil
+                    if vm.throwing do return cv
                     ro, rok := r.(^Object)
                     if !rok || truthy(ro.props["done"]) do break
-                    if for_of_run_body(vm, n, env, ro.props["value"], my_label) {
+                    if for_of_run_body(vm, n, env, ro.props["value"], my_label, &cv) {
                         // término ABRUPTO (break/return): IteratorClose — chama
                         // iter.return() p/ o finally de generator rodar
                         iterator_close(vm, iter)
                         break
                     }
                 }
-                return nil
+                return cv
             }
         }
     }
@@ -3956,9 +3995,9 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     }
 
     for v in values {
-        if for_of_run_body(vm, n, env, v, my_label) do break
+        if for_of_run_body(vm, n, env, v, my_label, &cv) do break
     }
-    return nil
+    return cv
 }
 
 // True se o padrão de objeto lista `key` como uma chave-fonte (p/ excluir do rest).
@@ -4525,7 +4564,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         }
         // declaradores extras (`var a=1, b=2`): mesmo escopo, em ordem
         for d in n.body do eval(vm, d, env)
-        return nil
+        return empty_completion() // declaração: conclusão VAZIA (`1; var x = 2` dá 1)
 
     case .Return:
         vm.ret_val = nil
@@ -4536,15 +4575,18 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     case .Break:
         vm.breaking = true
         vm.break_label = n.name // "" = loop/switch mais próximo
-        return nil
+        return empty_completion() // o valor vem do que veio antes (UpdateEmpty)
 
     case .Continue:
         vm.continuing = true
         vm.continue_label = n.name
-        return nil
+        return empty_completion()
 
     case .With:
         return eval_with(vm, n, env) // fora do eval: não engorda o frame recursivo
+
+    case .EmptyStmt:
+        return empty_completion() // `;` / `debugger`
 
     case .Labeled:
         // marca o label p/ o loop/switch DIRETAMENTE rotulado (ele o lê em
@@ -4554,12 +4596,14 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         inner := n.left
         is_loop := inner.kind == .While || inner.kind == .For || inner.kind == .DoWhile || inner.kind == .ForOf || inner.kind == .Switch
         if is_loop do vm.pending_label = n.name
-        eval(vm, inner, env)
+        // conclusão = a do corpo (inclusive o valor de um `break label` que o
+        // encerra: `l: { 3; break l; }` dá 3); pode ser vazia
+        lr := eval(vm, inner, env)
         vm.pending_label = ""
         if vm.breaking && vm.break_label == n.name {
             vm.breaking = false; vm.break_label = ""
         }
-        return nil
+        return lr
 
     case .Throw:
         // A expressão do throw pode LANÇAR ela mesma (`throw new Foo()` com Foo
@@ -4596,7 +4640,9 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         return nil
 
     case .Try:
-        eval(vm, n.left, env) // bloco try
+        // conclusão: a do try (ou a do catch, se capturou); um finally ABRUPTO a
+        // substitui. Vazio vira undefined (spec: UpdateEmpty(C, undefined)).
+        tr := eval(vm, n.left, env) // bloco try
         if vm.throwing && n.right != nil && !vm.gen_hard_kill {
             vm.throwing = false // capturada
             exc := vm.thrown
@@ -4604,7 +4650,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             cenv := new_env(vm, env)
             if n.name != "" do env_define(cenv, n.name, exc)
             if n.callee != nil do bind_pattern(vm, n.callee, exc, cenv) // catch ({ message })
-            eval(vm, n.right, cenv) // bloco catch (vê o parâmetro)
+            tr = eval(vm, n.right, cenv) // bloco catch (vê o parâmetro)
         }
         if n.third != nil && !vm.gen_hard_kill {
             // finally roda SEMPRE, mesmo com sinal pendente (throw sem catch,
@@ -4615,25 +4661,29 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             st_brk := vm.breaking;   st_cnt := vm.continuing
             vm.throwing = false; vm.returning = false
             vm.breaking = false; vm.continuing = false
-            eval(vm, n.third, env)
+            fr := eval(vm, n.third, env)
             if !(vm.throwing || vm.returning || vm.breaking || vm.continuing) {
                 vm.throwing = st_thr;  vm.thrown  = st_val
                 vm.returning = st_ret; vm.ret_val = st_rv
                 vm.breaking = st_brk;  vm.continuing = st_cnt
+            } else {
+                tr = fr // finally abrupto: a conclusão é a dele
             }
         }
-        return nil
+        return completion_value(tr)
 
     case .Block:
         child := new_env(vm, env)
         hoist_functions(vm, n.body[:], child)
-        result: Value = nil // valor de conclusão (o eval() do topo o usa)
+        // valor de conclusão (o eval() do topo o usa): o do último statement NÃO
+        // vazio — `{ 3; break; }` conclui com 3; bloco só de vazios é vazio
+        result := empty_completion()
         for s in n.body {
             if is_hoisted_func(s) {
                 execute_hoisted_func(vm, s, child)
                 continue
             }
-            result = eval(vm, s, child)
+            result = update_empty(result, s, eval(vm, s, child))
             if vm.returning || vm.breaking || vm.continuing || vm.throwing do break
         }
         return result
@@ -4643,26 +4693,29 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         // que o eval() lê: `eval("if(true) 7")` === 7).
         cond := truthy(eval(vm, n.left, env))
         if vm.throwing do return nil
-        if cond do return eval(vm, n.right, env)
-        if n.third != nil do return eval(vm, n.third, env)
+        // vazio vira undefined: `1; if (true) {}` dá undefined (UpdateEmpty(C, undefined))
+        if cond do return completion_value(eval(vm, n.right, env))
+        if n.third != nil do return completion_value(eval(vm, n.third, env))
         return nil
 
     case .While:
         my_label := vm.pending_label; vm.pending_label = ""
+        lv: Value = nil // conclusão do laço: o último valor NÃO vazio do corpo (spec V)
         for truthy(eval(vm, n.left, env)) {
             if step_guard(vm) do break
-            eval(vm, n.right, env)
+            if r := eval(vm, n.right, env); !is_empty_completion(r) do lv = r
             if vm.continuing { if loop_take_continue(vm, my_label) do continue; break } // volta à cond (ou propaga p/ label externo)
             if vm.breaking { loop_take_break(vm, my_label); break }
             if vm.returning || vm.throwing do break
         }
-        return nil
+        return lv
 
     case .DoWhile:
         my_label := vm.pending_label; vm.pending_label = ""
+        lv: Value = nil // conclusão do laço (ver .While)
         for {
             if step_guard(vm) do break
-            eval(vm, n.right, env) // corpo roda pelo menos uma vez
+            if r := eval(vm, n.right, env); !is_empty_completion(r) do lv = r // corpo roda pelo menos uma vez
             if vm.continuing {
                 if !loop_take_continue(vm, my_label) do break // continue p/ label externo: sai
                 // senão: segue para a condição
@@ -4674,7 +4727,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             }
             if !truthy(eval(vm, n.left, env)) do break
         }
-        return nil
+        return lv
 
     case .Switch:
         my_label := vm.pending_label; vm.pending_label = ""
@@ -4682,6 +4735,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         senv := new_env(vm, env)
         for c in n.body do hoist_functions(vm, c.body[:], senv)
         matched := false
+        sv: Value = nil // conclusão: o último valor NÃO vazio dos statements rodados
         // 1ª fase: procura um case que case (===); uma vez casado, executa TUDO
         // dali em diante (fallthrough) até um break
         exec: for c in n.body {
@@ -4692,7 +4746,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             }
             for s in c.body {
                 if is_hoisted_func(s) do execute_hoisted_func(vm, s, senv)
-                else do eval(vm, s, senv)
+                else do sv = update_empty(sv, s, eval(vm, s, senv))
                 if vm.breaking { loop_take_break(vm, my_label); break exec } // break do switch (ou `break label`); label externo propaga
                 if vm.returning || vm.throwing || vm.continuing do break exec
             }
@@ -4707,13 +4761,13 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 }
                 for s in c.body {
                     if is_hoisted_func(s) do execute_hoisted_func(vm, s, senv)
-                    else do eval(vm, s, senv)
+                    else do sv = update_empty(sv, s, eval(vm, s, senv))
                     if vm.breaking { loop_take_break(vm, my_label); break exec2 }
                     if vm.returning || vm.throwing || vm.continuing do break exec2
                 }
             }
         }
-        return nil
+        return sv
 
     case .SwitchCase:
         return nil // executado pelo Switch; nunca avaliado sozinho
@@ -4732,10 +4786,13 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         per_iter := len(loop_env.vars) > 0 && n.acc == 1
         iter_env := loop_env
         if per_iter do iter_env = clone_loop_bindings(vm, loop_env, env)
+        lv: Value = nil // conclusão do laço (ver .While)
         for n.right == nil || truthy(eval(vm, n.right, iter_env)) { // cond ausente = true
             if vm.throwing do break // cond lançou (ou exceção pendente em for(;;))
             if step_guard(vm) do break
-            if n.callee != nil do eval(vm, n.callee, iter_env) // corpo
+            if n.callee != nil { // corpo
+                if r := eval(vm, n.callee, iter_env); !is_empty_completion(r) do lv = r
+            }
             if vm.continuing {
                 if !loop_take_continue(vm, my_label) do break // continue p/ label externo: sai
                 // senão: continue deste for AINDA roda o update abaixo
@@ -4750,18 +4807,20 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             if per_iter do iter_env = clone_loop_bindings(vm, iter_env, env)
             if n.third != nil do eval(vm, n.third, iter_env) // update
         }
-        return nil
+        return lv
 
     case .ForOf:
         return eval_for_of(vm, n, env)
 
     case .Program:
-        result: Value = nil
+        // conclusão do script (pode ser VAZIA: as fronteiras convertem — ver
+        // completion_value)
+        result := empty_completion()
         if vm.current_module == nil || vm.current_module.env != env do hoist_functions(vm, n.body[:], env)
         hoist_vars_body(n.body[:], env) // var top-level (inclui os aninhados em blocos)
         for s in n.body {
             if is_hoisted_func(s) do continue // já içada
-            result = eval(vm, s, env)
+            result = update_empty(result, s, eval(vm, s, env))
             if vm.returning || vm.breaking || vm.continuing || vm.throwing do break
         }
         return result
@@ -6314,9 +6373,9 @@ vm_eval_source_in :: proc(vm: ^Interp, src: string, env: ^Env, strict := false) 
     if prog.strict {
         own := new_env(vm, env)
         own.is_fn_scope = true // fronteira de `var`: sem isto o var subia ao escopo de função
-        return eval(vm, prog, own)
+        return completion_value(eval(vm, prog, own))
     }
-    return eval(vm, prog, env)
+    return completion_value(eval(vm, prog, env)) // conclusão vazia → undefined
 }
 
 // eval(x): se x NÃO é string, devolve x intacto (spec); se é, avalia no `env`.
@@ -6401,7 +6460,7 @@ vm_exec :: proc(vm: ^Interp, src: string, env: ^Env = nil, url := "") -> Value {
     }
     // Ordinary modules stay on the host thread, preserving synchronous host
     // hooks which keep their layout context in thread locals.
-    result := eval(vm, prog, run_env)
+    result := completion_value(eval(vm, prog, run_env)) // conclusão vazia → undefined
     if m != nil {
         if vm.throwing {
             m.state = .Failed

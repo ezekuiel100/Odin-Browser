@@ -654,7 +654,7 @@ program_step :: proc(vm: ^Interp, g: ^Generator, value: Value, kind: Gen_Inject,
     }
     ro := result.(^Object)
     if g.done {
-        g.program_result = ro.props["value"]
+        g.program_result = completion_value(ro.props["value"]) // conclusão vazia → undefined
         if g.module != nil {
             module_snapshot_exports(vm, g.module)
             g.module.state = .Done

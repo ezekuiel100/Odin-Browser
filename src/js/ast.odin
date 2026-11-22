@@ -80,6 +80,7 @@ Node_Kind :: enum u8 {
     SwitchCase, // case e: stmts / default -> left(teste; nil = default), body(stmts)
     Program,  // raiz: lista de statements -> body
     With,     // with (obj) stmt (só sloppy) -> left(obj), right(corpo)
+    EmptyStmt,// `;` / `debugger` — conclusão VAZIA (não é `undefined`: `1;;` dá 1)
 }
 
 Node :: struct {

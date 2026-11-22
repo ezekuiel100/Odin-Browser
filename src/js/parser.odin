@@ -735,7 +735,7 @@ parse_statement_body :: proc(p: ^Parser) -> ^Node {
     if t.kind == .Semicolon { // statement VAZIO: `;` (if(x); / ;; de minifier)
         advance(p)
         n := new(Node)
-        n.kind = .Undef // avaliar dá undefined, sem efeito
+        n.kind = .EmptyStmt // conclusão VAZIA: `1;;` dá 1, não undefined
         return n
     }
     // labeled statement: `label: stmt`. Em posição de statement, `Ident :` só pode
@@ -855,7 +855,7 @@ parse_statement_body :: proc(p: ^Parser) -> ^Node {
             advance(p)
             consume_semicolon(p)
             n := new(Node)
-            n.kind = .Undef // sem depurador: no-op
+            n.kind = .EmptyStmt // sem depurador: no-op (conclusão vazia)
             return n
         case "with":
             return parse_with(p)
