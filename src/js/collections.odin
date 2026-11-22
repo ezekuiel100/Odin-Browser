@@ -684,8 +684,14 @@ weakref_deref :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
 
 @(private = "file")
 weakref_ctor :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    if !vm.native_new { throw_type_error(vm, "WeakRef constructor requires 'new'"); return nil }
+    target := arg(a, 0)
+    if !coll_can_hold_weak(vm, target) {
+        throw_type_error(vm, "Invalid WeakRef target")
+        return nil
+    }
     o := new_object(vm)
-    o.props["#target"] = arg(a, 0) // referência FORTE: nunca coletamos
+    o.props["#target"] = target // referência FORTE: nunca coletamos
     o.props["deref"] = mk_native(vm, weakref_deref)
     mark_non_enumerable(o, "deref")
     if p, ok := vm.native_bound.(^Object); ok do o.proto = p
@@ -697,6 +703,11 @@ finreg_noop :: proc(vm: ^Interp, this: Value, a: []Value) -> Value { return nil 
 
 @(private = "file")
 finreg_ctor :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
+    if !vm.native_new { throw_type_error(vm, "FinalizationRegistry constructor requires 'new'"); return nil }
+    if _, callable := arg(a, 0).(^Function); !callable {
+        throw_type_error(vm, "FinalizationRegistry cleanup callback is not callable")
+        return nil
+    }
     o := new_object(vm)
     noop := mk_native(vm, finreg_noop)
     o.props["register"]   = noop
