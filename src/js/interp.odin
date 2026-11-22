@@ -273,6 +273,7 @@ Function :: struct {
                             // CHAMADA (setPrototypeOf depois da criação vale — spec).
     auto_super:  bool,      // construtor default derivado: chama super_ctor com os mesmos args
     super_null:  bool,      // `class extends null`: derivada SEM construtora-pai — super() lança
+    class_keys: []string, // resolved member names, indexed by class_node.body
     class_node:  ^Node,     // se é a construtora de uma class: o nó .Class (p/ inicializar
                             // os campos de instância no `new`, ver init_instance_fields)
     getters:  map[string]^Function, // getters STATIC de classe (static get x(){}); nil até ter algum
@@ -1176,6 +1177,7 @@ vm_destroy :: proc(vm: ^Interp) {
     for f in vm.all_funcs {
         delete(f.attrs)
         delete(f.props)
+        if f.class_keys != nil do delete(f.class_keys)
         if f.bind_args != nil do delete(f.bind_args)
         if f.getters != nil do delete(f.getters)
         if f.setters != nil do delete(f.setters)
@@ -4463,42 +4465,34 @@ set_home_object :: proc(v: Value, node: ^Node, o: ^Object) {
     if fn, ok := v.(^Function); ok do fn.home_obj = o
 }
 
-// Inicializa os campos de instância (`x = init`) no objeto recém-criado por `new`.
-// Percorre a cadeia de construtoras da BASE até a DERIVADA para que campos herdados
-// entrem primeiro (e campos da subclasse possam sombrear). Cada nível avalia seus
-// inicializadores no SEU escopo léxico (c.closure) com `this` = o objeto.
-// SIMPLIFICAÇÃO vs. spec: todos os campos entram ANTES do corpo do construtor (a
-// spec intercala os da subclasse logo após super()); irrelevante p/ inits comuns.
+// Initializes only this class's fields. Base fields run on constructor entry;
+// derived fields run immediately after that constructor's super() returns.
 @(private = "file")
 init_instance_fields :: proc(vm: ^Interp, fn: ^Function, obj: ^Object) {
-    chain: [dynamic]^Function
-    defer delete(chain)
-    for c := fn; c != nil; c = c.super_ctor do append(&chain, c)
-    #reverse for c in chain {
-        if c.class_node == nil do continue
-        fenv: ^Env = nil // criado sob demanda (só se houver campos de instância)
-        for m in c.class_node.body {
-            if m.kind != .ClassField || m.stat do continue
-            if fenv == nil {
-                fenv = new_env(vm, c.closure)
-                env_define(fenv, "this", obj)
-            }
-            v: Value = nil
-            if m.right != nil do v = eval(vm, m.right, fenv)
-            if vm.throwing do return // erro na init de um campo propaga
-            oput(obj, class_member_key(vm, m, fenv), v)
+    if fn.class_node == nil do return
+    fenv: ^Env
+    for m, i in fn.class_node.body {
+        if m.kind != .ClassField || m.stat do continue
+        if fenv == nil {
+            fenv = new_env(vm, fn.closure)
+            env_define(fenv, "this", obj)
         }
+        v: Value = nil
+        if m.right != nil do v = eval(vm, m.right, fenv)
+        if vm.throwing do return
+        oput(obj, fn.class_keys[i], v)
     }
 }
 
-// Nome de um membro de classe: fixo (m.name) ou COMPUTADO (`[expr]`, guardado
-// em m.left pelo parser; avaliado no env dado). Desvio menor da spec: chaves
-// computadas de CAMPO são reavaliadas por instância (a spec avalia 1× na
-// definição da classe) — irrelevante p/ chaves puras (strings/símbolos).
+// Computed names are resolved in source order during class definition.
 @(private = "file")
 class_member_key :: proc(vm: ^Interp, m: ^Node, env: ^Env) -> string {
     if m.name != "" || m.left == nil do return m.name
-    return key_string(vm, eval(vm, m.left, env))
+    v := eval(vm, m.left, env)
+    if vm.throwing do return ""
+    v = to_primitive(vm, v, false)
+    if vm.throwing do return ""
+    return key_string(vm, v)
 }
 
 // eval de `class`: monta a função-construtora + o objeto prototype (que segura
@@ -4550,23 +4544,6 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             ctor = build_method(vm, m, cenv, super_fn, super_proto)
             ctor.non_constructor = false
             ctor.name = n.name // a CLASSE é a função: `E.name` é "E", não "constructor"
-        } else if !m.stat {
-            fn := build_method(vm, m, cenv, super_fn, super_proto)
-            key := class_member_key(vm, m, env) // fixa ou computada [expr]
-            if m.acc != 0 do okey_accessor(proto, key)
-            switch m.acc {
-            case 1: // getter de instância → getters do prototype (get_member sobe a cadeia)
-                if proto.getters == nil do proto.getters = make(map[string]^Function)
-                proto.getters[key] = fn
-            case 2: // setter de instância → setters do prototype
-                if proto.setters == nil do proto.setters = make(map[string]^Function)
-                proto.setters[key] = fn
-            case: // método normal
-                proto.props[key] = fn
-            }
-            // membro de classe é NÃO-enumerável (spec §15.7.14): `Object.keys(C.prototype)`
-            // vem vazio no navegador. Só passou a ser expressável com o mapa de atributos.
-            mark_non_enumerable(proto, key)
         }
     }
     if ctor == nil {
@@ -4592,22 +4569,34 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     proto.props["constructor"] = ctor
     mark_non_enumerable(proto, "constructor")
 
-    // Membros STATIC vão na própria construtora, em DUAS FASES — é o que a spec
-    // manda (ClassDefinitionEvaluation): TODOS os métodos são instalados antes de
-    // QUALQUER inicializador de campo rodar.
-    //
-    // ⚠️ antes era uma passada só, em ordem de fonte, e por isso um campo não
-    // enxergava método declarado DEPOIS dele:
-    //     class V { static BLACK = V.fromRGB({r:0}); static fromRGB(e){…} }
-    // Isso é exatamente o que o open.spotify.com faz na classe de cor, e dava
-    // `TypeError: v.fromRGB is not a function` (ver [[real-site-fidelity]] M180).
-    //
-    // FASE 1 — métodos/acessores estáticos.
-    for m in n.body {
-        if !m.stat || m.kind != .Func do continue
-        if m.name == "constructor" do continue
-        fn := build_method(vm, m, cenv, super_fn, super_proto)
+    // Resolve keys in source order and install all methods before static inits.
+    // A cache per constructor keeps repeated evaluations of one AST independent.
+    ctor.class_keys = make([]string, len(n.body))
+    for m, i in n.body {
+        if m.kind != .Func && m.kind != .ClassField do continue
         key := class_member_key(vm, m, env)
+        if vm.throwing do return nil
+        ctor.class_keys[i] = key
+        if m.kind != .Func || m.name == "constructor" do continue
+        if !m.stat {
+            fn := build_method(vm, m, cenv, super_fn, super_proto)
+            if m.acc != 0 do okey_accessor(proto, key)
+            switch m.acc {
+            case 1: // getter de instância → getters do prototype (get_member sobe a cadeia)
+                if proto.getters == nil do proto.getters = make(map[string]^Function)
+                proto.getters[key] = fn
+            case 2: // setter de instância → setters do prototype
+                if proto.setters == nil do proto.setters = make(map[string]^Function)
+                proto.setters[key] = fn
+            case: // método normal
+                proto.props[key] = fn
+            }
+            // membro de classe é NÃO-enumerável (spec §15.7.14): `Object.keys(C.prototype)`
+            // vem vazio no navegador. Só passou a ser expressável com o mapa de atributos.
+            mark_non_enumerable(proto, key)
+            continue
+        }
+        fn := build_method(vm, m, cenv, super_fn, super_proto)
         switch m.acc {
         case 1: // getter static → getters da própria construtora (get_member ^Function)
             if ctor.getters == nil do ctor.getters = make(map[string]^Function)
@@ -4622,7 +4611,7 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     // FASE 2 — campos e blocos static, em ORDEM DE FONTE entre si (a spec avalia
     // ClassStaticBlock e campo static na ordem em que aparecem, e um campo enxerga
     // o valor dos anteriores).
-    for m in n.body {
+    for m, i in n.body {
         if !m.stat do continue
         #partial switch m.kind {
         case .ClassField:
@@ -4631,7 +4620,7 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             v: Value = nil
             if m.right != nil do v = eval(vm, m.right, senv)
             if vm.throwing do return nil
-            ctor.props[class_member_key(vm, m, senv)] = v
+            ctor.props[ctor.class_keys[i]] = v
         case .StaticBlock:
             senv := new_env(vm, cenv)
             env_define(senv, "this", ctor) // `this` no bloco static é a própria classe
@@ -4669,7 +4658,14 @@ try_eval_super_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> (result: Value,
         defer delete(args)
         if vm.throwing do return nil, true
         nt, _ := env_get(env, "new.target")
-        return super_construct(vm, fn, this_val, args[:], nt), true
+        ret := super_construct(vm, fn, this_val, args[:], nt)
+        if vm.throwing do return nil, true
+        owner, _ := env_get(env, "__classctor__")
+        if ctor, cok := owner.(^Function); cok {
+            if obj, ook := this_val.(^Object); ook do init_instance_fields(vm, ctor, obj)
+        }
+        if vm.throwing do return nil, true
+        return ret, true
     }
 
     // super.metodo(...)
@@ -4900,10 +4896,6 @@ construct_object :: proc(vm: ^Interp, fn: ^Function, args: []Value, new_target: 
     // comuns (ex.: `Ctor.prototype.m = fn` + `new Ctor()`), não só classes.
     proto_src: ^Function = new_target if new_target != nil else fn
     if proto, pok := get_member(vm, proto_src, "prototype").(^Object); pok do obj.proto = proto
-    // campos de instância (class fields) são inicializados ANTES do corpo do
-    // construtor — semântica de classe base; deriva percorre a cadeia super.
-    init_instance_fields(vm, fn, obj)
-    if vm.throwing do return nil
     vm.pending_new_target = proto_src // new.target = o construtor (ou o newTarget do Reflect)
     ret := call_function(vm, fn, obj, args)
     // [[Construct]] da spec: se o corpo retorna um OBJETO, ele substitui o `this`
@@ -5355,7 +5347,10 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
     scope.is_fn_scope = true // fronteira p/ `var` (function-scoped)
     // new.target: só funções NÃO-arrow o vinculam; arrows herdam léxico (o lookup
     // sobe a cadeia de closures, como this). Chamada normal → nil (undefined).
-    if !fn.is_arrow do scope.vars["new.target"] = new_target
+    if !fn.is_arrow {
+        scope.vars["new.target"] = new_target
+        scope.vars["__classctor__"] = fn if fn.class_node != nil else nil
+    }
     // arrow NÃO vincula `this`: o lookup sobe a cadeia de closures e encontra
     // o `this` da função envolvente — é exatamente a semântica léxica do ES6.
     if !fn.is_arrow {
@@ -5559,6 +5554,10 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
     env_mark := len(vm.all_envs)
     esc_mark := vm.env_escapes
     defer { if vm.env_escapes == esc_mark do recycle_envs(vm, env_mark) }
+    if fn.class_node != nil && fn.super_ctor == nil && !fn.super_null {
+        if obj, ok := this.(^Object); ok do init_instance_fields(vm, fn, obj)
+        if vm.throwing do return nil
+    }
     scope := setup_call_scope(vm, fn, this, args, nt_pending)
     // construtor default de classe derivada: encaminha os args ao super
     if fn.auto_super && fn.super_null {
@@ -5567,6 +5566,8 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
     }
     if fn.auto_super && fn.super_ctor != nil {
         super_construct(vm, fn.super_ctor, this, args, nt_pending)
+        if vm.throwing do return nil
+        if obj, ok := this.(^Object); ok do init_instance_fields(vm, fn, obj)
         if vm.throwing do return nil
     }
     if fn.body != nil {
@@ -5840,14 +5841,6 @@ vm_run_module :: proc(vm: ^Interp, src: string, url := "") -> Value {
 // Igual a vm_run mas NÃO limpa a exceção pendente — o chamador inspeciona
 // vm.throwing/vm.thrown e decide o que fazer. Usado pelo runner do Test262
 // (js262.odin), que precisa saber SE e O QUE o teste lançou.
-// Exposto ao pacote: o UPGRADE de custom element (dom_bindings) precisa inicializar
-// os campos de classe sem passar por construct_object — o elemento já existe, só o
-// construtor é que roda depois. Sem isto todo `campo = valor` da classe fica
-// undefined (era o que quebrava o Lit: `this.renderOptions` undefined).
-vm_init_instance_fields :: proc(vm: ^Interp, fn: ^Function, obj: ^Object) {
-    init_instance_fields(vm, fn, obj)
-}
-
 // Compila `src` no escopo GLOBAL e devolve o valor de completude. É o motor do
 // construtor `Function` (código gerado em runtime). Difere de vm_exec em dois
 // pontos deliberados: (1) NÃO reseta os contadores do watchdog — é chamado de

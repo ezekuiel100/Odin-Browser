@@ -361,6 +361,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
 
         delete(f.attrs)
         delete(f.props)
+        if f.class_keys != nil do delete(f.class_keys)
         if f.bind_args != nil do delete(f.bind_args)
         if f.getters != nil do delete(f.getters)
         if f.setters != nil do delete(f.setters)

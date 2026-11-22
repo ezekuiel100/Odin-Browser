@@ -1593,11 +1593,7 @@ upgrade_element :: proc(vm: ^Interp, n: ^dom.Node, ctor: ^Function, run_connecte
             if proto.proto == nil || proto.proto == vm.object_proto do proto.proto = vm.dom_element_proto
             w.proto = proto
         }
-        // CAMPOS DE CLASSE: `class X extends HTMLElement { renderOptions = {host:this} }`.
-        // Os inicializadores rodam em construct_object, não em call_function — chamar o
-        // construtor "cru" deixava todo campo undefined. Era isso que quebrava o Lit:
-        // `this.renderOptions.renderBefore` com renderOptions undefined.
-        vm_init_instance_fields(vm, ctor, w)
+        // call_function initializes fields at base entry and after each super().
         vm.pending_new_target = ctor // new.target = a classe (setup_call_scope consome)
         call_function(vm, ctor, w, nil) // roda o constructor com this = o elemento
         vm_clear_uncaught(vm)           // um componente que lança não derruba os outros
