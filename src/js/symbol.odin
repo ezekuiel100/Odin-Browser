@@ -126,6 +126,10 @@ install_symbol :: proc(vm: ^Interp) {
     ctor.attrs = make(map[string]Prop_Attrs)
     ctor.attrs["species"] = {}
     ctor.attrs["isConcatSpreadable"] = {}
+    unscopables := new_symbol(vm, "Symbol.unscopables")
+    ctor.props["unscopables"] = unscopables
+    vm.sym_unscopables_key = symbol_key(vm, unscopables)
+    ctor.attrs["unscopables"] = {}
     replace := new_symbol(vm, "Symbol.replace")
     ctor.props["replace"] = replace
     vm.sym_replace_key = symbol_key(vm, replace)

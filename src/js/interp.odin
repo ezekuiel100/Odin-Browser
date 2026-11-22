@@ -305,6 +305,12 @@ Env :: struct {
     uninitialized: map[string]bool, // module lexical bindings in the TDZ
     parent: ^Env,
     is_fn_scope: bool, // fronteira de escopo de FUNÇÃO (var sobe até aqui; blocos não)
+    is_with: bool,     // AMBIENTE DE OBJETO de um `with (obj)` (spec 9.1.1.2): o objeto mora
+                       // em vars[WITH_OBJ_KEY] (ver with_object) e o nome resolve nele se
+                       // HasProperty e não bloqueado por @@unscopables (with_has_binding).
+                       // Só um bool no padding: um campo Value (+24 B no Env, alocado em toda
+                       // chamada/bloco) custou ~1,8% num laço de variáveis. O caminho quente
+                       // (env_get/env_assign) testa o bool SÓ depois de errar no `vars`.
     aliases: map[string]Env_Alias, // nil até o 1º import com live binding
     consts: map[string]bool,       // bindings declarados com `const` neste escopo; nil
                                    // até o 1º. env_assign lança TypeError ao acertar um
@@ -313,6 +319,15 @@ Env :: struct {
                                    // intocado e não custa nada em escopo sem const.
     mapped_args: ^Array, // escopo de função com `arguments` MAPEADO: env_assign num param
                          // espelha o valor no item (ver Args_Info). nil no caso comum.
+}
+
+// Chave do objeto de um `with` no `vars` do ambiente de objeto. NUL não aparece em
+// identificador JS, então nenhum nome do fonte colide; e o mapa já é marcado pelo GC
+// e esvaziado pelo pool — sem campo novo no Env.
+WITH_OBJ_KEY :: "\x00with"
+
+with_object :: #force_inline proc(e: ^Env) -> Value {
+    return e.vars[WITH_OBJ_KEY]
 }
 
 // Escopo de função mais próximo (onde `var` binda — var é function-scoped, não
@@ -370,6 +385,9 @@ Interp :: struct {
     sym_toprimitive_key: string,           // chave-string do Symbol.toPrimitive (ToPrimitive consulta antes de valueOf/toString)
     sym_has_instance_key: string,          // chave-string do Symbol.hasInstance (instanceof consulta antes da cadeia de proto)
     sym_tostring_tag_key: string,          // chave-string do Symbol.toStringTag (Object.prototype.toString consulta antes do #class)
+    sym_unscopables_key: string,           // chave-string do Symbol.unscopables (o `with` consulta antes de ligar um nome)
+    with_used: bool,                       // algum `with` já executou: só então eval_call/delete procuram a
+                                           // BASE de um identificador (o `this` de `f()` dentro do with)
     custom_elements: map[string]^Function, // registry de Web Components: tag → classe (customElements.define)
     document_node:   rawptr,               // ^dom.Node raiz (p/ upgrade de custom elements já no documento)
     all_asts:       [dynamic]^Node,   // ASTs de cada vm_run (handlers apontam p/ elas)
@@ -769,6 +787,7 @@ new_env :: proc(vm: ^Interp, parent: ^Env) -> ^Env {
         pop(&vm.env_pool)
         e.parent = parent
         e.is_fn_scope = false
+        e.is_with = false
         e.mapped_args = nil
     } else {
         e = new(Env)
@@ -821,6 +840,7 @@ recycle_envs :: proc(vm: ^Interp, mark: int) {
         if len(vm.env_pool) < ENV_POOL_MAX && len(e.vars) <= ENV_POOL_VAR_MAX {
             clear(&e.vars)
             e.parent = nil
+            e.is_with = false
             append(&vm.env_pool, e)
         } else {
             delete(e.vars)
@@ -964,7 +984,28 @@ hoist_vars :: proc(node: ^Node, env: ^Env) {
         hoist_vars(node.third, env)  // finally
     case .Labeled:
         hoist_vars(node.left, env)
+    case .With:
+        hoist_vars(node.right, env) // `var` no corpo do with sobe p/ a função
     }
+}
+
+// `var x = v` dentro de um `with`: se um ambiente de objeto ENTRE `env` e o escopo
+// de função `target` tem o nome, o valor vai p/ o objeto (true). Um binding
+// declarativo no meio do caminho (param de catch…) mantém o comportamento de antes.
+@(private = "file")
+var_init_through_with :: proc(vm: ^Interp, env, target: ^Env, name: string, val: Value) -> bool {
+    for cur := env; cur != nil && cur != target; cur = cur.parent {
+        if cur.is_with {
+            if with_has_binding(vm, with_object(cur), name) {
+                if !vm.throwing do set_member(vm, with_object(cur), name, val)
+                return true
+            }
+            if vm.throwing do return true
+        } else if _, ok := cur.vars[name]; ok {
+            return false
+        }
+    }
+    return false
 }
 
 hoist_vars_body :: proc(stmts: []^Node, env: ^Env) {
@@ -1038,8 +1079,25 @@ throw_reference_error :: proc(vm: ^Interp, msg: string) {
 // Devolve (valor, achou). Compartilhado por eval(.Ident) — que LANÇA quando não
 // acha — e por `typeof`, a única isenção da spec, que precisa do mesmo lookup
 // SEM o throw. Ter um funil só é o que garante que os dois não divirjam.
-lookup_ident :: proc(vm: ^Interp, env: ^Env, name: string) -> (Value, bool) {
+lookup_ident :: proc(vm: ^Interp, env: ^Env, name: string, strict := false) -> (Value, bool) {
+    if strict && vm.with_used { // GetBindingValue strict de um `with`: caminho lento
+        v, ok, _ := lookup_ident_base(vm, env, name, true)
+        return v, ok
+    }
     if v, ok := env_get(env, name, vm); ok do return v, true
+    return lookup_window(vm, name)
+}
+
+// lookup_ident + a BASE do binding (o objeto do `with` que respondeu; nil no resto).
+lookup_ident_base :: proc(vm: ^Interp, env: ^Env, name: string, strict := false) -> (Value, bool, Value) {
+    if v, ok, base := env_resolve(env, name, vm, strict); ok do return v, true, base
+    v, ok := lookup_window(vm, name)
+    return v, ok, nil
+}
+
+// Último degrau do lookup_ident: as props da janela (o objeto global no browser).
+@(private = "file")
+lookup_window :: proc(vm: ^Interp, name: string) -> (Value, bool) {
     if winv, wok := env_get(vm.global, "window"); wok {
         if win, ok := winv.(^Object); ok {
             // ⚠️ pelo HOOK (window_get), não por `win.props` direto: as props
@@ -1367,6 +1425,9 @@ vm_frame_step :: proc(vm: ^Interp) -> bool {
     return fired
 }
 
+// Caminho QUENTE do motor: laço próprio (delegar ao env_resolve, que devolve 3
+// valores com uma union, custou ~19% num laço de leitura de variáveis). Só ao
+// topar com um ambiente de objeto (`with`) desvia para o env_resolve.
 env_get :: proc(e: ^Env, name: string, vm: ^Interp = nil) -> (Value, bool) {
     when JSPROF { g_prof.env_get += 1 }
     cur := e
@@ -1379,6 +1440,12 @@ env_get :: proc(e: ^Env, name: string, vm: ^Interp = nil) -> (Value, bool) {
             }
             return v, true
         }
+        // ambiente de objeto (`with`): `vars` dele é sempre vazio, então testar SÓ no
+        // erro tira o custo do caminho de acerto (era ~2,5% num laço de vars)
+        if cur.is_with && vm != nil {
+            v, ok, _ := env_resolve(cur, name, vm)
+            return v, ok
+        }
         // live binding de import: resolve no escopo do módulo exportador AGORA
         if cur.aliases != nil {
             if a, ok := cur.aliases[name]; ok do return env_get(a.src, a.local, vm)
@@ -1386,6 +1453,309 @@ env_get :: proc(e: ^Env, name: string, vm: ^Interp = nil) -> (Value, bool) {
         cur = cur.parent
     }
     return nil, false
+}
+
+// Nomes que o motor guarda COMO variável no Env mas que não são referências de
+// identificador do fonte (ThisExpression, new.target, ligações internas de classe).
+// Um ambiente de objeto não pode capturá-los: `with ({this: 1}) this` é o `this`
+// de fora.
+@(private = "file")
+is_internal_binding :: proc(name: string) -> bool {
+    switch name {
+    case "this", "new.target", "__superctor__", "__classctor__", "__superproto__":
+        return true
+    }
+    return false
+}
+
+// Os nomes de Array.prototype[@@unscopables] (spec 23.1.3.41). Este motor não tem
+// um objeto Array.prototype onde pendurar a propriedade, então o `with` sobre um
+// array consulta a lista direto — é o caso que motivou o @@unscopables
+// (`with (arr) { values }` quebrou código real quando Array ganhou `values`).
+@(private = "file")
+array_unscopable :: proc(name: string) -> bool {
+    switch name {
+    case "at", "copyWithin", "entries", "fill", "find", "findIndex", "findLast",
+         "findLastIndex", "flat", "flatMap", "includes", "keys", "toReversed",
+         "toSorted", "toSpliced", "values":
+        return true
+    }
+    return false
+}
+
+// HasBinding de um ambiente de objeto (spec 9.1.1.2.1): HasProperty(obj, N) e, se
+// sim, N não pode estar marcado em obj[@@unscopables]. Com exceção em voo devolve
+// true — o chamador para a busca e a exceção propaga.
+with_has_binding :: proc(vm: ^Interp, obj: Value, name: string) -> bool {
+    if is_internal_binding(name) do return false
+    has := with_has_property(vm, obj, name)
+    if vm.throwing do return true
+    if !has do return false
+    if vm.sym_unscopables_key != "" {
+        u := get_member(vm, obj, vm.sym_unscopables_key)
+        if vm.throwing do return true
+        if !is_primitive(u) {
+            blocked := get_member(vm, u, name)
+            if vm.throwing do return true
+            if truthy(blocked) do return false
+        } else if u == nil {
+            if _, is_arr := obj.(^Array); is_arr && array_unscopable(name) do return false
+        }
+    }
+    return true
+}
+
+// GetBindingValue de um ambiente de objeto (spec 9.1.1.2.6): a prop pode ter sumido
+// entre a resolução e a leitura (getter de @@unscopables que apaga) — HasProperty
+// de novo; sumiu = ReferenceError em strict, undefined em sloppy.
+with_get_binding :: proc(vm: ^Interp, obj: Value, name: string, strict: bool) -> Value {
+    still := with_has_property(vm, obj, name)
+    if vm.throwing do return nil
+    if !still {
+        if strict do throw_reference_error(vm, fmt.tprintf("%s is not defined", name))
+        return nil
+    }
+    return get_member(vm, obj, name)
+}
+
+// SetMutableBinding de um ambiente de objeto (spec 9.1.1.2.5): idem, e a escrita
+// rejeitada vira TypeError em strict.
+with_set_binding :: proc(vm: ^Interp, obj: Value, name: string, v: Value, strict: bool) {
+    still := with_has_property(vm, obj, name)
+    if vm.throwing do return
+    if !still && strict {
+        throw_reference_error(vm, fmt.tprintf("%s is not defined", name))
+        return
+    }
+    if !set_member(vm, obj, name, v) && strict do strict_write_failed(vm, obj, name)
+}
+
+// Referência a identificador resolvida UMA vez (spec: ResolveBinding antes do RHS;
+// `x++`/`x += v` leem e escrevem a MESMA referência). Só montada depois de algum
+// `with` ter rodado — sem with, re-resolver não é observável e o caminho de sempre
+// (env_get/env_assign) fica intocado.
+Ident_Ref :: struct {
+    resolved: bool,  // a resolução foi feita (senão: caminho de sempre)
+    wobj:     Value, // != nil: o binding é do objeto de um `with`
+    holder:   ^Env,  // escopo declarativo que tem o nome
+    root:     ^Env,  // raiz da cadeia (irresolúvel: global implícito / ReferenceError)
+}
+
+resolve_ident_ref :: proc(vm: ^Interp, env: ^Env, name: string) -> (r: Ident_Ref) {
+    r.resolved = true
+    for cur := env; cur != nil; cur = cur.parent {
+        r.root = cur
+        if cur.is_with {
+            if with_has_binding(vm, with_object(cur), name) {
+                if !vm.throwing do r.wobj = with_object(cur)
+                return
+            }
+            continue
+        }
+        if _, ok := cur.vars[name]; ok { r.holder = cur; return }
+        if cur.aliases != nil {
+            if _, ok := cur.aliases[name]; ok { r.holder = cur; return }
+        }
+    }
+    return
+}
+
+ident_ref_get :: proc(vm: ^Interp, r: Ident_Ref, name: string, strict: bool) -> Value {
+    if r.wobj != nil do return with_get_binding(vm, r.wobj, name, strict)
+    if r.holder != nil {
+        v, _ := env_get(r.holder, name, vm)
+        return v
+    }
+    return nil // irresolúvel: o mesmo undefined do ref_read de sempre
+}
+
+ident_ref_put :: proc(vm: ^Interp, r: Ident_Ref, name: string, v: Value, strict: bool) {
+    if r.wobj != nil { with_set_binding(vm, r.wobj, name, v, strict); return }
+    if r.holder != nil { env_assign(vm, r.holder, name, v, strict); return }
+    if r.root != nil do env_assign(vm, r.root, name, v, strict)
+}
+
+// `x = v` / `x op= v` / `x &&= v` com alvo Ident depois de algum `with`: a mesma
+// lógica do .Assign do eval, mas lendo e escrevendo a referência resolvida UMA vez,
+// ANTES do RHS. Fora do eval de propósito: o Ident_Ref como local do eval engordava
+// o frame da função recursiva para todo tipo de nó (medido: ~3% num laço de vars).
+eval_assign_with :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
+    name := n.left.name
+    r := resolve_ident_ref(vm, env, name)
+    if vm.throwing do return nil
+    #partial switch n.op {
+    case .AmpAmp, .PipePipe, .QQuestion:
+        cur := ident_ref_get(vm, r, name, n.strict)
+        if vm.throwing do return nil
+        keep := false
+        #partial switch n.op {
+        case .AmpAmp:    keep = !truthy(cur)
+        case .PipePipe:  keep = truthy(cur)
+        case .QQuestion: keep = !is_nullish(cur)
+        }
+        if keep do return cur
+        rhs := eval(vm, n.right, env)
+        if vm.throwing do return nil
+        infer_binding_name(n.right, rhs, name)
+        ident_ref_put(vm, r, name, rhs, n.strict)
+        return rhs
+    }
+    old: Value
+    if n.op != .Assign do old = ident_ref_get(vm, r, name, n.strict) // composto lê ANTES do RHS
+    if vm.throwing do return nil
+    rhs := eval(vm, n.right, env)
+    if vm.throwing do return nil
+    val: Value = rhs
+    if n.op == .Assign do infer_binding_name(n.right, rhs, name)
+    else do val = binop(vm, n.op, old, rhs)
+    if vm.throwing do return nil
+    ident_ref_put(vm, r, name, val, n.strict)
+    return val
+}
+
+// with (obj) stmt (spec 14.11.2): ToObject(obj) — null/undefined lançam, primitivo
+// vira o wrapper — e o corpo roda com um AMBIENTE DE OBJETO na frente da cadeia.
+// Closures criadas no corpo o capturam como qualquer escopo.
+eval_with :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
+    ov := eval(vm, n.left, env)
+    if vm.throwing do return nil
+    if is_nullish(ov) {
+        throw_type_error(vm, "Cannot convert undefined or null to object")
+        return nil
+    }
+    wenv := new_env(vm, env)
+    wenv.vars[WITH_OBJ_KEY] = make_wrapper(vm, ov)
+    wenv.is_with = true
+    vm.with_used = true
+    return eval(vm, n.right, wenv)
+}
+
+// `delete x` (sloppy) depois de algum `with`: se `x` resolve num ambiente de objeto,
+// é um delete da PROPRIEDADE (spec 9.1.1.2.7). Fora disso, o comportamento de
+// sempre (true, sem efeito).
+delete_ident_with :: proc(vm: ^Interp, name: string, env: ^Env) -> Value {
+    for cur := env; cur != nil; cur = cur.parent {
+        if cur.is_with {
+            if with_has_binding(vm, with_object(cur), name) {
+                if vm.throwing do return nil
+                return delete_property_value(vm, with_object(cur), name, false)
+            }
+            if vm.throwing do return nil
+            continue
+        }
+        if _, ok := cur.vars[name]; ok do return true // binding declarativo
+    }
+    return true
+}
+
+// `x++`/`--x` com alvo Ident depois de algum `with`: lê e escreve a MESMA referência
+// (um getter de @@unscopables não pode mandar a escrita p/ outro objeto).
+eval_update_with :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
+    name := n.left.name
+    r := resolve_ident_ref(vm, env, name)
+    if vm.throwing do return nil
+    old := ident_ref_get(vm, r, name, n.strict)
+    if vm.throwing do return nil
+    if ob, ok := old.(^BigInt); ok {
+        one := bigint_from_i64(vm, 1)
+        nb := n.op == .PlusPlus ? bigint_add(vm, ob, one) : bigint_sub(vm, ob, one)
+        ident_ref_put(vm, r, name, nb, n.strict)
+        return nb if n.bval else ob
+    }
+    cur := as_number(old)
+    newv := cur + (1 if n.op == .PlusPlus else -1)
+    ident_ref_put(vm, r, name, newv, n.strict)
+    return newv if n.bval else cur
+}
+
+// HasProperty(obj, N) para o objeto de um `with` (qualquer tipo de valor).
+@(private = "file")
+with_has_property :: proc(vm: ^Interp, obj: Value, name: string) -> bool {
+    has: bool
+    #partial switch _ in obj {
+    case ^Object, ^Array:
+        has = js_in(vm, name, obj)
+        // wrapper (`with ("abc")`): `length`/índices vêm do primitivo pelo fallback
+        // de `prim` do get_member, que o js_in não enxerga
+        if o, is_obj := obj.(^Object); is_obj && !has && !vm.throwing && o.prim != nil {
+            has = get_member(vm, obj, name) != nil
+        }
+    case:
+        // js_in só conhece Object/Array; p/ o resto (função, regex, coleção…)
+        // HasProperty vira "Get não deu undefined" — aproximação: uma prop que
+        // existe valendo undefined fica de fora.
+        has = get_member(vm, obj, name) != nil
+    }
+    return has
+}
+
+// [[Delete]](k) de `obj` com o resultado do operador `delete`: prop própria
+// NÃO-configurável não sai — devolve false em sloppy e lança TypeError em strict
+// (spec 13.5.1.2). Compartilhado por `delete o.k`/`delete o[k]` e pelo `delete x`
+// que resolve num `with`.
+delete_property_value :: proc(vm: ^Interp, obj: Value, k: string, strict: bool) -> Value {
+    if p := proxy_state(obj); p != nil {
+        proxy_delete(vm, p, k)
+        return true
+    }
+    ok := true
+    #partial switch o in obj {
+    case ^Object:
+        if o.px_handler != nil { proxy_delete(vm, o, k); return true } // trap deleteProperty
+        if o.get == storage_get { storage_remove_key(o, k); return true } // delete localStorage.x
+        if _, own := o.props[k]; own && .Configurable not_in prop_attrs(o, k) {
+            ok = false
+        } else if .Configurable in prop_attrs(o, k) {
+            oremove(o, k)
+        }
+    case ^Function:
+        if a, explicit := o.attrs[k]; explicit && .Configurable not_in a do ok = false
+    case ^Array:
+        ok = array_delete_property(o, k)
+    }
+    if !ok && strict {
+        throw_type_error(vm, fmt.tprintf("Cannot delete property '%s' of object", k))
+        return nil
+    }
+    return ok
+}
+
+// Resolve `name` subindo a cadeia. `base` != nil quando quem respondeu foi um
+// AMBIENTE DE OBJETO (`with`): é o objeto, que vira o `this` de `f()` (spec
+// 9.1.1.2.10 WithBaseObject). Sem `vm` (consultas internas) os `with` são pulados.
+// `strict`: a referência é de código strict (só pesa se a prop do `with` sumir
+// entre a resolução e a leitura — ver with_get_binding).
+env_resolve :: proc(e: ^Env, name: string, vm: ^Interp = nil, strict := false) -> (Value, bool, Value) {
+    when JSPROF { g_prof.env_get += 1 }
+    cur := e
+    for cur != nil {
+        when JSPROF { g_prof.env_saltos += 1 } // custo REAL da cadeia: niveis percorridos
+        if cur.is_with && vm != nil {
+            if with_has_binding(vm, with_object(cur), name) {
+                if vm.throwing do return nil, true, nil
+                v := with_get_binding(vm, with_object(cur), name, strict)
+                return v, true, with_object(cur)
+            }
+            cur = cur.parent
+            continue
+        }
+        if v, ok := cur.vars[name]; ok {
+            if vm != nil && cur.uninitialized[name] {
+                throw_reference_error(vm, fmt.tprintf("Cannot access '%s' before initialization", name))
+                return nil, true, nil
+            }
+            return v, true, nil
+        }
+        // live binding de import: resolve no escopo do módulo exportador AGORA
+        if cur.aliases != nil {
+            if a, ok := cur.aliases[name]; ok {
+                av, aok := env_get(a.src, a.local, vm)
+                return av, aok, nil
+            }
+        }
+        cur = cur.parent
+    }
+    return nil, false, nil
 }
 
 // Binda `name` como live binding de `local` no escopo `src` (ver Env_Alias).
@@ -1430,6 +1800,18 @@ env_assign :: proc(vm: ^Interp, e: ^Env, name: string, v: Value, strict := false
             cur.vars[name] = v
             if cur.mapped_args != nil do args_param_written(cur.mapped_args, name, v)
             return
+        }
+        // ambiente de objeto (`with`): SetMutableBinding = Set(obj, N, V) — grava no
+        // objeto se ele tem o nome, senão segue p/ o escopo de fora. Testado só depois
+        // do `vars` (vazio num ambiente de objeto): o acerto comum não paga nada.
+        if cur.is_with {
+            if with_has_binding(vm, with_object(cur), name) {
+                if vm.throwing do return
+                with_set_binding(vm, with_object(cur), name, v, strict)
+                return
+            }
+            cur = cur.parent
+            continue
         }
         if alias, ok := cur.aliases[name]; ok {
             if env_uninitialized(alias.src, alias.local) do throw_reference_error(vm, "Cannot access import before initialization")
@@ -3606,7 +3988,8 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     case .Undef:
         return nil
     case .Ident:
-        if v, ok := lookup_ident(vm, env, n.name); ok do return v
+        // strict só pesa no GetBindingValue de um `with` (prop que sumiu)
+        if v, ok := lookup_ident(vm, env, n.name, n.strict); ok do return v
         // Identificador NÃO RESOLVIDO → ReferenceError (spec §13.3.1 / GetValue de
         // uma Reference unresolvable). `typeof x` é a única isenção e não passa
         // por aqui. Devolvíamos `undefined` até o M150, e o custo não era só de
@@ -3666,6 +4049,9 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         // lança TypeError em strict (spec 13.5.1.2). Antes devolvia true sempre.
         t := n.left
         #partial switch t.kind {
+        case .Ident:
+            if !vm.with_used do return true
+            return delete_ident_with(vm, t.name, env)
         case .Member, .Index:
             obj := eval(vm, t.left, env)
             if vm.throwing do return nil
@@ -3677,40 +4063,24 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 kv = eval(vm, t.right, env)
                 if vm.throwing do return nil
             }
-            if p := proxy_state(obj); p != nil {
-                if t.kind == .Index do k = key_string(vm, kv)
-                proxy_delete(vm, p, k)
-                return true
-            }
-            ok := true
-            #partial switch o in obj {
-            case ^Object:
-                if t.kind == .Index do k = key_string(vm, kv)
-                if o.px_handler != nil { proxy_delete(vm, o, k); return true } // trap deleteProperty
-                if o.get == storage_get { storage_remove_key(o, k); return true } // delete localStorage.x
-                if _, own := o.props[k]; own && .Configurable not_in prop_attrs(o, k) {
-                    ok = false
-                } else if .Configurable in prop_attrs(o, k) {
-                    oremove(o, k)
+            if t.kind == .Index {
+                // ToPropertyKey só p/ os tipos que guardam props (o comportamento de
+                // antes: `delete "abc"[k]` não convertia a chave).
+                keyed := proxy_state(obj) != nil
+                #partial switch _ in obj {
+                case ^Object, ^Function, ^Array: keyed = true
                 }
-            case ^Function:
-                if t.kind == .Index do k = key_string(vm, kv)
-                if a, explicit := o.attrs[k]; explicit && .Configurable not_in a do ok = false
-            case ^Array:
-                if t.kind == .Index do k = key_string(vm, kv)
-                ok = array_delete_property(o, k)
+                if keyed do k = key_string(vm, kv)
             }
-            if !ok && n.strict {
-                if t.kind == .Index && k == "" do k = key_string(vm, kv)
-                throw_type_error(vm, fmt.tprintf("Cannot delete property '%s' of object", k))
-                return nil
-            }
-            return ok
+            return delete_property_value(vm, obj, k, n.strict)
         }
         return true
 
     case .Update:
         // ++x / x++ / --x / x--
+        // alvo Ident depois de algum `with`: proc à parte (ver eval_update_with) —
+        // um local de 48 B aqui engordava o frame do eval p/ TODO nó (~3%)
+        if n.left.kind == .Ident && vm.with_used do return eval_update_with(vm, n, env)
         old := read_target(vm, n.left, env)
         if vm.throwing do return nil
         if ob, ok := old.(^BigInt); ok { // BigInt: ++ soma 1n (não Number 1)
@@ -3804,6 +4174,8 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         }
         // Ordem da spec: a REFERÊNCIA do alvo é resolvida ANTES do RHS, uma vez só
         // (a[i] = i++ escreve no índice antigo; obj() .x += v não reavalia obj()).
+        // alvo Ident depois de algum `with`: proc à parte (ver eval_assign_with)
+        if n.left.kind == .Ident && vm.with_used do return eval_assign_with(vm, n, env)
         tobj, tkey: Value // base e chave de Member/Index, avaliadas UMA vez
         #partial switch n.left.kind {
         case .Member:
@@ -4116,6 +4488,10 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             bind_pattern(vm, n.left, val, target, true, n.is_const) // const {a,b} = x / [a,b] = arr
         } else if n.is_const {
             env_define_const(target, n.name, val) // reatribuir depois → TypeError
+        } else if n.aux && n.right != nil && vm.with_used && var_init_through_with(vm, env, target, n.name, val) {
+            // `with (o) { var x = 1 }` com `x` em o: o inicializador é PutValue da
+            // referência resolvida AGORA — grava em o.x; a var içada fica undefined.
+            if vm.throwing do return nil
         } else if n.aux && n.right == nil {
             // `var x;` SEM inicializador é NO-OP quando o binding já existe (spec:
             // VariableDeclaration : BindingIdentifier → "Return empty"). Redefinir
@@ -4149,6 +4525,9 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         vm.continuing = true
         vm.continue_label = n.name
         return nil
+
+    case .With:
+        return eval_with(vm, n, env) // fora do eval: não engorda o frame recursivo
 
     case .Labeled:
         // marca o label p/ o loop/switch DIRETAMENTE rotulado (ele o lê em
@@ -4966,6 +5345,18 @@ eval_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         key := eval(vm, n.callee.right, env)
         this_val = obj
         fn_val = get_index(vm, obj, key)
+    case .Ident:
+        // `f()` que resolve num ambiente de objeto (`with (o) f()`) chama com
+        // this = o (spec 13.3.6.2 EvaluateCall: WithBaseObject). Só depois de algum
+        // `with` ter rodado — no resto o caminho é o eval comum, logo abaixo.
+        if vm.with_used && n.callee.name != "eval" {
+            // direto nas variáveis da chamada: sem locais Value novos no frame
+            found: bool
+            fn_val, found, this_val = lookup_ident_base(vm, env, n.callee.name)
+            if vm.throwing do return nil
+            if found do break
+        }
+        fallthrough
     case:
         fn_val = eval(vm, n.callee, env)
         if vm.opt_short do return nil // o próprio callee era uma cadeia que curto-circuitou
@@ -5082,6 +5473,15 @@ eval_tagged :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         if vm.throwing do return nil
         this_val = obj
         fn_val = get_index(vm, obj, key)
+    case .Ident:
+        if vm.with_used { // tag resolvida num `with`: this = o objeto (como no eval_call)
+            // direto nas variáveis da chamada: sem locais Value novos no frame
+            found: bool
+            fn_val, found, this_val = lookup_ident_base(vm, env, n.callee.name)
+            if vm.throwing do return nil
+            if found do break
+        }
+        fallthrough
     case:
         fn_val = eval(vm, n.callee, env)
     }

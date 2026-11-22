@@ -79,6 +79,7 @@ Node_Kind :: enum u8 {
     Switch,   // switch(d) { cases }       -> left(d), body(lista de SwitchCase)
     SwitchCase, // case e: stmts / default -> left(teste; nil = default), body(stmts)
     Program,  // raiz: lista de statements -> body
+    With,     // with (obj) stmt (só sloppy) -> left(obj), right(corpo)
 }
 
 Node :: struct {

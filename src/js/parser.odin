@@ -135,6 +135,9 @@ mk_ident :: proc(p: ^Parser, name: string, origem: string) -> ^Node {
     n := new(Node)
     n.kind = .Ident
     n.name = name
+    // referência escrita em código strict: só observável quando a prop de um `with`
+    // some entre a resolução e a leitura (ReferenceError em vez de undefined)
+    if p != nil do n.strict = p.ctx.strict
     return n
 }
 
@@ -896,31 +899,30 @@ at_module_top :: proc(p: ^Parser) -> bool {
     return p.is_module && p.ctx.scope != nil && p.ctx.scope.parent == nil && !p.ctx.in_function && p.ctx.in_breakable == 0 && len(p.ctx.labels) == 0
 }
 
-// `with (obj) stmt`: proibido em strict (early error). Em sloppy é sintaxe VÁLIDA
-// que o motor não implementa — vira um throw em RUNTIME com mensagem honesta, em
-// vez de SyntaxError (que mentiria sobre o fonte) ou de executar errado.
+// `with (obj) stmt`: proibido em strict (early error). Em sloppy vira um nó .With
+// que o interpretador executa com um AMBIENTE DE OBJETO na cadeia de escopos (ver
+// Env.is_with / with_object em interp.odin).
 @(private = "file")
 parse_with :: proc(p: ^Parser) -> ^Node {
     if p.ctx.strict {
         syntax_error(p, "Strict mode code may not include a with statement")
         return make_num(0)
     }
+    n := new(Node)
+    n.kind = .With
     advance(p) // with
     expect(p, .LParen)
-    obj := parse_sequence(p)
+    n.left = parse_sequence(p)
     expect(p, .RParen)
-    body := parse_sub_statement(p)
-    free_ast(body)
-    blk := new(Node); blk.kind = .Block
-    es := new(Node); es.kind = .ExprStmt; es.left = obj
-    append(&blk.body, es)
-    thr := new(Node); thr.kind = .Throw
-    ctor := new(Node); ctor.kind = .New; ctor.callee = mk_ident(p, "TypeError", "with")
-    msg := new(Node); msg.kind = .Str; msg.str = "with statement is not supported by this engine"
-    append(&ctor.body, msg)
-    thr.right = ctor
-    append(&blk.body, thr)
-    return blk
+    // IsLabelledFunction(Statement) é early error no corpo do with (14.11.1)
+    j := p.pos
+    for j + 1 < len(p.toks) && p.toks[j].kind == .Ident && p.toks[j + 1].kind == .Colon do j += 2
+    if j != p.pos && p.toks[j].kind == .Ident && p.toks[j].text == "function" {
+        syntax_error(p, "In non-strict mode code, functions can only be declared at top level, inside a block, or as the body of an if statement.")
+        return n
+    }
+    n.right = parse_sub_statement(p)
+    return n
 }
 
 /// Sintaxe de módulo ES. O navegador roda o bundle como script único (imports já
