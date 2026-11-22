@@ -400,12 +400,19 @@ promise_resolving_functions :: proc(vm: ^Interp, p: ^Object) -> (resolve, reject
     shared := new_object(vm)
     shared.props["promise"] = p
     shared.props["resolved"] = false
+    // CreateResolvingFunctions (spec 27.2.1.3): anônimas, length 1, NÃO construtoras —
+    // o código que recebe as duas (executor de `new Promise`, um `then` de thenable)
+    // pode inspecioná-las. `new resolve()` lançava nada; Test262 finally/*-argument.
     resolve = new_function(vm)
     resolve.native = native_promise_resolve_bound
     resolve.bound = shared
+    resolve.native_length = 1
+    resolve.non_constructor = true
     reject = new_function(vm)
     reject.native = native_promise_reject_bound
     reject.bound = shared
+    reject.native_length = 1
+    reject.non_constructor = true
     return
 }
 
@@ -519,20 +526,54 @@ native_promise_catch :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return promise_then_impl(vm, p, nil, onr)
 }
 
-// finally aguarda o retorno do callback antes de propagar o resultado original.
+// Promise.prototype.finally (spec 27.2.5.3). Tudo que a spec faz por Invoke(_, "then")
+// é OBSERVÁVEL e tem de passar pelo `then` que o objeto tiver — inclusive um
+// Promise.prototype.then sobrescrito. Antes, o finally usava o then INTERNO e, no
+// thenFinally, devolvia a promise do cleanup para a promise derivada adotar; com o
+// `then` agora herdado (314ae3d), o Test262 finally/*-observable-then-calls-argument
+// passou a ver funções com length/name errados. As funções que o finally cria são
+// anônimas, não construtoras: thenFinally/catchFinally (length 1), valueThunk/thrower
+// (length 0).
 @(private = "file")
 native_promise_finally :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    p, ok := is_promise(this)
-    if !ok do return nil
-    cb, cok := arg(args, 0).(^Function)
-    if !cok do return promise_then_impl(vm, p, nil, nil)
-    onf := new_function(vm)
-    onf.native = finally_on_fulfilled
-    onf.bound = cb
-    onr := new_function(vm)
-    onr.native = finally_on_rejected
-    onr.bound = cb
-    return promise_then_impl(vm, p, onf, onr)
+    if is_primitive(this) {
+        throw_type_error(vm, "Promise.prototype.finally called on a non-object")
+        return nil
+    }
+    on_finally := arg(args, 0)
+    then_args: []Value
+    if cb, cok := on_finally.(^Function); cok {
+        onf := finally_fn(vm, finally_on_fulfilled, 1, cb)
+        onr := finally_fn(vm, finally_on_rejected, 1, cb)
+        then_args = []Value{onf, onr}
+    } else {
+        then_args = []Value{on_finally, on_finally} // não chamável: passa adiante como está
+    }
+    return finally_invoke_then(vm, this, then_args)
+}
+
+// Função anônima e não construtora, como as que a spec cria com CreateBuiltinFunction.
+@(private = "file")
+finally_fn :: proc(vm: ^Interp, native: Native_Fn, length: int, bound: Value) -> ^Function {
+    f := new_function(vm)
+    f.native = native
+    f.native_length = length
+    f.non_constructor = true
+    f.bound = bound
+    return f
+}
+
+// Invoke(target, "then", args).
+@(private = "file")
+finally_invoke_then :: proc(vm: ^Interp, target: Value, args: []Value) -> Value {
+    then_v := get_member(vm, target, "then")
+    if vm.throwing do return nil
+    then_fn, ok := then_v.(^Function)
+    if !ok {
+        throw_type_error(vm, "then is not a function")
+        return nil
+    }
+    return call_function(vm, then_fn, target, args)
 }
 
 @(private = "file")
@@ -545,22 +586,22 @@ finally_on_rejected :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     return finally_wait(vm, arg(args, 0), true)
 }
 
+// thenFinally/catchFinally: chama onFinally, PromiseResolve(resultado) e devolve
+// `promise.then(valueThunk)` / `promise.then(thrower)` — por Invoke, com UM argumento.
 @(private = "file")
 finally_wait :: proc(vm: ^Interp, value: Value, rejected: bool) -> Value {
     cb := vm.native_bound.(^Function)
     result := call_function(vm, cb, nil, nil)
     if vm.throwing do return nil
     cleanup := promise_for_await(vm, result)
-    resume := new_function(vm)
-    resume.native = finally_resume
     hold := new_object(vm)
     hold.props["value"] = value
     hold.props["rejected"] = rejected
-    resume.bound = hold
-    // A rejeicao do cleanup passa direto; so o cumprimento restaura o original.
-    return promise_then_impl(vm, cleanup, resume, nil)
+    thunk := finally_fn(vm, finally_resume, 0, hold)
+    return finally_invoke_then(vm, cleanup, []Value{thunk})
 }
 
+// valueThunk (devolve o valor original) ou thrower (relança o motivo original).
 @(private = "file")
 finally_resume :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     hold := vm.native_bound.(^Object)
