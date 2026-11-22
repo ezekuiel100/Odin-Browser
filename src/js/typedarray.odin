@@ -981,16 +981,22 @@ dataview_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 // helpers de leitura DataView com endianness (le=true → little-endian).
 @(private = "file")
-dv_bytes :: proc(o: ^Object, byte_off, n: int) -> (int, bool) {
-    if o == nil || o.ab == nil || o.ab.detached do return 0, false
-    base := o.ta_off + byte_off
-    if byte_off < 0 || base + n > o.ta_off + o.ta_len do return 0, false
-    return base, true
+dv_bytes :: proc(vm: ^Interp, o: ^Object, byte_off, n: int) -> (int, bool) {
+    if o == nil || o.ta_kind != .DataView || o.ab == nil || o.ab.detached {
+        throw_type_error(vm, "DataView method requires a DataView with an attached buffer")
+        return 0, false
+    }
+    if byte_off < 0 || n > o.ta_len || byte_off > o.ta_len - n {
+        vm.thrown = mk_error(vm, "RangeError", "Offset is outside the bounds of the DataView")
+        vm.throwing = true
+        return 0, false
+    }
+    return o.ta_off + byte_off, true
 }
 
 @(private = "file")
 dv_read_u :: proc(vm: ^Interp, o: ^Object, byte_off, n: int, le: bool) -> (u64, bool) {
-    base, ok := dv_bytes(o, byte_off, n); if !ok { throw_type_error(vm, "Offset is outside the bounds of the DataView"); return 0, false }
+    base, ok := dv_bytes(vm, o, byte_off, n); if !ok do return 0, false
     d := o.ab.data[:]
     v: u64 = 0
     if le { for i in 0 ..< n do v |= u64(d[base+i]) << uint(8*i) }
@@ -1000,7 +1006,7 @@ dv_read_u :: proc(vm: ^Interp, o: ^Object, byte_off, n: int, le: bool) -> (u64, 
 
 @(private = "file")
 dv_write_u :: proc(vm: ^Interp, o: ^Object, byte_off, n: int, v: u64, le: bool) {
-    base, ok := dv_bytes(o, byte_off, n); if !ok { throw_type_error(vm, "Offset is outside the bounds of the DataView"); return }
+    base, ok := dv_bytes(vm, o, byte_off, n); if !ok do return
     d := o.ab.data[:]
     if le { for i in 0 ..< n do d[base+i] = u8(v >> uint(8*i)) }
     else  { for i in 0 ..< n do d[base+n-1-i] = u8(v >> uint(8*i)) }

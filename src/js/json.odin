@@ -316,13 +316,15 @@ json_parse_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     }
     // reviver (2º arg): aplicado de baixo p/ cima; retorno undefined REMOVE a chave
     if fn, fok := arg(args, 1).(^Function); fok {
-        return json_revive(vm, "", v, fn)
+        holder := new_object(vm)
+        oput(holder, "", v)
+        return json_revive(vm, holder, "", v, fn)
     }
     return v
 }
 
 @(private = "file")
-json_revive :: proc(vm: ^Interp, key: string, val: Value, fn: ^Function) -> Value {
+json_revive :: proc(vm: ^Interp, holder: Value, key: string, val: Value, fn: ^Function) -> Value {
     #partial switch o in val {
     case ^Object:
         keys: [dynamic]string
@@ -331,7 +333,7 @@ json_revive :: proc(vm: ^Interp, key: string, val: Value, fn: ^Function) -> Valu
         for k in keys {
             pv, has := o.props[k]
             if !has do continue
-            nv := json_revive(vm, k, pv, fn)
+            nv := json_revive(vm, o, k, pv, fn)
             if vm.throwing do return nil
             if nv == nil { oremove(o, k) } else { o.props[k] = nv }
         }
@@ -339,11 +341,11 @@ json_revive :: proc(vm: ^Interp, key: string, val: Value, fn: ^Function) -> Valu
         buf: [24]u8
         for it, i in o.items {
             ks := strconv.write_int(buf[:], i64(i), 10)
-            o.items[i] = json_revive(vm, ks, it, fn)
+            o.items[i] = json_revive(vm, o, ks, it, fn)
             if vm.throwing do return nil
         }
     }
-    return call_function(vm, fn, nil, []Value{own_str(vm, key), val})
+    return call_function(vm, fn, holder, []Value{own_str(vm, key), val})
 }
 
 @(private = "file")
