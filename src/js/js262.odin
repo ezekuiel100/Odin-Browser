@@ -15,10 +15,13 @@ package js
 //   __262__ status=throw name=<Nome> phase=runtime source=<index> rec=<n> msg=...
 // phase=parse: o fonte foi rejeitado pelo parser (SyntaxError antes de executar);
 // phase=runtime: lançou durante a execução. source distingue harness de teste.
+// --module aplica goal Module somente ao ultimo fonte; --async instala $DONE.
+// status=incomplete/invalid nunca aprovam um teste no runner externo.
 
 import "core:os"
 import "core:fmt"
 import "core:strings"
+import "core:path/filepath"
 
 // Resultado bruto de rodar uma sequência de fontes numa VM.
 Js262_Result :: struct {
@@ -28,35 +31,110 @@ Js262_Result :: struct {
     err_name:   string, // "TypeError" / "Test262Error" / "SyntaxError" / ...
     err_msg:    string, // primeira linha da mensagem
     recoveries: int,    // parse_recoveries acumuladas
+    incomplete: bool,  // async sem $DONE ou modulo que nao terminou
+    protocol_error: bool, // mais de uma chamada a $DONE
+    uncaught_jobs: int, // callbacks do host que o motor reportou e limpou
 }
 
 // Executa cada fonte em ordem no MESMO vm (escopo global compartilhado). Para na
 // primeira exceção não capturada. NÃO limpa a exceção entre fontes — o corpo do
 // teste vê os helpers do harness definidos pelas fontes anteriores.
-run_js262 :: proc(sources: []string) -> Js262_Result {
+run_js262 :: proc(sources: []string, module_path := "", is_async := false, entry_path := "") -> Js262_Result {
     vm := vm_create()
     defer vm_free(vm)
+    // The runner owns the deadline and kills the process on timeout. Browser
+    // watchdog RangeErrors must not accidentally satisfy negative tests.
+    vm.time_budget_ms = 0
+    vm.step_limit = 0xffff_ffff_ffff_ffff
     host := new_object(vm)
     host.props["detachArrayBuffer"] = mk_native(vm, js262_detach_buffer)
+    host.props["evalScript"] = mk_native(vm, js262_eval_script)
+    host.props["#done"] = f64(0)
+    global := new_object(vm)
+    global.get = js262_global_get
+    global.set = js262_global_set
+    for name, value in vm.global.vars do oput(global, name, value)
+    vm.global_this = global
+    env_define(vm.global, "globalThis", global)
+    oput(global, "globalThis", global)
+    host.props["global"] = global
     env_define(vm.global, "$262", host)
+    oput(global, "$262", host)
+    if is_async {
+        done := mk_native(vm, js262_done)
+        done.bound = host
+        env_define(vm.global, "$DONE", done)
+        oput(global, "$DONE", done)
+    }
+    env_define(vm.global, "print", vm.console_log_fn)
+    vm.module_resolve = js262_module_resolve
+    vm.module_fetch = js262_module_fetch
+    vm.base_url = strings.clone(entry_path)
 
     failed_source := -1
     phase := "runtime"
+    entry: ^Module
     for src, i in sources {
         before := vm.syntax_errors
-        _ = vm_exec(vm, src)
+        before_scripts := len(vm.all_scripts)
+        if module_path != "" && i == len(sources)-1 {
+            // Do not use vm_run_module: it clears uncaught exceptions.
+            entry = new(Module)
+            entry.url = strings.clone(module_path)
+            entry.ns = new_object(vm)
+            entry.env = new_env(vm, vm.global)
+            entry.env.is_fn_scope = true
+            entry.state = .Loading
+            module_bind_ns_live(entry)
+            append(&vm.all_modules, entry)
+            vm.modules[entry.url] = entry
+            vm.current_module = entry
+            _ = vm_exec(vm, src, entry.env)
+            vm.current_module = nil
+        } else {
+            _ = vm_exec(vm, src)
+        }
+        if !vm.throwing {
+            promise_checkpoint(vm)
+            if is_async && truthy(host.props["#error"]) {
+                vm.throwing = true
+                vm.thrown = host.props["#error"]
+            }
+        }
         if vm.throwing {
             failed_source = i
             // o fonte foi REJEITADO antes de executar (early error de verdade):
             // é a fase `parse` do frontmatter `negative:`
-            if vm.syntax_errors > before do phase = "parse"
+            // A dependency parsed after the root began execution is not a
+            // parse error of the test itself. Never approve a parse-negative
+            // merely because an imported fixture has a syntax error.
+            if vm.syntax_errors > before && len(vm.all_scripts) == before_scripts do phase = "parse"
             break
         }
+    }
+
+    if !vm.throwing {
+        // Test262 async jobs do not require browser timers. A checkpoint drains
+        // the FIFO including async continuations; absence of $DONE never passes.
+        promise_checkpoint(vm)
+        if entry != nil && entry.state == .Failed {
+            vm.throwing = true
+            vm.thrown = entry.error
+        }
+        if is_async && truthy(host.props["#error"]) {
+            vm.throwing = true
+            vm.thrown = host.props["#error"]
+        }
+        if vm.throwing do failed_source = len(sources)-1
     }
 
     // `rec` segue medindo recuperação SILENCIOSA (que não deve mais existir); um
     // SyntaxError de verdade sai como phase=parse, nunca como recuperação.
     res := Js262_Result{ recoveries = vm.parse_recoveries, phase = phase, source = failed_source }
+    done_count, _ := host.props["#done"].(f64)
+    res.protocol_error = is_async && done_count > 1
+    res.uncaught_jobs = vm.uncaught_total
+    res.incomplete = !vm.throwing && ((is_async && done_count == 0) || (entry != nil && entry.state == .Loading))
     if vm.throwing {
         res.threw = true
         res.err_name, res.err_msg = describe_thrown(vm)
@@ -64,6 +142,48 @@ run_js262 :: proc(sources: []string) -> Js262_Result {
         vm.thrown   = nil
     }
     return res
+}
+
+@(private = "file")
+js262_done :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    host, ok := vm.native_bound.(^Object)
+    if !ok do return nil
+    count, _ := host.props["#done"].(f64)
+    host.props["#done"] = count + 1
+    if truthy(arg(args, 0)) && !truthy(host.props["#error"]) do host.props["#error"] = arg(args, 0)
+    return nil
+}
+
+@(private = "file")
+js262_global_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
+    return env_get(vm.global, name, vm)
+}
+
+@(private = "file")
+js262_global_set :: proc(vm: ^Interp, o: ^Object, name: string, value: Value) -> bool {
+    env_define(vm.global, name, value)
+    oput(o, name, value)
+    return true
+}
+
+@(private = "file")
+js262_eval_script :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    src, ok := arg(args, 0).(string)
+    if !ok { throw_type_error(vm, "$262.evalScript expects source text"); return nil }
+    return vm_eval_source_global(vm, src)
+}
+
+@(private = "file")
+js262_module_resolve :: proc(vm: ^Interp, specifier, referrer: string) -> string {
+    if !strings.has_prefix(specifier, "./") && !strings.has_prefix(specifier, "../") do return ""
+    resolved, _ := filepath.join({filepath.dir(referrer), specifier})
+    return resolved
+}
+
+@(private = "file")
+js262_module_fetch :: proc(vm: ^Interp, url: string) -> (string, bool) {
+    data, err := os.read_entire_file_from_path(url, context.allocator)
+    return string(data), err == nil
 }
 
 // Test262 host operation: invalidate all views sharing the backing store.
@@ -142,17 +262,28 @@ js262_main :: proc(paths: []string) -> int {
         for s in sources do delete(s)
         delete(sources)
     }
+    is_async, is_module := false, false
+    entry_path := ""
     for p in paths {
+        if p == "--async" { is_async = true; continue }
+        if p == "--module" { is_module = true; continue }
         data, rerr := os.read_entire_file_from_path(p, context.allocator)
         if rerr != nil {
             fmt.eprintfln("[js262] não consegui ler %s", p)
             return 2
         }
         append(&sources, string(data))
+        entry_path = p
     }
 
-    res := run_js262(sources[:])
-    if res.threw {
+    res := run_js262(sources[:], is_module ? entry_path : "", is_async, entry_path)
+    if res.protocol_error || res.uncaught_jobs > 0 {
+        reason := res.protocol_error ? "multiple-done" : "uncaught-job"
+        fmt.printfln("__262__ status=invalid reason=%s rec=0", reason)
+        if res.threw { delete(res.err_name); delete(res.err_msg) }
+    } else if res.incomplete {
+        fmt.println("__262__ status=incomplete reason=async-or-module-pending rec=0")
+    } else if res.threw {
         fmt.printfln("__262__ status=throw name=%s phase=%s source=%d rec=%d msg=%s",
             res.err_name, res.phase, res.source, res.recoveries, res.err_msg)
         delete(res.err_name)

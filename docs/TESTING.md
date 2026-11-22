@@ -75,7 +75,87 @@ o rehash/clear usava o alocador errado e o header (`len`) dessincronizava dos
 buckets. M246 moveu o dado para `Computed.svg_css` (dono = `free_styles`); o
 portão é `test_svg_css_dono_e_o_computed` (50 passadas + free_styles pai/filho).
 
-Test262: o runner executa variantes normal/estrita (respeitando raw, noStrict e onlyStrict), ignora fixtures e registra modos module/async/CanBlock como SKIP. Negativos exigem tipo, fase e origem no corpo do teste; recuperacoes nao aprovam nenhum teste. O motor identifica as fases runtime e parse (`phase=parse` = o fonte foi rejeitado com SyntaxError antes de executar); negativos de resolution seguem falhando. Os 170/299 antigos nao sao uma medicao atual. Regressoes do veredito: powershell -File tests/test262-runner.ps1.
+## Test262: cobertura e comparação por teste
+
+`tools/fetch-test262.ps1` baixa um snapshot oficial, fixa o SHA do upstream e
+preserva harness, fixtures e dependências. Não exclui features ausentes no motor.
+A amostragem escolhe até `-PerDir` testes em **cada** diretório, ordenados pelo
+SHA256 do caminho; `-PerDir 0` seleciona todos. O manifest separa os testes que
+serão executados dos arquivos presentes apenas como dependências. As áreas padrão
+são `language`, `built-ins` e `annexB`; `intl402` e `staging` ficam fora desta
+medição. O upstream também inclui testes de propostas: consulte `byFeature`,
+sem interpretar o agregado como percentual de uma edição do ECMAScript.
+
+```powershell
+# Reproduzir a seleção ampliada; escolha um diretório novo se já existir.
+.\tools\fetch-test262.ps1 -Revision 2a1ade303f72d3de80565c921d685222405c32ce -PerDir 10 -OutDir _local/test262-expanded-10
+.\test262.ps1 -Suite _local/test262-expanded-10 -TimeoutSec 5 -Report _local/reports/test262-expanded.json
+```
+
+Requer Python 3.10+ e PyYAML (`python -m pip install -r
+tools/test262-requirements.txt`). Sem `-Browser`, o comando compila um executável
+isolado de `tools/js262` em `_local/builds/test262.exe`, usando o código atual;
+não substitui `browser.exe`. `-Browser <exe>` permite repetir uma medição com um
+binário arquivado. Sem `-Suite`, prefere `_local/test262-expanded/manifest.json`
+quando presente e usa o conjunto legado `tests/test262` como fallback.
+
+O runner executa variantes normal/estrita, respeita `raw`/`noStrict`/`onlyStrict`
+e executa módulos uma vez, com seu goal e URL originais. Imports usam arquivos
+locais; harness e includes executam no escopo global. Testes assíncronos exigem
+uma única chamada a `$DONE`; conclusão ausente, `$DONE(error)`, chamada duplicada
+e exceções reportadas em callbacks não passam silenciosamente. Cada variante
+tem um processo/VM novo, com prazo externo; os watchdogs de tempo/iterações do
+navegador ficam desligados para não produzirem `RangeError` que satisfaça um
+negativo por acidente.
+
+Negativos exigem tipo, fase e origem no teste. `phase=parse` só identifica a
+rejeição do próprio fonte antes de executar; erro em fixture importada não pode
+aprovar esse negativo. O host ainda não identifica separadamente a fase de
+linkagem `resolution`, portanto não reclassifica um erro de runtime para aprová-la.
+`$262.createRealm`, agentes/CanBlock, GC explícito, IsHTMLDDA e ModuleSource são
+limites do host: testes que os exigem ficam em **SKIP com motivo**, separados de
+FAIL de linguagem. Ausência de includes também aparece como SKIP.
+
+O relatório JSON contém cada teste/variante, erro, duração, revisão da suíte,
+hash do executável, parâmetros e agregados por área, feature, modo e async. O
+JSONL ao lado registra progresso, mas uma rodada sem JSON final e `TOTAL:` é
+incompleta. A comparação recusa conjuntos/revisões diferentes:
+
+```powershell
+.\test262.ps1 -Suite _local/test262-expanded-10 -TimeoutSec 5 -Baseline _local/reports/antes.json -Report _local/reports/depois.json
+# O relatório "changes" lista transições por nome e variante, inclusive SKIPs.
+```
+
+Regressões do host/coletor/veredito:
+
+```powershell
+python -m unittest discover -s tests -p test262_measurement_test.py -v
+powershell -File tests/test262-runner.ps1
+```
+
+Os 170/299 antigos são históricos. Resultados do conjunto legado, da seleção
+ampliada e de hosts diferentes não devem ser comparados só pelo total de PASS.
+
+Baseline ampliado de **2026-11-21**: **10.848 arquivos / 21.056 variantes** em
+1.482 diretórios, selecionados de 48.803 testes candidatos. Resultado: **8.971
+PASS / 11.679 FAIL / 66 ERROR / 340 SKIP**. Inclui 163 variantes de módulos e
+916 variantes async (categorias que podem se sobrepor). Os ERROR são 50 timeouts
+de 5 s e 16 abortos nativos; os SKIP são 197 createRealm, 70 IsHTMLDDA, 52 agentes,
+11 ModuleSource e 10 CanBlock. A cobertura anterior documentada era de 2.609
+arquivos / 5.093 variantes, com seleção e host diferentes.
+
+O [resumo versionado](../tests/test262-measurements/summary-20261121.json) aponta
+para o manifest exato e os resultados completos comprimidos. Os 28 casos com
+carriage return foram repetidos preservando os bytes originais; nenhum mudou de
+veredito. Controles do coletor/host/comparação passaram, assim como os 2.199 testes
+de unidade de JS. Para comparar a próxima rodada com esta linha de base:
+
+```powershell
+.\test262.ps1 -Suite _local/test262-expanded-10 -TimeoutSec 5 -Baseline tests/test262-measurements/baseline-20261121.json.gz -Report _local/reports/test262-depois.json
+```
+
+`-Baseline` registra transições em `changes`; o comando continua saindo com código
+1 quando houver qualquer FAIL ou ERROR, inclusive os já conhecidos.
 
 ## Erros de sintaxe precoces (parser)
 

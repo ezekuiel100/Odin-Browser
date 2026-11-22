@@ -30,7 +30,7 @@ Todos os números foram medidos em **2026-08-03**, na árvore que está aqui.
 | Reftests do WPT | **353 PASS / 128 FAIL / 0 ERRO** (de 481) | conformidade de CSS e layout contra as referências da spec |
 | html5lib, tree-construction | **1689 / 1709** (12 diff, **0 crash**) | conformidade de `parse_document`/`parse_fragment`, o tree builder principal |
 | html5lib, tokenizer | **7028 / 7036** | conformidade do emissor `--tokenize` nos estados suportados |
-| Test262 | **3896 PASS / 1195 FAIL / 2 ERROR** (5093 variantes, 2026-11-21) | 2609 arquivos locais (inclui `variable/dstr`, `assignment/dstr` e, desde 21/11, RegExp + `literals/regexp`, `Date` inteiro e `toExponential`/`toPrecision`), variantes normal/estrita; os 2 ERROR sao timeout de `RegExp/quantifier-integer-limit`; os 1960 arquivos anteriores ao Date estao em 2990 / 803; 170 / 299 era a medicao historica anterior ao runner rigoroso |
+| Test262 ampliado | **8971 PASS / 11679 FAIL / 66 ERROR / 340 SKIP** (21056 variantes, 2026-11-21) | 10848 arquivos de 1482 diretorios, upstream fixado em `2a1ade303f72`; scripts, 163 variantes de modulos e 916 async. Os ERROR sao 50 timeouts e 16 abortos nativos; SKIP tem motivo de host explicito. Inclui recursos ausentes e testes de propostas: nao representa percentual de uma edicao do ECMAScript. [Baseline e reproducao](docs/TESTING.md#test262-cobertura-e-comparação-por-teste). |
 | Golden de layout | 17 fixtures | regressão de geometria, com nome e número |
 | Portão de pintura | 73 asserções | caixa no lugar certo mas **não pintada** — o ponto cego do golden |
 
