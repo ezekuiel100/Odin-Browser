@@ -1580,8 +1580,8 @@ regex_match_all_impl :: proc(vm: ^Interp, re: ^Regex, s: string) -> Value {
 //       `re.exec = fn` (ou `class R extends RegExp { exec() {} }`) ser respeitado, e
 //       o que o core-js/babel testam (DELEGATES_TO_EXEC) antes de decidir se trocam
 //       os métodos nativos.
-// Desvio consciente: o @@matchAll genérico coleta os casamentos na hora (a spec
-// devolve um iterador PREGUIÇOSO que chama exec a cada next()).
+// O @@matchAll genérico devolve um iterador PREGUIÇOSO (exec a cada next()), como
+// na spec; o caminho rápido segue coletando na hora (sem exec observável, dá igual).
 
 // A ^Regex de `rx`, se ela for uma regex de verdade ou o wrapper de uma subclasse.
 regex_of :: proc(rx: Value) -> ^Regex {
@@ -1924,18 +1924,81 @@ regex_sym_match_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     matcher := construct_object(vm, c, []Value{this, own_str(vm, flags)}); if vm.throwing do return nil
     li := rx_get_last_index(vm, this); if vm.throwing do return nil
     if !rx_set_last_index(vm, matcher, f64(li)) do return nil
-    global := strings.index_byte(flags, 'g') >= 0
-    full := strings.index_byte(flags, 'u') >= 0 || strings.index_byte(flags, 'v') >= 0
-    out := new_array(vm)
-    for {
-        r := regexp_exec(vm, matcher, s); if vm.throwing do return nil
-        if _, null := r.(JS_Null); null do break
-        append(&out.items, r)
-        if !global do break
-        ms := rx_result_str(vm, r, "0"); if vm.throwing do return nil
-        if ms == "" && !rx_advance_after_empty(vm, matcher, s, full) do return nil
+    // CreateRegExpStringIterator: PREGUIÇOSO — cada next() chama RegExpExec uma vez.
+    // O estado mora em chaves `#...` (internas, fora de for-in/Object.keys).
+    it := new_object(vm)
+    it.proto = regex_string_iter_proto(vm)
+    it.props[RX_IT_MATCHER] = matcher
+    it.props[RX_IT_STRING]  = own_str(vm, s)
+    it.props[RX_IT_GLOBAL]  = strings.index_byte(flags, 'g') >= 0
+    it.props[RX_IT_UNICODE] = strings.index_byte(flags, 'u') >= 0 || strings.index_byte(flags, 'v') >= 0
+    it.props[RX_IT_DONE]    = false
+    return it
+}
+
+RX_IT_MATCHER :: "#rx_matcher"
+RX_IT_STRING  :: "#rx_string"
+RX_IT_GLOBAL  :: "#rx_global"
+RX_IT_UNICODE :: "#rx_unicode"
+RX_IT_DONE    :: "#rx_done"
+RX_IT_PROTO   :: "#rx_string_iterator_proto" // guardado no RegExp.prototype (raiz do GC)
+
+// %RegExpStringIteratorPrototype% (spec 22.2.9.2): next + @@toStringTag, herdando
+// de %IteratorPrototype% ([Symbol.iterator] → this). Criado na 1ª vez: o
+// install_regex roda ANTES de existir o vm.iter_proto.
+@(private = "file")
+regex_string_iter_proto :: proc(vm: ^Interp) -> ^Object {
+    if p, ok := vm.regex_proto.props[RX_IT_PROTO].(^Object); ok do return p
+    p := new_object(vm)
+    p.proto = vm.iter_proto
+    p.props["next"] = mk_builtin_method(vm, regex_string_iter_next, "next", 0)
+    mark_non_enumerable(p, "next")
+    if vm.sym_tostring_tag_key != "" {
+        p.props[vm.sym_tostring_tag_key] = "RegExp String Iterator"
+        if p.attrs == nil do p.attrs = make(map[string]Prop_Attrs)
+        p.attrs[vm.sym_tostring_tag_key] = {.Configurable}
     }
-    return make_array_iterator(vm, out)
+    vm.regex_proto.props[RX_IT_PROTO] = p
+    return p
+}
+
+// {value, done} — o make_iter_result do generator.odin é privado dele.
+@(private = "file")
+rx_iter_result :: proc(vm: ^Interp, value: Value, done: bool) -> ^Object {
+    r := new_object(vm)
+    oput(r, "value", value)
+    oput(r, "done", done)
+    return r
+}
+
+// %RegExpStringIteratorPrototype%.next (spec 22.2.9.2.1).
+@(private = "file")
+regex_string_iter_next :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    it, ok := this.(^Object)
+    matcher: Value
+    has := false
+    if ok do matcher, has = it.props[RX_IT_MATCHER]
+    if !has {
+        throw_type_error(vm, "%RegExpStringIterator%.next requires that 'this' be a RegExp String Iterator")
+        return nil
+    }
+    if done, _ := it.props[RX_IT_DONE].(bool); done do return rx_iter_result(vm, nil, true)
+    s, _ := it.props[RX_IT_STRING].(string)
+    r := regexp_exec(vm, matcher, s); if vm.throwing do return nil
+    if _, null := r.(JS_Null); null {
+        it.props[RX_IT_DONE] = true
+        return rx_iter_result(vm, nil, true)
+    }
+    if global, _ := it.props[RX_IT_GLOBAL].(bool); global {
+        ms := rx_result_str(vm, r, "0"); if vm.throwing do return nil
+        if ms == "" {
+            full, _ := it.props[RX_IT_UNICODE].(bool)
+            if !rx_advance_after_empty(vm, matcher, s, full) do return nil
+        }
+        return rx_iter_result(vm, r, false)
+    }
+    it.props[RX_IT_DONE] = true
+    return rx_iter_result(vm, r, false)
 }
 
 // RegExp.prototype.test (spec 22.2.6.16): RegExpExec(R, S) !== null — logo também

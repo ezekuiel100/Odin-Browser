@@ -1673,8 +1673,14 @@ regex_test_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // re.exec(str) -> [casamento, grupo1, ...] ou null. Com g, usa/atualiza lastIndex.
 @(private="file")
 regex_exec_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    // RegExpBuiltinExec exige [[RegExpMatcher]]: `this` que não é regex é TypeError
+    // (spec 22.2.6.2). Antes devolvia null em silêncio, e então
+    // `Object.create(RegExp.prototype).test("a")` dava false em vez de lançar.
     re, ok := this.(^Regex)
-    if !ok do return JS_Null{}
+    if !ok {
+        throw_type_error(vm, "RegExp.prototype.exec called on an incompatible receiver")
+        return nil
+    }
     s := to_string_value(vm, arg(args, 0))
     stateful := re.global || re.sticky
     start := stateful ? re.last_index : 0 // em unidades UTF-16

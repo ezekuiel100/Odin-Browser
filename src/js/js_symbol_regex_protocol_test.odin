@@ -211,3 +211,33 @@ regex_exec_sobrescrito_no_prototipo :: proc(t: ^testing.T) {
     `
     testing.expect_value(t, run(src).(string), "btruexbc26") // split chama exec 3x (q=0,1,2), os outros 1x cada
 }
+
+// O @@matchAll genérico é PREGUIÇOSO: cada next() chama exec uma vez (antes coletava
+// tudo na chamada do matchAll).
+@(test)
+regex_match_all_generico_e_preguicoso :: proc(t: ^testing.T) {
+    src := `
+        var calls = 0;
+        class R extends RegExp { exec(s) { calls++; return super.exec(s) } }
+        var it = "aaaa".matchAll(new R("a", "g"));
+        var antes = calls;
+        var first = it.next();
+        var depois1 = calls;
+        var rest = [...it].length;
+        [antes, depois1, first.value[0], first.value.index, rest, calls, it.next().done].join()
+    `
+    testing.expect_value(t, run(src).(string), "0,1,a,0,3,5,true")
+    // um exec que nunca devolve null não trava: o consumidor para quando quiser
+    testing.expect_value(t, run(`class R extends RegExp { exec() { var r = ["x"]; r.index = 0; return r } } var it = "abc".matchAll(new R("x", "g")); it.next(); it.next().value[0]`).(string), "x")
+    testing.expect_value(t, run(`class R extends RegExp { exec(s) { return super.exec(s) } } var it = "a".matchAll(new R("a", "g")); Object.prototype.toString.call(it) + (it[Symbol.iterator]() === it) + Object.keys(it).length`).(string), "[object RegExp String Iterator]true0")
+    testing.expect_value(t, run(`class R extends RegExp { exec(s) { return super.exec(s) } } var it = "a".matchAll(new R("a", "g")); var r = "nao lancou"; try { it.next.call({}) } catch (e) { r = e instanceof TypeError } r`).(bool), true)
+}
+
+// exec nativo com `this` que não é regex lança (RegExpBuiltinExec), e o test herdado
+// por um objeto comum também.
+@(test)
+regex_exec_nativo_this_invalido_lanca :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`var r="nao lancou"; try { Object.create(RegExp.prototype).test("a") } catch (e) { r = e instanceof TypeError } r`).(bool), true)
+    testing.expect_value(t, run(`var r="nao lancou"; try { RegExp.prototype.exec.call({}, "a") } catch (e) { r = e instanceof TypeError } r`).(bool), true)
+    testing.expect_value(t, run(`/a/.exec("ba").index`).(f64), 1)
+}
