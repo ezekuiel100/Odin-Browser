@@ -254,6 +254,15 @@ json_is_array :: proc(vm: ^Interp, value: Value) -> bool {
 // SerializeJSONArray: length lido UMA vez via Get/ToLength. A identidade, os
 // getters e o this do replacer pertencem ao holder (array, subclasse ou Proxy).
 @(private = "file")
+json_array_length :: proc(vm: ^Interp, holder: Value) -> int {
+    length := get_with_receiver(vm, holder, "length", holder)
+    if vm.throwing do return 0
+    count := to_number(vm, length)
+    if vm.throwing || count != count || count <= 0 do return 0
+    return int(min(count, 9007199254740991.0))
+}
+
+@(private = "file")
 json_array :: proc(st: ^Json_Out, holder: Value, depth: int) {
     vm := st.vm
     ptr: rawptr
@@ -263,12 +272,8 @@ json_array :: proc(st: ^Json_Out, holder: Value, depth: int) {
     }
     if !json_enter(st, ptr) do return
     defer delete_key(&st.seen, ptr)
-    length := get_with_receiver(vm, holder, "length", holder)
+    n := json_array_length(vm, holder)
     if vm.throwing do return
-    count := to_number(vm, length)
-    if vm.throwing do return
-    n := 0
-    if count == count && count > 0 do n = int(min(count, 9007199254740991.0))
     sb := &st.sb
     strings.write_byte(sb, '[')
     buf: [24]u8
@@ -353,34 +358,57 @@ json_parse_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if fn, fok := arg(args, 1).(^Function); fok {
         holder := new_object(vm)
         oput(holder, "", v)
-        return json_revive(vm, holder, "", v, fn)
+        return json_revive(vm, holder, "", fn)
     }
     return v
 }
 
 @(private = "file")
-json_revive :: proc(vm: ^Interp, holder: Value, key: string, val: Value, fn: ^Function) -> Value {
-    #partial switch o in val {
-    case ^Object:
-        keys: [dynamic]string
-        defer delete(keys)
-        own_enum_keys(vm, o, &keys)
-        for k in keys {
-            pv, has := o.props[k]
-            if !has do continue
-            nv := json_revive(vm, o, k, pv, fn)
+json_revive :: proc(vm: ^Interp, holder: Value, key: string, fn: ^Function) -> Value {
+    // InternalizeJSONProperty reads at the time of the visit, even if an earlier
+    // callback deleted the property or replaced it with an accessor.
+    val := get_with_receiver(vm, holder, key, holder)
+    if vm.throwing do return nil
+    if !is_primitive(val) {
+        isarr := json_is_array(vm, val)
+        if vm.throwing do return nil
+        if isarr {
+            n := json_array_length(vm, val)
             if vm.throwing do return nil
-            if nv == nil { oremove(o, k) } else { o.props[k] = nv }
-        }
-    case ^Array:
-        buf: [24]u8
-        for it, i in o.items {
-            ks := strconv.write_int(buf[:], i64(i), 10)
-            o.items[i] = json_revive(vm, o, ks, it, fn)
+            // Snapshot length, not the backing slice: callbacks can resize it.
+            buf: [24]u8
+            for i in 0 ..< n {
+                k := strconv.write_int(buf[:], i64(i), 10)
+                json_revive_child(vm, val, k, fn)
+                if vm.throwing do return nil
+            }
+        } else {
+            keys: [dynamic]string
+            defer delete(keys)
+            own_keys_any(vm, val, &keys)
             if vm.throwing do return nil
+            // Snapshot keys. Deletion does not remove a pending visit; additions
+            // do not add visits, and each pending value is fetched afresh.
+            for k in keys {
+                json_revive_child(vm, val, k, fn)
+                if vm.throwing do return nil
+            }
         }
     }
     return call_function(vm, fn, holder, []Value{own_str(vm, key), val})
+}
+
+@(private = "file")
+json_revive_child :: proc(vm: ^Interp, holder: Value, key: string, fn: ^Function) {
+    value := json_revive(vm, holder, key, fn)
+    if vm.throwing do return
+    if value == nil {
+        delete_property_value(vm, holder, key, false)
+    } else {
+        create_data_property(vm, holder, key, value)
+    }
+    // False from Delete/CreateDataProperty is intentionally ignored. Exceptions
+    // from getters, callbacks and Proxy traps still propagate to the caller.
 }
 
 @(private = "file")

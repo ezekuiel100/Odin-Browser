@@ -29,18 +29,18 @@ array_attrs :: proc(a: ^Array, key: string) -> Prop_Attrs {
     return attrs
 }
 
-array_define_property :: proc(vm: ^Interp, a: ^Array, key: string, source: ^Object) {
+array_define_property :: proc(vm: ^Interp, a: ^Array, key: string, source: ^Object, throw_on_reject := true) -> bool {
     desc := normalize_descriptor(vm, source)
-    if vm.throwing do return
+    if vm.throwing do return false
     value, has_value := desc.props["value"]
     if key == "length" && has_value {
         u := to_number(vm, value)
-        if vm.throwing do return
+        if vm.throwing do return false
         n := to_number(vm, value)
-        if vm.throwing do return
+        if vm.throwing do return false
         if u != u || math.trunc(u) != u || u < 0 || u >= 4294967296 || n != u {
             vm.thrown = mk_error(vm, "RangeError", "Invalid array length"); vm.throwing = true
-            return
+            return false
         }
         desc.props["value"] = n
     }
@@ -52,8 +52,7 @@ array_define_property :: proc(vm: ^Interp, a: ^Array, key: string, source: ^Obje
         apply_normalized_descriptor(vm, view, key, d)
     }
     view.non_extensible = a.frozen || a.sealed
-    apply_normalized_descriptor(vm, view, key, desc)
-    if vm.throwing do return
+    if !apply_normalized_descriptor(vm, view, key, desc, throw_on_reject) do return false
     attrs := prop_attrs(view, key)
     if key == "length" {
         success := true
@@ -64,13 +63,16 @@ array_define_property :: proc(vm: ^Interp, a: ^Array, key: string, source: ^Obje
         if a.descriptors == nil do a.descriptors = new_object(vm)
         if a.descriptors.attrs == nil do a.descriptors.attrs = make(map[string]Prop_Attrs)
         a.descriptors.attrs[key] = attrs
-        if !success && !vm.throwing do throw_type_error(vm, "Cannot redefine array length")
-        return
+        if !success && !vm.throwing && throw_on_reject do throw_type_error(vm, "Cannot redefine array length")
+        return success
     }
     if idx, indexed := array_index_name(key); indexed {
         if idx >= len(a.items) {
-            if .Writable not_in array_attrs(a, "length") { throw_type_error(vm, "Array length is read only"); return }
-            if idx > 100_000_000 { throw_type_error(vm, "Array index exceeds storage limit"); return }
+            if .Writable not_in array_attrs(a, "length") {
+                if throw_on_reject do throw_type_error(vm, "Array length is read only")
+                return false
+            }
+            if idx > 100_000_000 { throw_type_error(vm, "Array index exceeds storage limit"); return false }
             arr_mark_holes(a, len(a.items), idx + 1)
             for len(a.items) <= idx do append(&a.items, nil)
         }
@@ -89,6 +91,7 @@ array_define_property :: proc(vm: ^Interp, a: ^Array, key: string, source: ^Obje
     delete_key(&m.getters, key); delete_key(&m.setters, key)
     if getter, ok := view.getters[key]; ok do m.getters[key] = getter
     if setter, ok := view.setters[key]; ok do m.setters[key] = setter
+    return true
 }
 
 array_delete_property :: proc(a: ^Array, key: string) -> bool {

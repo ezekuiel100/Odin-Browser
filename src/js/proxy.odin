@@ -63,11 +63,19 @@ proxy_delete :: proc(vm: ^Interp, o: ^Object, key: string) {
     if !proxy_live(vm, o) do return
 
     if fn, ok := proxy_trap(vm, o, "deleteProperty"); ok {
-        call_function(vm, fn, o.px_handler, []Value{o.px_target, proxy_key_value(vm, key)})
+        result := call_function(vm, fn, o.px_handler, []Value{o.px_target, proxy_key_value(vm, key)})
+        if vm.throwing || !truthy(result) do return
+        desc := obj_get_own_property_descriptor(vm, nil, []Value{o.px_target, proxy_key_value(vm, key)})
+        if vm.throwing || desc == nil do return
+        configurable := truthy(get_member(vm, desc, "configurable"))
+        if vm.throwing do return
+        extensible := proxy_target_extensible(vm, o.px_target)
+        if vm.throwing do return
+        if !configurable || !extensible do throw_type_error(vm, "deleteProperty trap cannot hide a protected target property")
         return
     }
     if vm.throwing do return
-    reflect_delete_target(o.px_target, key)
+    delete_property_value(vm, o.px_target, key, false)
 }
 
 // ── construtor Proxy + objeto Reflect ────────────────────────────────────────
@@ -385,6 +393,20 @@ proxy_state :: proc(v: Value) -> ^Object {
 
 proxy_live :: proc(vm: ^Interp, p: ^Object) -> bool {
     if p.px_revoked { throw_type_error(vm, "Cannot perform operation on a revoked proxy"); return false }
+    return true
+}
+
+// Integrity state of the native target behind forwarding proxies.
+proxy_target_extensible :: proc(vm: ^Interp, target: Value) -> bool {
+    target := target
+    for p := proxy_state(target); p != nil; p = proxy_state(target) {
+        if !proxy_live(vm, p) do return false
+        target = p.px_target
+    }
+    #partial switch o in target {
+    case ^Object: return !o.non_extensible
+    case ^Array: return !o.sealed && !o.frozen
+    }
     return true
 }
 

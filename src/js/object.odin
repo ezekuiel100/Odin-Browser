@@ -692,7 +692,7 @@ normalize_descriptor :: proc(vm: ^Interp, desc: ^Object) -> ^Object {
     return normalized
 }
 
-apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: ^Object) {
+apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: ^Object, throw_on_reject := true) -> bool {
     g, hg := desc.props["get"]
     st, hs := desc.props["set"]
     v, hv := desc.props["value"]
@@ -703,7 +703,7 @@ apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: 
     sf, sok := st.(^Function)
     accessor := hg || hs
     if (accessor && (hv || hw)) || (hg && g != nil && !gok) || (hs && st != nil && !sok) {
-        throw_type_error(vm, "Invalid property descriptor"); return
+        throw_type_error(vm, "Invalid property descriptor"); return false
     }
     oldg, og := o.getters[key]
     olds, os := o.setters[key]
@@ -711,7 +711,10 @@ apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: 
     existed := ov || og || os
     oldacc := og || os
     a := prop_attrs(o, key) if existed else Prop_Attrs{}
-    if !existed && o.non_extensible { throw_type_error(vm, "Object is not extensible"); return }
+    if !existed && o.non_extensible {
+        if throw_on_reject do throw_type_error(vm, "Object is not extensible")
+        return false
+    }
     if existed && .Configurable not_in a {
         invalid := (hc && truthy(c)) || (he && truthy(e) != (.Enumerable in a))
         if accessor || hv || hw do invalid = invalid || accessor != oldacc
@@ -720,7 +723,10 @@ apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: 
         } else if .Writable not_in a {
             invalid = invalid || (hw && truthy(w)) || (hv && !truthy(obj_is(vm, nil, []Value{v, oldv})))
         }
-        if invalid { throw_type_error(vm, "Cannot redefine non-configurable property"); return }
+        if invalid {
+            if throw_on_reject do throw_type_error(vm, "Cannot redefine non-configurable property")
+            return false
+        }
     }
     if accessor {
         // data → accessor mantém a POSIÇÃO na ordem de inserção: tira o valor sem
@@ -739,6 +745,56 @@ apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: 
     if hw do a = truthy(w) ? a + {.Writable} : a - {.Writable}
     if hc do a = truthy(c) ? a + {.Configurable} : a - {.Configurable}
     set_prop_attrs(o, key, a)
+    return true
+}
+
+// CreateDataProperty ignores an ordinary rejection, but propagates exceptions.
+// Define a full own data descriptor without invoking inherited setters.
+create_data_property :: proc(vm: ^Interp, target: Value, key: string, value: Value) -> bool {
+    key := own_str_raw(vm, key) // callers may use a transient numeric-key buffer
+    if p := proxy_state(target); p != nil {
+        if trap, found := proxy_trap(vm, p, "defineProperty"); found {
+            desc := new_object(vm)
+            oput(desc, "value", value)
+            oput(desc, "writable", true); oput(desc, "enumerable", true); oput(desc, "configurable", true)
+            result := call_function(vm, trap, p.px_handler, []Value{p.px_target, proxy_key_value(vm, key), desc})
+            if vm.throwing || !truthy(result) do return false
+            old := obj_get_own_property_descriptor(vm, nil, []Value{p.px_target, proxy_key_value(vm, key)})
+            if vm.throwing do return false
+            extensible := proxy_target_extensible(vm, p.px_target)
+            if vm.throwing do return false
+            // This operation always requests configurable:true. A truthy trap
+            // cannot claim that change on a non-configurable target property.
+            compatible := extensible
+            if old != nil do compatible = truthy(get_member(vm, old, "configurable"))
+            if vm.throwing do return false
+            if !compatible {
+                throw_type_error(vm, "defineProperty trap cannot redefine a protected target property")
+                return false
+            }
+            return true
+        }
+        if vm.throwing do return false
+        return create_data_property(vm, p.px_target, key, value)
+    }
+    desc: Object
+    desc.props = make(map[string]Value)
+    defer delete(desc.props)
+    desc.props["value"] = value
+    desc.props["writable"] = true; desc.props["enumerable"] = true; desc.props["configurable"] = true
+    #partial switch o in target {
+    case ^Object:
+        return apply_normalized_descriptor(vm, o, key, &desc, false)
+    case ^Array:
+        return array_define_property(vm, o, key, &desc, false)
+    case ^Function:
+        view := Object{props = o.props, getters = o.getters, setters = o.setters, attrs = o.attrs}
+        defer delete(view.korder)
+        result := apply_normalized_descriptor(vm, &view, key, &desc, false)
+        o.props = view.props; o.getters = view.getters; o.setters = view.setters; o.attrs = view.attrs
+        return result
+    }
+    return false
 }
 
 // Object.defineProperty(obj, key, descriptor) — devolve obj.

@@ -1731,13 +1731,20 @@ delete_property_value :: proc(vm: ^Interp, obj: Value, k: string, strict: bool) 
     case ^Object:
         if o.px_handler != nil { proxy_delete(vm, o, k); return true } // trap deleteProperty
         if o.get == storage_get { storage_remove_key(o, k); return true } // delete localStorage.x
-        if _, own := o.props[k]; own && .Configurable not_in prop_attrs(o, k) {
+        if okey_alive(o, k) && .Configurable not_in prop_attrs(o, k) {
             ok = false
         } else if .Configurable in prop_attrs(o, k) {
             oremove(o, k)
+            delete_key(&o.getters, k); delete_key(&o.setters, k)
+            delete_key(&o.attrs, k)
         }
     case ^Function:
-        if a, explicit := o.attrs[k]; explicit && .Configurable not_in a do ok = false
+        if a, explicit := o.attrs[k]; explicit && .Configurable not_in a {
+            ok = false
+        } else {
+            delete_key(&o.props, k); delete_key(&o.getters, k); delete_key(&o.setters, k)
+            delete_key(&o.attrs, k)
+        }
     case ^Array:
         ok = array_delete_property(o, k)
     }
