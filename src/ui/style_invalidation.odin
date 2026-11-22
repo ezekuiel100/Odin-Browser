@@ -20,7 +20,7 @@ Restyle_Reason :: enum u8 {
     Incremental,     // dirty subtrees only
     Full_Initial,    // no previous styles / rules just parsed
     Full_Env,        // zoom, viewport or color scheme changed
-    Full_CQ,         // container queries active
+    Full_CQ,         // container measurements changed / first resolution
     Full_New_Node,   // node without previous Computed
     Full_Structure,  // child list changed (kids_ver)
     Full_Counter,    // counters/quotes involved
@@ -63,6 +63,25 @@ style_deps :: proc(rules: []css.Rule) -> (deps: Sheet_Deps) {
         }
     }
     return
+}
+
+// Order-independent snapshot of layout inputs visible to container queries.
+// Only this tab's computed containers participate; stale measurements from
+// other documents cannot invalidate it. Record presence as well as width so
+// the first layout measurement invalidates the viewport fallback.
+container_inputs_fingerprint :: proc(styles: map[^dom.Node]Computed) -> u64 {
+    h: u64 = 0xcbf29ce484222325
+    for n, &c in styles {
+        if !c.container_inline do continue
+        part := u64(uintptr(n)) * 0x9E3779B97F4A7C15
+        if w, measured := g_container_w[n]; measured {
+            part ~= u64(transmute(u32)w)
+        } else {
+            part ~= 0x100000000
+        }
+        h += part
+    }
+    return h
 }
 
 Style_Plan :: struct {

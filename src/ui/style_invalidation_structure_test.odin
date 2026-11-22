@@ -191,3 +191,147 @@ incremental_has_and_counters_stay_full :: proc(t: ^testing.T) {
     testing.expect_value(t, tab.styles[body].width, f32(300))
     expect_matches_full(t, &tab)
 }
+
+// The test runner rolls back each test's allocator. Global map headers must
+// not retain buckets allocated by a previous test after that rollback.
+@(private="file")
+Container_Test_Inputs :: struct {
+    widths, used: map[^dom.Node]f32,
+    dirty: bool,
+}
+
+@(private="file")
+container_test_inputs_begin :: proc() -> Container_Test_Inputs {
+    saved := Container_Test_Inputs{g_container_w, g_container_used, g_container_dirty}
+    g_container_w = nil
+    g_container_used = nil
+    g_container_dirty = false
+    return saved
+}
+
+@(private="file")
+container_test_inputs_end :: proc(saved: Container_Test_Inputs) {
+    delete(g_container_w)
+    delete(g_container_used)
+    g_container_w, g_container_used, g_container_dirty = saved.widths, saved.used, saved.dirty
+}
+
+@(test)
+container_invalidation_tracks_measured_inputs :: proc(t: ^testing.T) {
+    saved_inputs := container_test_inputs_begin()
+    defer container_test_inputs_end(saved_inputs)
+    doc := html.parse(`<html><body><main id="c"><div id="target">text</div></main><section id="clean"><span>keep</span></section></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`main{container-type:inline-size;width:200px} div{width:20px} .paint{background:red;opacity:.5} @container(min-width:250px){div{width:80px}}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    c, target := el(doc, "c"), el(doc, "target")
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.styles[target].width, f32(80)) // initial viewport fallback
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, 0)
+    container_w_record(c, 200)
+    g_container_dirty = false // the UI consumes this flag before restyling
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+    testing.expect_value(t, tab.styles[target].width, f32(20))
+    expect_matches_full(t, &tab)
+    root := tab.layout
+    sa(target, "class", "paint")
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.restyle_nodes < len(tab.styles))
+    testing.expect(t, !tab.restyle_layout)
+    testing.expect_value(t, tab.layout, root)
+    expect_matches_full(t, &tab)
+    // First measurement, subsequent threshold crossings and removal of the
+    // measurement must all invalidate without any DOM mutation.
+    container_w_record(c, 300)
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+    testing.expect_value(t, tab.styles[target].width, f32(80))
+    expect_matches_full(t, &tab)
+    container_w_clear()
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+    expect_matches_full(t, &tab)
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, 0)
+    // Another document's measurements do not belong to this tab's snapshot.
+    other_doc := dom.make_node(.Element)
+    defer dom.free_tree(other_doc)
+    container_w_record(other_doc, 42)
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, 0)
+    // Viewport/font/zoom invalidations retain the full path.
+    tab.zoom_applied = -1
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+}
+
+@(test)
+container_invalidation_named_and_structural_changes :: proc(t: ^testing.T) {
+    saved_inputs := container_test_inputs_begin()
+    defer container_test_inputs_end(saved_inputs)
+    doc := html.parse(`<html><body><main id="outer"><section id="inner"><div id="target">text</div></section></main><aside>clean</aside></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`main{container-type:inline-size;container-name:outer} section{container-type:inline-size;container-name:inner} .rename{container-name:outer} .off{container-type:normal} div{width:10px;height:10px} @container outer (min-width:300px){div{width:80px}} @container inner (min-width:150px){div{height:50px}}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    outer, inner, target := el(doc, "outer"), el(doc, "inner"), el(doc, "target")
+    container_w_record(outer, 400)
+    container_w_record(inner, 100)
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.styles[target].width, f32(80))
+    testing.expect_value(t, tab.styles[target].height, f32(10))
+    sa(inner, "class", "rename")
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.restyle_nodes < len(tab.styles))
+    testing.expect_value(t, tab.styles[target].width, f32(10))
+    expect_matches_full(t, &tab)
+    sa(inner, "class", "off")
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.styles[target].width, f32(80))
+    expect_matches_full(t, &tab)
+    set_text(target.children[0], "new text")
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.restyle_layout && tab.restyle_nodes < len(tab.styles))
+    expect_matches_full(t, &tab)
+    added := new_el("div", "added")
+    dom.append_child(inner, added)
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.restyle_layout && tab.restyle_nodes < len(tab.styles))
+    testing.expect_value(t, tab.styles[added].width, f32(80))
+    expect_matches_full(t, &tab)
+    remove_kid(inner, added)
+    restyle_tab(&tab, 400, 300)
+    dom.free_tree(added)
+    expect_matches_full(t, &tab)
+}
+
+@(test)
+container_invalidation_after_sibling_layout_change :: proc(t: ^testing.T) {
+    saved_inputs := container_test_inputs_begin()
+    defer container_test_inputs_end(saved_inputs)
+    doc := html.parse(`<html><body><main><aside id="side"></aside><section id="c"><div id="target"></div></section></main><footer>keep</footer></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc, css_text=`main{display:flex;width:400px} aside{width:100px;flex-shrink:0} section{flex:1;container-type:inline-size} .wide{width:300px} div{width:10px} @container(min-width:200px){div{width:80px}}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    restyle_tab(&tab, 400, 300)
+    ensure_tab_geometry(tab.layout, 400, 300)
+    restyle_tab(&tab, 400, 300)
+    ensure_tab_geometry(tab.layout, 400, 300)
+    c, target := el(doc, "c"), el(doc, "target")
+    testing.expect_value(t, g_container_w[c], f32(300))
+    testing.expect_value(t, tab.styles[target].width, f32(80))
+    sa(el(doc, "side"), "class", "wide")
+    restyle_tab(&tab, 400, 300)
+    testing.expect(t, tab.restyle_nodes < len(tab.styles))
+    ensure_tab_geometry(tab.layout, 400, 300)
+    testing.expect_value(t, g_container_w[c], f32(100))
+    // The container's own branch had no mutation; the measurement pass must
+    // still force a full cascade and update its descendants.
+    g_container_dirty = false
+    restyle_tab(&tab, 400, 300)
+    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+    testing.expect_value(t, tab.styles[target].width, f32(10))
+    expect_matches_full(t, &tab)
+}

@@ -73,6 +73,8 @@ Tab :: struct {
     sheet_meta_ready: bool,
     sheet_deps: Sheet_Deps,
     sheet_has_cq: bool,
+    container_inputs_ready: bool,
+    container_inputs_fp: u64,
     cssom_revision: u64,
     zoom_applied: f32,                      // g_zoom com que styles/layout foram computados
     // Impressão digital do DOM de quando styles/layout foram computados. Um tick
@@ -231,6 +233,7 @@ zoom_step :: proc(dir: int) {
 // são donas das próprias strings desde a correção de posse.
 tab_drop_rules :: proc(tab: ^Tab) {
     tab.sheet_meta_ready = false
+    tab.container_inputs_ready = false
     if !tab.rules_ready do return
     csspkg.free_rules(&tab.rules)
     csspkg.free_keyframes(&tab.kf)
@@ -273,9 +276,11 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     } else if tab.zoom_applied != g_zoom || tab.style_vw != vw || tab.style_vh != vh || tab.style_dark != g_prefers_dark {
         reason = .Full_Env
     }
-    // Container measurements can change without a DOM mutation.
-    if reason == .Incremental {
-        if tab.sheet_has_cq do reason = .Full_CQ
+    // Stable container measurements allow ordinary DOM invalidation. A new
+    // measurement can change styles outside the mutated branch, so retain
+    // the full fallback when layout inputs actually differ.
+    if reason == .Incremental && tab.sheet_has_cq {
+        if !tab.container_inputs_ready || tab.container_inputs_fp != container_inputs_fingerprint(previous) do reason = .Full_CQ
     }
     live := make(map[^dompkg.Node]bool, len(previous), context.temp_allocator)
     plan := Style_Plan{old = previous, dirty = &dirty, live = &live}
@@ -341,6 +346,10 @@ restyle_tab :: proc(tab: ^Tab, vw, vh: f32) {
     tab.zoom_applied = g_zoom
     tab.style_vw, tab.style_vh = vw, vh
     tab.style_dark = g_prefers_dark
+    if tab.sheet_has_cq {
+        tab.container_inputs_fp = container_inputs_fingerprint(tab.styles)
+        tab.container_inputs_ready = true
+    }
     // getComputedStyle lê daqui. Tem de ser DEPOIS do compute_styles: o free_styles
     // logo acima liberou o mapa anterior, e o hook apontaria p/ memória morta.
     js_style_source_set(tab.styles, tab.layout, vw, vh)

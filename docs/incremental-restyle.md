@@ -8,8 +8,9 @@ continua lendo o estado atual, inclusive escritas diretas em atributos.
 Mudancas de fundo, opacidade e cursor podem atualizar caixas existentes. Outras
 propriedades, texto inline sem caixa propria e mudancas estruturais reconstroem
 a arvore de caixas. Zoom, viewport, tema e folhas novas invalidam tudo.
-Seletores relacionais entre ramos, contadores e container queries usam o caminho
-completo por seguranca. Container queries tambem invalidam sem mudanca no DOM.
+Seletores relacionais entre ramos e contadores usam o caminho completo por
+seguranca. Container queries permitem invalidacao incremental quando suas medidas
+estao estaveis; medidas novas ou alteradas invalidam mesmo sem mudanca no DOM.
 
 As entradas intactas permanecem no mesmo mapa: apenas os valores substituidos
 sao copiados para um snapshot temporario e liberados depois de atualizar as
@@ -92,3 +93,33 @@ anterior registrou 20 restyles, 760,7 ms e 675,9 ms, respectivamente. Conteudo,
 rede e mutacoes diferem entre cargas; esses numeros sao observacoes, nao uma
 comparacao controlada nem prova de um percentual de ganho no Reddit. Relatorios:
 `_local/reddit-css-before.log` e `_local/reddit-css-final.log`.
+
+## Invalidacao de container queries por medidas
+
+A presenca de @container na folha nao forca mais a cascata completa por si so.
+Cada aba guarda um fingerprint das larguras dos seus conteineres computados,
+incluindo a diferenca entre largura ainda desconhecida e largura ja medida.
+Medidas iguais permitem o plano incremental normal. A primeira resolucao e
+mudancas de largura continuam usando Full_CQ; viewport, zoom, fontes e folhas
+novas preservam suas invalidacoes completas. Medidas de outros documentos nao
+entram no fingerprint da aba.
+
+Uma mutacao em um irmao pode mudar a largura do conteiner sem mudar seus
+atributos. O layout mede essa largura e a segunda passada resolve novamente o
+estilo. O diagnostico --diagnose agora realiza essa mesma passada da interface.
+Os testes comparam os estilos com uma cascata completa, incluindo containers
+nomeados, mudanca de container-type/name, texto, insercao/remocao de filhos,
+primeira medicao, limpeza das medidas e redimensionamento causado por irmaos.
+
+Medicao sintetica local em 2026-11-22, 700 ramos intactos e uma classe alternada
+em um alvo: cascata 29,7 -> 3,1 ms/restyle; build_layout 6,9 -> 0,4 ms/restyle.
+O caminho incremental recalculou 132 de 46.464 entradas acumuladas (0,3%).
+A versao anterior fez 22 restyles, a nova 23, incluindo a passada de medicao.
+Esses tempos incluem instrumentacao e nao sao um percentual de ganho no Reddit.
+Arquivos locais: `_local/cq-invalidation-bench.html`,
+`_local/cq-invalidation-before.log` e `_local/cq-invalidation-after.log`.
+
+Na carga do Reddit observada, os 10 restyles foram classificados como Full_Env=1,
+Full_Structure=5 e Full_Cross_Sel=4. A cascata completa ainda e necessaria pelos
+seletores relacionais: remover o gatilho incondicional de CQ nao elimina esses
+fallbacks. Conteudo e mutacoes variam entre cargas; a medicao nao e controlada.

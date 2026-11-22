@@ -1058,6 +1058,25 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
             layout_box(lay, 0, 0, page_w)
             page := Rect{0, 0, page_w, 900} // ICB = viewport (CSS 2.1 §10.1)
             layout_absolutes(lay, page, page)
+            // Match the interactive loop's measurement pass. Container widths
+            // can change after a sibling mutation even when this branch's DOM
+            // is unchanged. Resolve once with the newly measured inputs.
+            if g_container_dirty && s.tabs[0].sheet_has_cq {
+                g_container_dirty = false
+                when UIPROF {
+                    g_uiprof.ms_layout += time.duration_milliseconds(time.tick_since(tf))
+                    tc := time.tick_now()
+                }
+                restyle_tab(&s.tabs[0], page_w, 900)
+                when UIPROF {
+                    g_uiprof.ms_restyle += time.duration_milliseconds(time.tick_since(tc))
+                    g_uiprof.restyles += 1
+                    tf = time.tick_now()
+                }
+                lay = s.tabs[0].layout
+                layout_box(lay, 0, 0, page_w)
+                layout_absolutes(lay, page, page)
+            }
             // fonte do getComputedStyle p/ o JS deste frame (mesma razão do
             // browser_ui: a aba pode ter vindo pronta, sem passar por restyle_tab)
             js_style_source_set(s.tabs[0].styles, lay, page_w, 900, laid_out = true)

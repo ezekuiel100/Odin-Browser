@@ -83,9 +83,9 @@ incremental_style_relational_and_structure_fallback :: proc(t: ^testing.T) {
     tab_drop_rules(&tab)
     tab.css_text = "@container (min-width:100px){div{color:red}}"
     restyle_tab(&tab, 500, 300)
-    restyle_tab(&tab, 500, 300) // measurements can change without DOM edits
-    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
-    testing.expect(t, tab.restyle_layout)
+    restyle_tab(&tab, 500, 300) // unchanged inputs must be a no-op
+    testing.expect_value(t, tab.restyle_nodes, 0)
+    testing.expect(t, !tab.restyle_layout)
 }
 
 // Includes ordinary boxes, unlike the animation-only restore index.
@@ -298,5 +298,5 @@ incremental_style_sheet_metadata_refresh :: proc(t: ^testing.T) {
     restyle_tab(&tab, 400, 300)
     testing.expect(t, tab.sheet_has_cq && tab.sheet_deps == {})
     restyle_tab(&tab, 400, 300)
-    testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
+    testing.expect_value(t, tab.restyle_nodes, 0)
 }
