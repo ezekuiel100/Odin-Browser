@@ -1570,54 +1570,451 @@ regex_match_all_impl :: proc(vm: ^Interp, re: ^Regex, s: string) -> Value {
     return make_array_iterator(vm, out)
 }
 
-// RegExp.prototype[@@match/@@matchAll/@@search/@@split/@@replace]: os mesmos corpos
-// que os métodos de String usam com uma ^Regex. Instalados por install_regex.
-@(private = "file")
-regex_this :: proc(vm: ^Interp, this: Value, what: string) -> ^Regex {
-    re, ok := this.(^Regex)
-    if !ok do throw_type_error(vm, fmt.tprintf("RegExp.prototype[%s] requires that 'this' be a RegExp", what))
+// ── RegExp.prototype[@@match/@@matchAll/@@search/@@split/@@replace] ───────────
+// Dois caminhos:
+//   RÁPIDO — `this` é uma ^Regex (ou subclasse sem nada sobrescrito): `exec` é o
+//       nativo e `flags` bate com a regex. Os *_impl rodam o motor direto, como os
+//       métodos de String sempre fizeram.
+//   GENÉRICO — qualquer outro objeto: os algoritmos da spec (22.2.6.*) em cima de
+//       RegExpExec, que chama o `exec` que o objeto TIVER. É o que deixa um
+//       `re.exec = fn` (ou `class R extends RegExp { exec() {} }`) ser respeitado, e
+//       o que o core-js/babel testam (DELEGATES_TO_EXEC) antes de decidir se trocam
+//       os métodos nativos.
+// Desvio consciente: o @@matchAll genérico coleta os casamentos na hora (a spec
+// devolve um iterador PREGUIÇOSO que chama exec a cada next()).
+
+// A ^Regex de `rx`, se ela for uma regex de verdade ou o wrapper de uma subclasse.
+regex_of :: proc(rx: Value) -> ^Regex {
+    #partial switch r in rx {
+    case ^Regex:  return r
+    case ^Object: if re, ok := r.prim.(^Regex); ok do return re
+    }
+    return nil
+}
+
+// A ^Regex de `rx` se o caminho RÁPIDO vale; nil = use o genérico (ou já lançou).
+regex_fast :: proc(vm: ^Interp, rx: Value) -> ^Regex {
+    re := regex_of(rx)
+    if re == nil do return nil
+    ex := get_member(vm, rx, "exec")
+    if vm.throwing do return nil
+    if fn, ok := ex.(^Function); !ok || fn != vm.regex_exec_fn do return nil
+    fl := get_member(vm, rx, "flags")
+    if vm.throwing do return nil
+    fs, ok := fl.(string)
+    if !ok || len(fs) != len(re.flags) do return nil
+    for c in fs do if strings.index_rune(re.flags, c) < 0 do return nil // mesma letra, qualquer ordem
     return re
+}
+
+// RegExpExec(R, S) (spec 22.2.7.1): o `exec` do objeto, se chamável (resultado tem de
+// ser objeto ou null); senão R precisa ser RegExp e roda o exec nativo.
+regexp_exec :: proc(vm: ^Interp, rx: Value, s: string) -> Value {
+    ex := get_member(vm, rx, "exec")
+    if vm.throwing do return nil
+    if fn, ok := ex.(^Function); ok {
+        r := call_function(vm, fn, rx, []Value{s})
+        if vm.throwing do return nil
+        if _, null := r.(JS_Null); null do return r
+        if is_primitive(r) {
+            throw_type_error(vm, "RegExp exec method returned something other than an Object or null")
+            return nil
+        }
+        return r
+    }
+    re := regex_of(rx)
+    if re == nil {
+        throw_type_error(vm, "RegExp.prototype.exec called on an incompatible receiver")
+        return nil
+    }
+    return call_function(vm, vm.regex_exec_fn, re, []Value{s})
+}
+
+// ToLength(v) limitado ao que um int de índice de string precisa.
+@(private = "file")
+rx_to_length :: proc(vm: ^Interp, v: Value) -> int {
+    n := to_number(vm, v)
+    if vm.throwing || n != n || n <= 0 do return 0
+    if n >= 9007199254740991 do return 9007199254740991
+    return int(n)
+}
+
+@(private = "file")
+rx_get_last_index :: proc(vm: ^Interp, rx: Value) -> int {
+    v := get_member(vm, rx, "lastIndex")
+    if vm.throwing do return 0
+    return rx_to_length(vm, v)
+}
+
+// Set(rx, "lastIndex", v, true): falha de escrita é TypeError.
+@(private = "file")
+rx_set_last_index :: proc(vm: ^Interp, rx: Value, v: Value) -> bool {
+    if !set_member(vm, rx, "lastIndex", v) && !vm.throwing {
+        throw_type_error(vm, "Cannot assign to read only property 'lastIndex'")
+    }
+    return !vm.throwing
+}
+
+// ToString(Get(rx, "flags")).
+@(private = "file")
+rx_flags :: proc(vm: ^Interp, rx: Value) -> string {
+    fl := get_member(vm, rx, "flags")
+    if vm.throwing do return ""
+    return to_js_string(vm, fl)
+}
+
+// ToString(Get(result, k)).
+@(private = "file")
+rx_result_str :: proc(vm: ^Interp, result: Value, k: string) -> string {
+    v := get_member(vm, result, k)
+    if vm.throwing do return ""
+    return to_js_string(vm, v)
+}
+
+// Depois de um casamento VAZIO num laço global: lastIndex = AdvanceStringIndex.
+@(private = "file")
+rx_advance_after_empty :: proc(vm: ^Interp, rx: Value, s: string, full_unicode: bool) -> bool {
+    i := rx_get_last_index(vm, rx)
+    if vm.throwing do return false
+    return rx_set_last_index(vm, rx, f64(js_advance_index(s, i, full_unicode)))
+}
+
+// O `this` dos @@métodos: na spec, qualquer OBJETO (não só RegExp).
+@(private = "file")
+rx_receiver :: proc(vm: ^Interp, this: Value, what: string) -> bool {
+    if is_primitive(this) {
+        throw_type_error(vm, fmt.tprintf("RegExp.prototype[%s] called on a non-object", what))
+        return false
+    }
+    return true
+}
+
+// SameValue (o `obj_is` do Object.is é privado de object.odin): como ===, mas NaN
+// é igual a NaN e +0 ≠ -0.
+@(private = "file")
+rx_same_value :: proc(a, b: Value) -> bool {
+    if x, xok := a.(f64); xok {
+        y, yok := b.(f64)
+        if !yok do return false
+        if x != x && y != y do return true
+        if x == 0 && y == 0 do return math.sign_bit(x) == math.sign_bit(y)
+        return x == y
+    }
+    return a == b
+}
+
+// SpeciesConstructor(rx, %RegExp%).
+@(private = "file")
+rx_species_ctor :: proc(vm: ^Interp, rx: Value) -> ^Function {
+    default_ctor, _ := vm.regex_proto.props["constructor"].(^Function) // %RegExp%
+    c := get_member(vm, rx, "constructor")
+    if vm.throwing do return nil
+    if c == nil do return default_ctor
+    if is_primitive(c) {
+        throw_type_error(vm, "object.constructor is not an object")
+        return nil
+    }
+    sp := get_member(vm, c, vm.sym_species_key)
+    if vm.throwing do return nil
+    if is_nullish(sp) do return default_ctor
+    if f, ok := sp.(^Function); ok do return f
+    throw_type_error(vm, "object.constructor[Symbol.species] is not a constructor")
+    return nil
 }
 
 @(private = "file")
 regex_sym_match :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    re := regex_this(vm, this, "Symbol.match"); if re == nil do return nil
+    if !rx_receiver(vm, this, "Symbol.match") do return nil
     s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
-    return regex_match_impl(vm, re, s)
-}
-
-@(private = "file")
-regex_sym_match_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    re := regex_this(vm, this, "Symbol.matchAll"); if re == nil do return nil
-    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
-    return regex_match_all_impl(vm, re, s)
+    if re := regex_fast(vm, this); re != nil do return regex_match_impl(vm, re, s)
+    if vm.throwing do return nil
+    flags := rx_flags(vm, this); if vm.throwing do return nil
+    if strings.index_byte(flags, 'g') < 0 do return regexp_exec(vm, this, s)
+    full := strings.index_byte(flags, 'u') >= 0 || strings.index_byte(flags, 'v') >= 0
+    if !rx_set_last_index(vm, this, f64(0)) do return nil
+    out := new_array(vm)
+    for {
+        r := regexp_exec(vm, this, s); if vm.throwing do return nil
+        if _, null := r.(JS_Null); null do return len(out.items) == 0 ? Value(JS_Null{}) : Value(out)
+        ms := rx_result_str(vm, r, "0"); if vm.throwing do return nil
+        append(&out.items, own_str(vm, ms))
+        if ms == "" && !rx_advance_after_empty(vm, this, s, full) do return nil
+    }
 }
 
 @(private = "file")
 regex_sym_search :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    re := regex_this(vm, this, "Symbol.search"); if re == nil do return nil
+    if !rx_receiver(vm, this, "Symbol.search") do return nil
     s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
-    return regex_search_impl(vm, re, s)
-}
-
-@(private = "file")
-regex_sym_split :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    re := regex_this(vm, this, "Symbol.split"); if re == nil do return nil
-    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
-    limit, lok := split_limit(vm, arg(args, 1))
-    if !lok do return nil
-    return regex_split_impl(vm, re, s, limit)
+    if re := regex_fast(vm, this); re != nil do return regex_search_impl(vm, re, s)
+    if vm.throwing do return nil
+    is_pos_zero :: proc(v: Value) -> bool { n, ok := v.(f64); return ok && n == 0 && !math.sign_bit(n) }
+    prev := get_member(vm, this, "lastIndex"); if vm.throwing do return nil
+    if !is_pos_zero(prev) && !rx_set_last_index(vm, this, f64(0)) do return nil
+    r := regexp_exec(vm, this, s); if vm.throwing do return nil
+    cur := get_member(vm, this, "lastIndex"); if vm.throwing do return nil
+    if !rx_same_value(cur, prev) && !rx_set_last_index(vm, this, prev) do return nil
+    if _, null := r.(JS_Null); null do return f64(-1)
+    return get_member(vm, r, "index")
 }
 
 @(private = "file")
 regex_sym_replace :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    re := regex_this(vm, this, "Symbol.replace"); if re == nil do return nil
+    if !rx_receiver(vm, this, "Symbol.replace") do return nil
     s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
-    return regex_replace_impl(vm, s, re, arg(args, 1), re.global)
+    if re := regex_fast(vm, this); re != nil do return regex_replace_impl(vm, s, re, arg(args, 1), re.global)
+    if vm.throwing do return nil
+    repl_fn, functional := arg(args, 1).(^Function)
+    repl_str := ""
+    if !functional { repl_str = to_js_string(vm, arg(args, 1)); if vm.throwing do return nil }
+    flags := rx_flags(vm, this); if vm.throwing do return nil
+    global := strings.index_byte(flags, 'g') >= 0
+    full := strings.index_byte(flags, 'u') >= 0 || strings.index_byte(flags, 'v') >= 0
+    if global && !rx_set_last_index(vm, this, f64(0)) do return nil
+    results := make([dynamic]Value, context.temp_allocator)
+    for {
+        r := regexp_exec(vm, this, s); if vm.throwing do return nil
+        if _, null := r.(JS_Null); null do break
+        append(&results, r)
+        if !global do break
+        ms := rx_result_str(vm, r, "0"); if vm.throwing do return nil
+        if ms == "" && !rx_advance_after_empty(vm, this, s, full) do return nil
+    }
+    slen := str_rlen(s)
+    sb := strings.builder_make(context.temp_allocator)
+    next_pos := 0
+    for r in results {
+        ncap := rx_to_length(vm, get_member(vm, r, "length")) - 1
+        if vm.throwing do return nil
+        if ncap < 0 do ncap = 0
+        matched := rx_result_str(vm, r, "0"); if vm.throwing do return nil
+        pv := to_number(vm, get_member(vm, r, "index")); if vm.throwing do return nil
+        position := clamp_index(pv, slen)
+        captures := make([]Value, ncap, context.temp_allocator)
+        for n in 1 ..= ncap {
+            c := get_member(vm, r, fmt.tprintf("%d", n)); if vm.throwing do return nil
+            if c != nil { c = own_str(vm, to_js_string(vm, c)); if vm.throwing do return nil }
+            captures[n - 1] = c
+        }
+        named := get_member(vm, r, "groups"); if vm.throwing do return nil
+        replacement: string
+        if functional {
+            fargs := make([dynamic]Value, context.temp_allocator)
+            append(&fargs, own_str(vm, matched))
+            append(&fargs, ..captures)
+            append(&fargs, f64(position), Value(s))
+            if named != nil do append(&fargs, named)
+            rv := call_function(vm, repl_fn, nil, fargs[:]); if vm.throwing do return nil
+            replacement = to_js_string(vm, rv); if vm.throwing do return nil
+        } else {
+            rb := strings.builder_make(context.temp_allocator)
+            get_substitution(vm, &rb, matched, s, position, captures, named, repl_str)
+            if vm.throwing do return nil
+            replacement = strings.to_string(rb)
+        }
+        if position >= next_pos {
+            strings.write_string(&sb, str_rslice(s, next_pos, position))
+            strings.write_string(&sb, replacement)
+            next_pos = position + str_rlen(matched)
+        }
+    }
+    if next_pos < slen do strings.write_string(&sb, str_rslice(s, next_pos, slen))
+    return own_str(vm, strings.to_string(sb))
 }
 
-install_regex_symbol_methods :: proc(vm: ^Interp, proto: ^Object) {
-    Entry :: struct { key: string, name: string, n: int, fn: proc(^Interp, Value, []Value) -> Value }
+// GetSubstitution (spec 22.1.3.19.1) com capturas já em string — a versão genérica
+// do write_replacement (que lê direto do Re_Match).
+@(private = "file")
+get_substitution :: proc(vm: ^Interp, sb: ^strings.Builder, matched, s: string, position: int, captures: []Value, named: Value, repl: string) {
+    slen := str_rlen(s)
+    m := len(captures)
+    write_cap :: proc(sb: ^strings.Builder, c: Value) { if cs, ok := c.(string); ok do strings.write_string(sb, cs) }
+    i := 0
+    for i < len(repl) {
+        if repl[i] != '$' || i + 1 >= len(repl) { strings.write_byte(sb, repl[i]); i += 1; continue }
+        next := repl[i + 1]
+        switch {
+        case next == '$': strings.write_byte(sb, '$'); i += 2
+        case next == '&': strings.write_string(sb, matched); i += 2
+        case next == '`': strings.write_string(sb, str_rslice(s, 0, position)); i += 2
+        case next == '\'':
+            tail := min(position + str_rlen(matched), slen)
+            strings.write_string(sb, str_rslice(s, tail, slen)); i += 2
+        case next >= '0' && next <= '9':
+            d1 := int(next - '0')
+            if i + 2 < len(repl) && repl[i + 2] >= '0' && repl[i + 2] <= '9' {
+                d2 := d1 * 10 + int(repl[i + 2] - '0')
+                if d2 >= 1 && d2 <= m { write_cap(sb, captures[d2 - 1]); i += 3; continue }
+            }
+            if d1 >= 1 && d1 <= m { write_cap(sb, captures[d1 - 1]); i += 2; continue }
+            strings.write_byte(sb, '$'); i += 1
+        case next == '<' && named != nil:
+            close := strings.index_byte(repl[i + 2:], '>')
+            if close < 0 { strings.write_string(sb, "$<"); i += 2; continue }
+            v := get_member(vm, named, repl[i + 2:][:close])
+            if vm.throwing do return
+            if v != nil {
+                vs := to_js_string(vm, v)
+                if vm.throwing do return
+                strings.write_string(sb, vs)
+            }
+            i += 2 + close + 1
+        case:
+            strings.write_byte(sb, '$'); i += 1
+        }
+    }
+}
+
+@(private = "file")
+regex_sym_split :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if !rx_receiver(vm, this, "Symbol.split") do return nil
+    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    if re := regex_fast(vm, this); re != nil {
+        limit, lok := split_limit(vm, arg(args, 1))
+        if !lok do return nil
+        return regex_split_impl(vm, re, s, limit)
+    }
+    if vm.throwing do return nil
+    c := rx_species_ctor(vm, this); if c == nil do return nil
+    flags := rx_flags(vm, this); if vm.throwing do return nil
+    full := strings.index_byte(flags, 'u') >= 0 || strings.index_byte(flags, 'v') >= 0
+    new_flags := flags if strings.index_byte(flags, 'y') >= 0 else strings.concatenate({flags, "y"}, context.temp_allocator)
+    splitter := construct_object(vm, c, []Value{this, own_str(vm, new_flags)}); if vm.throwing do return nil
+    out := new_array(vm)
+    lim, lok := split_limit(vm, arg(args, 1))
+    if !lok do return nil
+    if lim == 0 do return out
+    size := str_rlen(s)
+    if size == 0 {
+        z := regexp_exec(vm, splitter, s); if vm.throwing do return nil
+        if _, null := z.(JS_Null); null do append(&out.items, own_str(vm, s))
+        return out
+    }
+    p, q := 0, 0
+    for q < size {
+        if !rx_set_last_index(vm, splitter, f64(q)) do return nil
+        z := regexp_exec(vm, splitter, s); if vm.throwing do return nil
+        if _, null := z.(JS_Null); null { q = js_advance_index(s, q, full); continue }
+        e := min(rx_get_last_index(vm, splitter), size); if vm.throwing do return nil
+        if e == p { q = js_advance_index(s, q, full); continue }
+        append(&out.items, own_str(vm, str_rslice(s, p, q)))
+        if len(out.items) == lim do return out
+        p = e
+        ncap := rx_to_length(vm, get_member(vm, z, "length")) - 1
+        if vm.throwing do return nil
+        for i in 1 ..= max(ncap, 0) {
+            v := get_member(vm, z, fmt.tprintf("%d", i)); if vm.throwing do return nil
+            append(&out.items, v)
+            if len(out.items) == lim do return out
+        }
+        q = p
+    }
+    append(&out.items, own_str(vm, str_rslice(s, p, size)))
+    return out
+}
+
+@(private = "file")
+regex_sym_match_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if !rx_receiver(vm, this, "Symbol.matchAll") do return nil
+    s := to_js_string(vm, arg(args, 0)); if vm.throwing do return nil
+    if re := regex_fast(vm, this); re != nil do return regex_match_all_impl(vm, re, s)
+    if vm.throwing do return nil
+    c := rx_species_ctor(vm, this); if c == nil do return nil
+    flags := rx_flags(vm, this); if vm.throwing do return nil
+    matcher := construct_object(vm, c, []Value{this, own_str(vm, flags)}); if vm.throwing do return nil
+    li := rx_get_last_index(vm, this); if vm.throwing do return nil
+    if !rx_set_last_index(vm, matcher, f64(li)) do return nil
+    global := strings.index_byte(flags, 'g') >= 0
+    full := strings.index_byte(flags, 'u') >= 0 || strings.index_byte(flags, 'v') >= 0
+    out := new_array(vm)
+    for {
+        r := regexp_exec(vm, matcher, s); if vm.throwing do return nil
+        if _, null := r.(JS_Null); null do break
+        append(&out.items, r)
+        if !global do break
+        ms := rx_result_str(vm, r, "0"); if vm.throwing do return nil
+        if ms == "" && !rx_advance_after_empty(vm, matcher, s, full) do return nil
+    }
+    return make_array_iterator(vm, out)
+}
+
+// RegExp.prototype.test (spec 22.2.6.16): RegExpExec(R, S) !== null — logo também
+// passa por um `exec` sobrescrito.
+regex_test_generic :: proc(vm: ^Interp, this: Value, s: string) -> Value {
+    if is_primitive(this) {
+        throw_type_error(vm, "RegExp.prototype.test called on a non-object")
+        return nil
+    }
+    r := regexp_exec(vm, this, s)
+    if vm.throwing do return nil
+    _, null := r.(JS_Null)
+    return !null
+}
+
+// ── getters do RegExp.prototype (flags, global, …, source) ───────────────────
+// Antes não existiam: só a INSTÂNCIA respondia (casos fixos do get_member), então
+// `RegExp.prototype.flags` era undefined e um objeto qualquer não tinha como pedir
+// emprestado o getter de flags (que a spec escreve em cima de Get(this, "global")…).
+
+// `flags` (spec 22.2.6.4): uma letra por flag cujo getter dê verdadeiro, na ordem
+// canônica "dgimsuvy".
+@(private = "file")
+regex_proto_flags_get :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if is_primitive(this) {
+        throw_type_error(vm, "RegExp.prototype.flags getter called on non-object")
+        return nil
+    }
+    Flag :: struct { name: string, c: byte }
+    sb := strings.builder_make(context.temp_allocator)
+    for f in ([]Flag{{"hasIndices", 'd'}, {"global", 'g'}, {"ignoreCase", 'i'}, {"multiline", 'm'},
+                     {"dotAll", 's'}, {"unicode", 'u'}, {"unicodeSets", 'v'}, {"sticky", 'y'}}) {
+        v := get_member(vm, this, f.name)
+        if vm.throwing do return nil
+        if truthy(v) do strings.write_byte(&sb, f.c)
+    }
+    return own_str(vm, strings.to_string(sb))
+}
+
+// Os getters de flag individual: a própria regex responde; no RegExp.prototype é
+// undefined (caso especial da spec); qualquer outra coisa é TypeError.
+@(private = "file")
+regex_proto_flag_get :: proc(vm: ^Interp, this: Value, name: string) -> Value {
+    if re := regex_of(this); re != nil {
+        switch name {
+        case "global":      return re.global
+        case "ignoreCase":  return re.icase
+        case "multiline":   return re.multiline
+        case "dotAll":      return re.dotall
+        case "sticky":      return re.sticky
+        case "unicode":     return re.unicode
+        case "unicodeSets": return re.unicode_sets
+        case "hasIndices":  return re.has_indices
+        }
+    }
+    if o, ok := this.(^Object); ok && o == vm.regex_proto do return nil
+    throw_type_error(vm, fmt.tprintf("RegExp.prototype.%s getter called on non-RegExp", name))
+    return nil
+}
+
+@(private = "file") rp_global      :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return regex_proto_flag_get(vm, this, "global") }
+@(private = "file") rp_ignore_case :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return regex_proto_flag_get(vm, this, "ignoreCase") }
+@(private = "file") rp_multiline   :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return regex_proto_flag_get(vm, this, "multiline") }
+@(private = "file") rp_dot_all     :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return regex_proto_flag_get(vm, this, "dotAll") }
+@(private = "file") rp_sticky      :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return regex_proto_flag_get(vm, this, "sticky") }
+@(private = "file") rp_unicode     :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return regex_proto_flag_get(vm, this, "unicode") }
+@(private = "file") rp_unicode_sets :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return regex_proto_flag_get(vm, this, "unicodeSets") }
+@(private = "file") rp_has_indices :: proc(vm: ^Interp, this: Value, args: []Value) -> Value { return regex_proto_flag_get(vm, this, "hasIndices") }
+
+@(private = "file")
+rp_source :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if re := regex_of(this); re != nil do return regex_source_text(vm, re)
+    if o, ok := this.(^Object); ok && o == vm.regex_proto do return "(?:)"
+    throw_type_error(vm, "RegExp.prototype.source getter called on non-RegExp")
+    return nil
+}
+
+install_regex_symbol_methods :: proc(vm: ^Interp, proto: ^Object, ctor: ^Function) {
+    Entry :: struct { key: string, name: string, n: int, fn: Native_Fn }
     for e in ([]Entry{
         {vm.sym_match_key,     "[Symbol.match]",    1, regex_sym_match},
         {vm.sym_match_all_key, "[Symbol.matchAll]", 1, regex_sym_match_all},
@@ -1626,11 +2023,27 @@ install_regex_symbol_methods :: proc(vm: ^Interp, proto: ^Object) {
         {vm.sym_replace_key,   "[Symbol.replace]",  2, regex_sym_replace},
     }) {
         if e.key == "" do continue
-        f := mk_native(vm, e.fn)
-        f.name = e.name
-        f.native_length = e.n
-        f.non_constructor = true
-        proto.props[e.key] = f
+        proto.props[e.key] = mk_builtin_method(vm, e.fn, e.name, e.n)
+    }
+    Getter :: struct { name: string, fn: Native_Fn }
+    if proto.getters == nil do proto.getters = make(map[string]^Function)
+    if proto.attrs == nil do proto.attrs = make(map[string]Prop_Attrs)
+    for g in ([]Getter{
+        {"flags", regex_proto_flags_get}, {"global", rp_global}, {"ignoreCase", rp_ignore_case},
+        {"multiline", rp_multiline}, {"dotAll", rp_dot_all}, {"sticky", rp_sticky},
+        {"unicode", rp_unicode}, {"unicodeSets", rp_unicode_sets}, {"hasIndices", rp_has_indices},
+        {"source", rp_source},
+    }) {
+        proto.getters[g.name] = mk_builtin_method(vm, g.fn, own_str_raw(vm, strings.concatenate({"get ", g.name}, context.temp_allocator)), 0) // nome owned pela VM
+        proto.attrs[g.name] = {.Configurable}
+    }
+    // RegExp[Symbol.species] (spec 22.2.5.2): o @@split/@@matchAll genéricos constroem
+    // o splitter/matcher por ele — é o que faz uma subclasse gerar instâncias dela.
+    if vm.sym_species_key != "" {
+        if ctor.getters == nil do ctor.getters = make(map[string]^Function)
+        if ctor.attrs == nil do ctor.attrs = make(map[string]Prop_Attrs)
+        ctor.getters[vm.sym_species_key] = mk_builtin_method(vm, array_species_get, "get [Symbol.species]", 0)
+        ctor.attrs[vm.sym_species_key] = {.Configurable}
     }
 }
 

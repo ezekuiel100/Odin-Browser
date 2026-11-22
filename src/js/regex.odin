@@ -1614,7 +1614,7 @@ install_regex :: proc(vm: ^Interp) {
     rproto.props["exec"]        = vm.regex_exec_fn
     rproto.props["toString"]    = vm.regex_tostring_fn
     rproto.props["constructor"] = rctor
-    install_regex_symbol_methods(vm, rproto) // @@match/@@matchAll/@@search/@@split/@@replace
+    install_regex_symbol_methods(vm, rproto, rctor) // @@métodos, getters de flags, RegExp[@@species]
     vm.regex_proto = rproto
     rctor.props["prototype"] = rproto
     rctor.name = "RegExp"
@@ -1625,9 +1625,12 @@ install_regex :: proc(vm: ^Interp) {
 @(private="file")
 regexp_ctor_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     // RegExp(regexExistente) devolve/copia a fonte
+    // A regex-fonte pode ser a instância de uma SUBCLASSE (^Object com a ^Regex no
+    // `prim`) — é assim que o @@split/@@matchAll genéricos constroem o splitter:
+    // `new C(rx, flags)`. Antes ela caía no padrão vazio.
     pat := ""
     flags := ""
-    if r, ok := arg(args, 0).(^Regex); ok {
+    if r := regex_of(arg(args, 0)); r != nil {
         pat = r.source; flags = r.flags
     } else if s, ok := arg(args, 0).(string); ok {
         pat = s
@@ -1647,9 +1650,11 @@ regexp_ctor_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // lastIndex usa unidades UTF-16. exec/test não avançam um casamento vazio;
 // os consumidores globais usam AdvanceStringIndex conforme as flags u/v.
 regex_test_native :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    re, ok := this.(^Regex)
-    if !ok do return false
     s := to_string_value(vm, arg(args, 0))
+    // exec sobrescrito / subclasse / objeto qualquer: test = RegExpExec(...) !== null
+    re := regex_fast(vm, this)
+    if vm.throwing do return nil
+    if re == nil do return regex_test_generic(vm, this, s)
     stateful := re.global || re.sticky // ambos usam/atualizam lastIndex
     start := stateful ? re.last_index : 0
     if start > str_rlen(s) { re.last_index = 0; return false }

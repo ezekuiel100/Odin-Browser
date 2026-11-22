@@ -2984,9 +2984,11 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         case "unicodeSets": return o.unicode_sets
         case "hasIndices": return o.has_indices
         case "lastIndex":  return f64(o.last_index)
-        case "test":       return vm.regex_test_fn
-        case "exec":       return vm.regex_exec_fn
-        case "toString":   return vm.regex_tostring_fn // antes caía no de Object: "[object RegExp]"
+        // test/exec/toString vêm do RegExp.prototype (o fallback abaixo): assim um
+        // `RegExp.prototype.exec = fn` vale para todas as regex, como na spec.
+        case "test":       if vm.regex_proto == nil do return vm.regex_test_fn
+        case "exec":       if vm.regex_proto == nil do return vm.regex_exec_fn
+        case "toString":   if vm.regex_proto == nil do return vm.regex_tostring_fn // antes caía no de Object: "[object RegExp]"
         case "constructor": return global_ctor(vm, "RegExp")
         }
         // RegExp.prototype de verdade: os @@match/@@split/... nativos e o que o
@@ -5272,14 +5274,12 @@ unwrap_prim :: proc(vm: ^Interp, fn: ^Function, this: Value) -> Value {
         if fn.native == coll_method_dispatch do return this
         for _, m in vm.collection_methods do if m == fn do return o.prim
     case ^Array:      return this
-    // subclasse de RegExp: os nativos do RegExp.prototype (test/exec/toString e os
-    // @@match/@@split/...) leem `this.(^Regex)`. Sem isto TODOS falhavam numa
-    // instância de `class R extends RegExp` (test→false, exec→null, match→TypeError).
-    // Só nativo: um método JS do usuário continua vendo a instância.
+    // subclasse de RegExp: exec/toString nativos leem `this.(^Regex)` — recebem a
+    // regex embrulhada. test e os @@match/@@split/... NÃO: eles precisam da
+    // INSTÂNCIA para enxergar um `exec` sobrescrito na subclasse (RegExpExec), e
+    // achar a ^Regex sozinhos pelo regex_of/regex_fast.
     case ^Regex:
-        if fn.native != nil && vm.regex_proto != nil {
-            for _, m in vm.regex_proto.props do if m == fn do return o.prim
-        }
+        if fn == vm.regex_exec_fn || fn == vm.regex_tostring_fn do return o.prim
     // wrapper de primitivo (`new String("a").toUpperCase()`, valueOf no ToPrimitive):
     // os métodos nativos leem `this.(string)`/`.(f64)`/`.(bool)` — é o valor
     // embrulhado ([[StringData]]/[[NumberData]]/[[BooleanData]]) que eles querem.

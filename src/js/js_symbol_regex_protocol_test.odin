@@ -126,3 +126,88 @@ regex_subclasse_metodo_proprio_e_super :: proc(t: ^testing.T) {
     `
     testing.expect_value(t, run(src).(string), "b1true|oi b")
 }
+
+// ── exec sobrescrito (RegExpExec) ────────────────────────────────────────────
+// Os @@métodos e o test chamam o `exec` que o objeto TIVER; antes rodavam sempre
+// o motor e ignoravam `re.exec = fn`.
+@(test)
+regex_exec_sobrescrito_e_respeitado :: proc(t: ^testing.T) {
+    // o teste DELEGATES_TO_EXEC do core-js, para cada método. matchAll dá FALSE
+    // pela spec: o @@matchAll constrói um matcher NOVO (new C(rx, flags)), que não
+    // herda o `exec` próprio da instância — só o de uma subclasse (teste abaixo).
+    src := `
+        var out = [];
+        for (var k of ["match", "search", "replace", "split", "matchAll"]) {
+            var called = false, re = /a/;
+            if (k === "split") { re = {}; re.constructor = {}; re.constructor[Symbol.species] = function () { return re }; re.flags = "" }
+            if (k === "matchAll") re = /a/g;
+            re.exec = function () { called = true; return null };
+            if (k === "split") re[Symbol.split] = /./[Symbol.split];
+            var m = k === "matchAll" ? RegExp.prototype[Symbol.matchAll].call(re, "") : re[Symbol[k]]("");
+            if (k === "matchAll") [...m];
+            out.push(k + ":" + called);
+        }
+        out.join()
+    `
+    testing.expect_value(t, run(src).(string), "match:true,search:true,replace:true,split:true,matchAll:false")
+    testing.expect_value(t, run(`var re=/a/; re.exec=function(){return null}; String("a".match(re)) + re.test("a")`).(string), "nullfalse")
+    // exec que devolve um resultado inventado: o match usa o que veio dele
+    testing.expect_value(t, run(`var re=/x/; re.exec=function(s){var r=["zz"]; r.index=1; return r}; "abc".match(re)[0] + "abc".search(re)`).(string), "zz1")
+    // exec que devolve primitivo é TypeError
+    testing.expect_value(t, run(`var re=/a/; re.exec=function(){return 1}; var r="nao lancou"; try { re.test("a") } catch (e) { r = e instanceof TypeError } r`).(bool), true)
+}
+
+@(test)
+regex_subclasse_com_exec_proprio :: proc(t: ^testing.T) {
+    src := `
+        var calls = 0;
+        class R extends RegExp { exec(s) { calls++; return super.exec(s) } }
+        var r = new R("a", "g");
+        var a = "banana".match(r).join("");
+        var b = "banana".replace(r, "o");
+        var c = "banana".split(new R("a")).join("|");
+        var d = [..."banana".matchAll(r)].length;
+        var e = new R("n").test("banana");
+        [a, b, c, d, e, calls > 10].join()
+    `
+    testing.expect_value(t, run(src).(string), "aaa,bonono,b|n|n|,3,true,true")
+}
+
+// replace genérico: $-refs, grupos nomeados e função, com o resultado vindo do exec
+@(test)
+regex_replace_generico :: proc(t: ^testing.T) {
+    pre :: `class R extends RegExp { exec(s) { return super.exec(s) } } `
+    testing.expect_value(t, run(pre + `"john smith".replace(new R("([a-z]+) ([a-z]+)"), "$2, $1 [$&] $$ $0 $3")`).(string), "smith, john [john smith] $ $0 $3")
+    testing.expect_value(t, run(pre + `"2020-05".replace(new R("(?<y>[0-9]+)-(?<m>[0-9]+)"), "$<m>/$<y> $<z>.")`).(string), "05/2020 .")
+    testing.expect_value(t, run(pre + `"a1b2".replace(new R("([0-9])", "g"), function(m, d, pos, s) { return "[" + d + pos + s.length + "]" })`).(string), "a[114]b[234]")
+    testing.expect_value(t, run(pre + "\"abc\".replace(new R(\"b\"), \"$`|$'\")").(string), "aa|cc")
+    testing.expect_value(t, run(pre + `"aaa".replace(new R("", "g"), "-")`).(string), "-a-a-a-")
+}
+
+// ── getters do RegExp.prototype ──────────────────────────────────────────────
+@(test)
+regex_prototype_flags_e_getters :: proc(t: ^testing.T) {
+    testing.expect_value(t, run(`RegExp.prototype.flags`).(string), "")
+    testing.expect_value(t, run(`String(RegExp.prototype.global) + RegExp.prototype.source`).(string), "undefined(?:)")
+    testing.expect_value(t, run(`typeof Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get`).(string), "function")
+    // o getter de flags é GENÉRICO: lê global/ignoreCase/... do this, em ordem canônica
+    testing.expect_value(t, run(`Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get.call({sticky:1, global:true, hasIndices:"x", ignoreCase:0})`).(string), "dgy")
+    testing.expect_value(t, run(`Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get.call(/a/gimsuy)`).(string), "gimsuy")
+    testing.expect_value(t, run(`var r="nao lancou"; try { Object.getOwnPropertyDescriptor(RegExp.prototype, "global").get.call({}) } catch (e) { r = e instanceof TypeError } r`).(bool), true)
+    // subclasse herda os getters
+    testing.expect_value(t, run(`class R extends RegExp {}; var r = new R("a", "ig"); r.flags + r.global + r.source`).(string), "gitruea")
+    testing.expect_value(t, run(`typeof RegExp[Symbol.species]`).(string), "function")
+}
+
+// `RegExp.prototype.exec = fn` vale para TODAS as regex (antes a instância devolvia
+// o exec nativo fixo e ignorava o protótipo).
+@(test)
+regex_exec_sobrescrito_no_prototipo :: proc(t: ^testing.T) {
+    src := `
+        var orig = RegExp.prototype.exec, n = 0;
+        RegExp.prototype.exec = function (s) { n++; return orig.call(this, s) };
+        var a = "abc".match(/b/)[0] + /c/.test("abc") + "abc".replace(/a/, "x") + "a,b".split(/,/).length;
+        a + n
+    `
+    testing.expect_value(t, run(src).(string), "btruexbc26") // split chama exec 3x (q=0,1,2), os outros 1x cada
+}
