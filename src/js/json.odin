@@ -470,6 +470,10 @@ jp_string :: proc(vm: ^Interp, r: ^Json_Reader) -> Value {
     defer strings.builder_destroy(&sb)
     for r.pos < len(r.src) {
         c := r.src[r.pos]
+        if c < 0x20 { // controles só são válidos quando escapados
+            r.err = true
+            return nil
+        }
         if c == '"' {
             r.pos += 1
             return own_str(vm, strings.to_string(sb))
@@ -519,22 +523,50 @@ jp_string :: proc(vm: ^Interp, r: ^Json_Reader) -> Value {
 
 @(private = "file")
 jp_number :: proc(r: ^Json_Reader) -> Value {
+    // JSONNumber: -? (0 | [1-9][0-9]*) (.[0-9]+)? ([eE][+-]?[0-9]+)?
+    // parse_f64 aceita formas que JSON proíbe, como +1, 01, .1 e 1.
     start := r.pos
-    if r.pos < len(r.src) && (r.src[r.pos] == '-' || r.src[r.pos] == '+') do r.pos += 1
-    for r.pos < len(r.src) {
-        c := r.src[r.pos]
-        if (c >= '0' && c <= '9') || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-' {
-            r.pos += 1
-        } else {
-            break
-        }
-    }
-    if r.pos == start {
+    if r.pos < len(r.src) && r.src[r.pos] == '-' do r.pos += 1
+    if r.pos >= len(r.src) {
         r.err = true
         return nil
     }
+    if r.src[r.pos] == '0' {
+        r.pos += 1 // dígitos adicionais ficam para o chamador rejeitar
+    } else if r.src[r.pos] >= '1' && r.src[r.pos] <= '9' {
+        for r.pos < len(r.src) && r.src[r.pos] >= '0' && r.src[r.pos] <= '9' {
+            r.pos += 1
+        }
+    } else {
+        r.err = true
+        return nil
+    }
+    if r.pos < len(r.src) && r.src[r.pos] == '.' {
+        r.pos += 1
+        digits := r.pos
+        for r.pos < len(r.src) && r.src[r.pos] >= '0' && r.src[r.pos] <= '9' {
+            r.pos += 1
+        }
+        if r.pos == digits {
+            r.err = true
+            return nil
+        }
+    }
+    if r.pos < len(r.src) && (r.src[r.pos] == 'e' || r.src[r.pos] == 'E') {
+        r.pos += 1
+        if r.pos < len(r.src) && (r.src[r.pos] == '+' || r.src[r.pos] == '-') do r.pos += 1
+        digits := r.pos
+        for r.pos < len(r.src) && r.src[r.pos] >= '0' && r.src[r.pos] <= '9' {
+            r.pos += 1
+        }
+        if r.pos == digits {
+            r.err = true
+            return nil
+        }
+    }
     n, ok := strconv.parse_f64(r.src[start:r.pos])
-    if !ok {
+    // Sintaxe já validada: overflow de f64 é um Number infinito válido em JSON.
+    if !ok && abs(n) != math.inf_f64(1) {
         r.err = true
         return nil
     }
