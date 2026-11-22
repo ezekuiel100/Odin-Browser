@@ -164,7 +164,7 @@ json_prop :: proc(st: ^Json_Out, holder: Value, key: Value, value: Value, depth:
         if x.is_arguments do json_object(st, x, depth) // `arguments` é objeto comum
         else do json_array(st, x, depth)
     case ^Regex, ^Collection:
-        strings.write_string(sb, "{}") // sem props próprias enumeráveis: `{}` no JS
+        json_object(st, x, depth)
     case ^BigInt:
         // JSON.stringify(1n) LANÇA TypeError no JS
         vm.thrown = mk_error(vm, "TypeError", "Do not know how to serialize a BigInt")
@@ -190,12 +190,14 @@ json_enter :: proc(st: ^Json_Out, p: rawptr) -> bool {
 @(private = "file")
 json_object :: proc(st: ^Json_Out, x: Value, depth: int) {
     vm := st.vm
-    // `x` é um ^Object ou o objeto `arguments` (^Array com args), que a spec
-    // serializa como OBJETO: {"0":1,"1":2}, não [1,2]
+    // All non-callable objects use own enumerable string properties, including
+    // native RegExp/Map/Set objects and arguments (which is not an Array).
     ptr: rawptr
     #partial switch v in x {
     case ^Object: ptr = v
     case ^Array:  ptr = v
+    case ^Regex: ptr = v
+    case ^Collection: ptr = v
     }
     if !json_enter(st, ptr) do return
     defer delete_key(&st.seen, ptr)

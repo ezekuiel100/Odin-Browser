@@ -86,9 +86,7 @@ Regex :: struct {
     last_index: int,    // usado por exec/test com a flag g
     last_index_ro: bool, // `lastIndex` com writable:false (defineProperty): escrita falha
     gnames:    map[string][]int, // Owned name -> capture indices in source order.
-    props:     map[string]Value, // expandos da instância (chave clonada); nil até a 1ª
-    getters:   map[string]^Function, // acessores próprios via Object.defineProperty (chave clonada)
-    setters:   map[string]^Function,
+    own:       ^Object, // ordinary own properties, allocated on first write
 }
 
 // ── AST ─────────────────────────────────────────────────────────────────────
@@ -1516,14 +1514,6 @@ regex_destroy :: proc(re: ^Regex) {
         for name, ids in re.gnames { delete(name); delete(ids) }
         delete(re.gnames)
     }
-    if re.props != nil {
-        for k in re.props do delete(k)
-        delete(re.props)
-    }
-    for k in re.getters do delete(k)
-    delete(re.getters)
-    for k in re.setters do delete(k)
-    delete(re.setters)
     free(re)
 }
 

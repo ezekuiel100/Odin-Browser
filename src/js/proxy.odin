@@ -128,7 +128,7 @@ proxy_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 @(private = "file")
 is_object_like :: proc(v: Value) -> bool {
     #partial switch _ in v {
-    case ^Object, ^Array, ^Function: return true
+    case ^Object, ^Array, ^Function, ^Regex, ^Collection: return true
     }
     return false
 }
@@ -175,21 +175,7 @@ reflect_delete_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Valu
         proxy_delete(vm, p, key_string(vm, arg(args, 1)))
         return !vm.throwing
     }
-    reflect_delete_target(arg(args, 0), key_string(vm, arg(args, 1)))
-    return true
-}
-
-// remoção default de uma chave do alvo (Reflect.deleteProperty / trap ausente).
-@(private = "file")
-reflect_delete_target :: proc(target: Value, key: string) {
-    #partial switch t in target {
-    case ^Object:
-        if .Configurable in prop_attrs(t, key) do oremove(t, key)
-    case ^Array:
-        if idx, ok := strconv.parse_int(key); ok && idx >= 0 && idx < len(t.items) {
-            t.items[idx] = nil
-        }
-    }
+    return delete_property_value(vm, arg(args, 0), key_string(vm, arg(args, 1)), false)
 }
 
 @(private = "file")
@@ -455,6 +441,12 @@ get_with_receiver :: proc(vm: ^Interp, target: Value, name: string, receiver: Va
         if vm.throwing do return nil
         return get_with_receiver(vm, p.px_target, name, receiver)
     }
+    if own := native_own_properties(vm, target); own != nil {
+        if v, exists := prim_proto_lookup(vm, own, receiver, name); exists do return v
+    }
+    if proto := native_property_proto(vm, target); proto != nil {
+        if v, exists := prim_proto_lookup(vm, proto, receiver, name); exists do return v
+    }
     if o, ok := target.(^Object); ok {
         for cur := o; cur != nil; cur = cur.proto {
             if cur != o && cur.px_handler != nil do return get_with_receiver(vm, cur, name, receiver)
@@ -561,6 +553,13 @@ reflect_target_keys :: proc(vm: ^Interp, target: Value, out: ^[dynamic]string) {
     if p := proxy_state(target); p != nil { proxy_keys(vm, p, out, true); return }
     own_keys_any(vm, target, out, true)
     #partial switch t in target {
+    case ^Regex, ^Collection:
+        if own := native_own_properties(vm, t); own != nil {
+            keys: [dynamic]string
+            defer delete(keys)
+            reflect_target_keys(vm, own, &keys)
+            for k in keys do if is_symbol_key(k) { append(out, k) }
+        }
     case ^Object:
         seen: map[string]bool
         defer delete(seen)

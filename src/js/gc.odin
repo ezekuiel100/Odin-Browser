@@ -119,6 +119,7 @@ gc_drain :: proc(gp: ^GC_State) {
             gc_push(&g, x.mapped_args)
         case ^Array_Buffer:
         case ^Collection:
+            gc_push(&g, x.own)
             if x.kind == .Map || x.kind == .Set {
                 for e in x.entries {
                     if e.dead do continue
@@ -126,9 +127,7 @@ gc_drain :: proc(gp: ^GC_State) {
                 }
             }
         case ^Regex:
-            for _, v in x.props do gc_push(&g, v) // expandos (re.toString = ...)
-            for _, f in x.getters do gc_push(&g, f) // acessores do defineProperty
-            for _, f in x.setters do gc_push(&g, f)
+            gc_push(&g, x.own)
         case ^BigInt:
         case ^Symbol:
         case ^Module:

@@ -73,6 +73,7 @@ Coll_Entry :: struct {
 }
 
 Collection :: struct {
+    own: ^Object, // ordinary properties; entries remain separate internal slots
     index: map[u64]int,
     size: int,
     iterating: int,

@@ -1726,6 +1726,11 @@ delete_property_value :: proc(vm: ^Interp, obj: Value, k: string, strict: bool) 
         proxy_delete(vm, p, k)
         return true
     }
+    if r, regex := obj.(^Regex); regex && k == "lastIndex" {
+        if strict { throw_type_error(vm, "Cannot delete property 'lastIndex'"); return nil }
+        return false
+    }
+    if own := native_own_properties(vm, obj); own != nil do return delete_property_value(vm, own, k, strict)
     ok := true
     #partial switch o in obj {
     case ^Object:
@@ -2444,6 +2449,11 @@ private_in :: proc(key: string, r: Value) -> bool {
 js_in :: proc(vm: ^Interp, l, r: Value) -> bool {
     key := key_string(vm, l)
     if p := proxy_state(r); p != nil do return proxy_has(vm, p, key)
+    if proto := native_property_proto(vm, r); proto != nil {
+        if own := native_own_properties(vm, r); own != nil && okey_alive(own, key) do return true
+        if _, regex := r.(^Regex); regex && key == "lastIndex" do return true
+        return js_in(vm, key, proto)
+    }
     #partial switch o in r {
     case ^Object:
         if o.px_handler != nil do return proxy_has(vm, o, key) // trap `has` (ou default no alvo)
@@ -2737,7 +2747,7 @@ array_index_name :: proc(name: string) -> (idx: int, ok: bool) {
 // Membro de um primitivo pela cadeia do seu prototype (String/Number/Boolean.prototype
 // → Object.prototype). Getter roda com this = o primitivo. found=false quando
 // nada na cadeia tem a chave (o chamador cai nos mapas de dispatch).
-@(private = "file")
+@(private)
 prim_proto_lookup :: proc(vm: ^Interp, proto: ^Object, this: Value, name: string) -> (Value, bool) {
     for cur := proto; cur != nil; cur = cur.proto {
         if cur.getters != nil {
@@ -2779,6 +2789,9 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         return nil
     }
     if p := proxy_state(obj); p != nil { v, _ := proxy_get(vm, p, name); return v }
+    if own := native_own_properties(vm, obj); own != nil {
+        if v, exists := prim_proto_lookup(vm, own, obj, name); exists do return v
+    }
     #partial switch o in obj {
     case ^Object:
         if o.get != nil {
@@ -2974,9 +2987,6 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         if fn, ok := vm.object_methods[name]; ok do return fn
         return nil
     case ^Regex:
-        if g, has := o.getters[name]; has do return call_function(vm, g, o, nil) if g != nil else nil // acessor próprio (defineProperty)
-        if _, has := o.setters[name]; has do return nil // só setter: leitura é undefined
-        if v, has := o.props[name]; has do return v // expando própria (ver set_member)
         switch name {
         case "source":     return regex_source_text(vm, o)
         case "flags":      return o.flags
@@ -2998,9 +3008,7 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         }
         // RegExp.prototype de verdade: os @@match/@@split/... nativos e o que o
         // código do usuário pendurar ali. Antes a instância não via o protótipo.
-        if vm.regex_proto != nil {
-            if v, ok := vm.regex_proto.props[name]; ok do return v
-        }
+        if v, exists := prim_proto_lookup(vm, vm.regex_proto, o, name); exists do return v
         if fn, ok := vm.object_methods[name]; ok do return fn
         return nil
     case ^BigInt:
@@ -3085,24 +3093,13 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
         o.props[name] = val
         return true
     case ^Regex:
-        if s, has := o.setters[name]; has {
-            if s == nil do return false
-            call_function(vm, s, o, []Value{val}); return true
-        }
-        if _, has := o.getters[name]; has do return false // acessor sem setter: não grava
         if name == "lastIndex" { // p/ loops de exec global
             if o.last_index_ro do return false // writable:false — quem pede Set(..., true) lança
             o.last_index = as_int(val); return true
         }
-        // demais props: expando PRÓPRIA da instância (`re.toString = ...`, marcas de
-        // libs) — sombreia os métodos no get_member, como numa propriedade própria.
-        if o.props == nil do o.props = make(map[string]Value)
-        if _, has := o.props[name]; has {
-            o.props[name] = val
-        } else {
-            o.props[strings.clone(name)] = val
-        }
-        return true
+        return native_property_set(vm, o, name, val)
+    case ^Collection:
+        return native_property_set(vm, o, name, val)
     case ^Array:
         // prop não-índice num array (m.index custom, marcações de libs); índices
         // inteiros passam por set_index.
@@ -3287,13 +3284,13 @@ set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) -> bool {
     case nil, JS_Null, f64, bool, string, ^Symbol, ^BigInt:
         // `null[k] = v` lança como `null.x = v`; primitivo devolve false (set_member)
         return set_member(vm, obj, key_string(vm, key), val)
-    case ^Regex:
+    case ^Regex, ^Collection:
         // `re[k] = v` computado: expando própria via set_member, como `re.x = v`.
         // Antes era IGNORADO, e `re[Symbol.match] = false` (o jeito da spec de fazer
         // uma regex passar por string no startsWith/includes) não tinha efeito.
         return set_member(vm, o, key_string(vm, key), val)
     }
-    return true // ^Collection: o motor não guarda a prop (limitação)
+    return true
 }
 
 // Lê/escreve um alvo cuja base/chave JÁ foram avaliadas (obj/key) — o .Assign

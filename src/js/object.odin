@@ -281,6 +281,18 @@ own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string, all: bool = f
     #partial switch x in v {
     case ^Object:
         own_string_keys(vm, x, out, all)
+    case ^Regex, ^Collection:
+        keys: [dynamic]string
+        defer delete(keys)
+        if own := native_own_properties(vm, x); own != nil do own_string_keys(vm, own, &keys, all)
+        if _, regex := x.(^Regex); regex && all {
+            // lastIndex was created before user properties, after numeric keys.
+            for k in keys do if _, indexed := array_index_name(k); indexed { append(out, k) }
+            append(out, "lastIndex")
+            for k in keys do if _, indexed := array_index_name(k); !indexed { append(out, k) }
+        } else {
+            for k in keys do append(out, k)
+        }
     case ^Function:
         // `prototype`/`name`/`length` são próprias mas NÃO-enumeráveis (spec) —
         // só as que o autor pôs devem aparecer. ⚠️ isso esconde um `f.length = 5`
@@ -629,6 +641,7 @@ proto_accessor_set :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 obj_get_prototype_of :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     if p := proxy_state(arg(args, 0)); p != nil do return proxy_get_prototype_of(vm, p)
+    if proto := native_property_proto(vm, arg(args, 0)); proto != nil do return proto
     if o, ok := arg(args, 0).(^Object); ok {
         if o.proto != nil do return o.proto
         if o.proto_x != nil do return o.proto_x // protótipo exótico (Object.create(array))
@@ -752,6 +765,8 @@ apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: 
 // Define a full own data descriptor without invoking inherited setters.
 create_data_property :: proc(vm: ^Interp, target: Value, key: string, value: Value) -> bool {
     key := own_str_raw(vm, key) // callers may use a transient numeric-key buffer
+    if _, regex := target.(^Regex); regex && key == "lastIndex" do return false
+    if own := native_own_properties(vm, target, true); own != nil do return create_data_property(vm, own, key, value)
     if p := proxy_state(target); p != nil {
         if trap, found := proxy_trap(vm, p, "defineProperty"); found {
             desc := new_object(vm)
@@ -827,6 +842,14 @@ obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         regex_define_property(vm, re, key, desc)
         return re
     }
+    if c, collection := arg(args, 0).(^Collection); collection {
+        key := key_string(vm, arg(args, 1))
+        if vm.throwing do return nil
+        desc, valid := arg(args, 2).(^Object)
+        if !valid { throw_type_error(vm, "Property descriptor must be an object"); return nil }
+        apply_descriptor(vm, native_own_properties(vm, c, true), own_str_raw(vm, key), desc)
+        return c
+    }
     o, ok := arg(args, 0).(^Object)
     if !ok {
         throw_type_error(vm, "Object.defineProperty called on non-object")
@@ -839,59 +862,32 @@ obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 // Object.defineProperty numa RegExp. Antes lançava "called on non-object" — uma
 // regex É objeto. Acessor (get/set) vira acessor PRÓPRIO da ^Regex (sombreia
-// `global`, `flags`, … no get_member); `value` vira expando como `re.x = v`.
-// Limitação: writable/enumerable/configurable não são modelados numa regex.
+// `global`, `flags`, … no get_member). lastIndex remains a native own property.
 @(private = "file")
 regex_define_property :: proc(vm: ^Interp, re: ^Regex, key: string, desc: ^Object) {
-    get_v := get_member(vm, desc, "get"); if vm.throwing do return
-    set_v := get_member(vm, desc, "set"); if vm.throwing do return
-    has_get := get_v != nil || obj_desc_has(desc, "get")
-    has_set := set_v != nil || obj_desc_has(desc, "set")
-    if has_get || has_set {
-        g, _ := get_v.(^Function)
-        s, _ := set_v.(^Function)
-        if re.props != nil {
-            if k, v, found := map_entry_key(re.props, key); found { _ = v; delete_key(&re.props, key); delete(k) }
-        }
-        if has_get {
-            if re.getters == nil do re.getters = make(map[string]^Function)
-            if _, exists := re.getters[key]; exists { re.getters[key] = g } else { re.getters[strings.clone(key)] = g }
-        }
-        if has_set {
-            if re.setters == nil do re.setters = make(map[string]^Function)
-            if _, exists := re.setters[key]; exists { re.setters[key] = s } else { re.setters[strings.clone(key)] = s }
-        }
+    if key != "lastIndex" {
+        apply_descriptor(vm, native_own_properties(vm, re, true), own_str_raw(vm, key), desc)
         return
     }
-    if obj_desc_has(desc, "value") {
-        v := get_member(vm, desc, "value"); if vm.throwing do return
-        if key == "lastIndex" { re.last_index = as_int(v) } else { set_member(vm, re, key, v) }
-    }
-    // `lastIndex` é o ÚNICO atributo modelado: writable:false faz o Set(rx,
-    // "lastIndex", v, true) dos @@métodos lançar TypeError, como na spec.
-    if key == "lastIndex" && obj_desc_has(desc, "writable") {
-        w := get_member(vm, desc, "writable"); if vm.throwing do return
-        re.last_index_ro = !truthy(w)
-    }
-}
-
-@(private = "file")
-obj_desc_has :: proc(desc: ^Object, k: string) -> bool {
-    _, a := desc.props[k]
-    _, b := desc.getters[k]
-    return a || b
-}
-
-@(private = "file")
-map_entry_key :: proc(m: map[string]Value, key: string) -> (string, Value, bool) {
-    for k, v in m do if k == key do return k, v, true
-    return "", nil, false
+    normalized := normalize_descriptor(vm, desc)
+    if vm.throwing do return
+    view := new_object(vm)
+    oput(view, "lastIndex", f64(re.last_index))
+    attrs: Prop_Attrs
+    if !re.last_index_ro do attrs += {.Writable}
+    set_prop_attrs(view, "lastIndex", attrs)
+    if !apply_normalized_descriptor(vm, view, "lastIndex", normalized) do return
+    re.last_index = as_int(view.props["lastIndex"])
+    re.last_index_ro = .Writable not_in prop_attrs(view, "lastIndex")
 }
 
 // Object.defineProperties(obj, {k1: desc1, ...}) — devolve obj.
 @(private = "file")
 obj_define_properties :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if a, isarr := arg(args, 0).(^Array); isarr {
+    _, isarr := arg(args, 0).(^Array)
+    _, isregex := arg(args, 0).(^Regex)
+    _, iscoll := arg(args, 0).(^Collection)
+    if isarr || isregex || iscoll {
         keys: [dynamic]string
         descs: [dynamic]^Object
         defer delete(keys)
@@ -906,10 +902,10 @@ obj_define_properties :: proc(vm: ^Interp, this: Value, args: []Value) -> Value 
             if vm.throwing do return nil
         }
         for desc, i in descs {
-            array_define_property(vm, a, keys[i], desc)
+            obj_define_property(vm, nil, []Value{arg(args, 0), keys[i], desc})
             if vm.throwing do return nil
         }
-        return a
+        return args[0]
     }
     o, ok := arg(args, 0).(^Object)
     if !ok do return arg(args, 0)
@@ -920,6 +916,20 @@ obj_define_properties :: proc(vm: ^Interp, this: Value, args: []Value) -> Value 
 // Object.getOwnPropertyDescriptor(obj, key) — descritor ou undefined (nil).
 // package-visible: Reflect.getOwnPropertyDescriptor (proxy.odin) delega aqui.
 obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    #partial switch native in arg(args, 0) {
+    case ^Regex, ^Collection:
+        key := key_string(vm, arg(args, 1))
+        if vm.throwing do return nil
+        if r, regex := native.(^Regex); regex && key == "lastIndex" {
+            d := new_object(vm)
+            oput(d, "value", f64(r.last_index)); oput(d, "writable", !r.last_index_ro)
+            oput(d, "enumerable", false); oput(d, "configurable", false)
+            return d
+        }
+        own := native_own_properties(vm, native)
+        if own == nil do return nil
+        return obj_get_own_property_descriptor(vm, nil, []Value{own, key})
+    }
     if p := proxy_state(arg(args, 0)); p != nil {
         if trap, ok := proxy_trap(vm, p, "getOwnPropertyDescriptor"); ok {
             return call_function(vm, trap, p.px_handler, []Value{p.px_target, arg(args, 1)})
@@ -1022,6 +1032,14 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
 @(private = "file")
 obj_get_own_property_names :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_array(vm)
+    #partial switch native in arg(args, 0) {
+    case ^Regex, ^Collection:
+        keys: [dynamic]string
+        defer delete(keys)
+        own_keys_any(vm, native, &keys, true)
+        for k in keys do append(&out.items, own_str(vm, k))
+        return out
+    }
     if p := proxy_state(arg(args, 0)); p != nil {
         keys: [dynamic]string
         defer delete(keys)
@@ -1065,6 +1083,10 @@ obj_get_own_property_names :: proc(vm: ^Interp, this: Value, args: []Value) -> V
 // obj.hasOwnProperty(name): true se `name` está nos props PRÓPRIOS (não na cadeia).
 @(private = "file")
 obj_has_own_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    #partial switch _ in this {
+    case ^Regex, ^Collection:
+        return obj_get_own_property_descriptor(vm, nil, []Value{this, arg(args, 0)}) != nil
+    }
     name := key_string(vm, arg(args, 0))
     #partial switch o in this {
     case ^Object:
