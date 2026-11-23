@@ -69,6 +69,9 @@ Object :: struct {
     ta_kind: TA_Kind,      // TypedArray: tipo do elemento; .None p/ ArrayBuffer; .DataView p/ DataView (typedarray.odin)
     ta_off:  int,          // TypedArray/DataView: offset em bytes dentro de ab.data
     ta_len:  int,          // TypedArray: nº de elementos; DataView: byteLength
+    ta_auto: bool,
+    ta_fixed_len: int,
+    ta_oob: bool,
     prim:    Value,        // SLOT INTERNO de subclasse de builtin (M136): `class X extends
                            // Map` cria um ^Object comum (props, proto, campos de classe) e
                            // guarda aqui o ^Collection que o `super()` construiu. Ver
@@ -80,6 +83,8 @@ Object :: struct {
 Array_Buffer :: struct {
     data: [dynamic]u8,
     detached: bool,
+    resizable: bool,
+    max_byte_length: int,
 }
 
 Array :: struct {
@@ -5296,6 +5301,7 @@ super_construct :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value, 
         // %TypedArray%.prototype lançam "incompatible receiver".
         if r.ab != nil {
             o.ab, o.ta_kind, o.ta_off, o.ta_len = r.ab, r.ta_kind, r.ta_off, r.ta_len
+            o.ta_auto, o.ta_fixed_len, o.ta_oob = r.ta_auto, r.ta_fixed_len, r.ta_oob
             if o.get == nil do o.get = r.get
             if o.set == nil do o.set = r.set
         }
