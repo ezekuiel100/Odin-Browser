@@ -59,23 +59,27 @@ proxy_has :: proc(vm: ^Interp, o: ^Object, key: string) -> bool {
 }
 
 // `delete proxy[key]` → trap `deleteProperty` (ou remoção default no alvo).
-proxy_delete :: proc(vm: ^Interp, o: ^Object, key: string) {
-    if !proxy_live(vm, o) do return
+proxy_delete :: proc(vm: ^Interp, o: ^Object, key: string) -> bool {
+    if !proxy_live(vm, o) do return false
 
     if fn, ok := proxy_trap(vm, o, "deleteProperty"); ok {
         result := call_function(vm, fn, o.px_handler, []Value{o.px_target, proxy_key_value(vm, key)})
-        if vm.throwing || !truthy(result) do return
+        if vm.throwing || !truthy(result) do return false
         desc := obj_get_own_property_descriptor(vm, nil, []Value{o.px_target, proxy_key_value(vm, key)})
-        if vm.throwing || desc == nil do return
+        if vm.throwing do return false
+        if desc == nil do return true
         configurable := truthy(get_member(vm, desc, "configurable"))
-        if vm.throwing do return
+        if vm.throwing do return false
         extensible := proxy_target_extensible(vm, o.px_target)
-        if vm.throwing do return
-        if !configurable || !extensible do throw_type_error(vm, "deleteProperty trap cannot hide a protected target property")
-        return
+        if vm.throwing do return false
+        if !configurable || !extensible {
+            throw_type_error(vm, "deleteProperty trap cannot hide a protected target property")
+            return false
+        }
+        return true
     }
-    if vm.throwing do return
-    delete_property_value(vm, o.px_target, key, false)
+    if vm.throwing do return false
+    return truthy(delete_property_value(vm, o.px_target, key, false))
 }
 
 // ── construtor Proxy + objeto Reflect ────────────────────────────────────────
@@ -160,8 +164,7 @@ reflect_set :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         proxy_default_set(vm, o.px_target, name, val)
         return true
     }
-    set_index(vm, target, name, val)
-    return true
+    return set_index(vm, target, name, val)
 }
 
 @(private = "file")
@@ -171,10 +174,6 @@ reflect_has :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 reflect_delete_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if p := proxy_state(arg(args, 0)); p != nil {
-        proxy_delete(vm, p, key_string(vm, arg(args, 1)))
-        return !vm.throwing
-    }
     return delete_property_value(vm, arg(args, 0), key_string(vm, arg(args, 1)), false)
 }
 
@@ -183,11 +182,10 @@ reflect_own_keys :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     out := new_array(vm)
     keys: [dynamic]string
     defer delete(keys)
-    if p := proxy_state(arg(args, 0)); p != nil {
-        proxy_keys(vm, p, &keys, true)
-    } else {
-        reflect_target_keys(vm, arg(args, 0), &keys)
-    }
+    target := arg(args, 0)
+    if is_primitive(target) { throw_type_error(vm, "Reflect.ownKeys requires an object"); return nil }
+    reflect_target_keys(vm, target, &keys)
+    if vm.throwing do return nil
     for k in keys {
         if sym, ok := vm.symbol_keys[k]; ok { append(&out.items, sym) }
         else { append(&out.items, own_str(vm, k)) }
@@ -242,8 +240,7 @@ proxy_get_prototype_of :: proc(vm: ^Interp, p: ^Object) -> Value {
 // (mesma semântica), devolvendo true no define.
 @(private = "file")
 reflect_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    obj_define_property(vm, nil, args)
-    return true
+    return define_own_property(vm, arg(args, 0), arg(args, 1), arg(args, 2), false)
 }
 
 @(private = "file")
@@ -552,37 +549,83 @@ proxy_keys :: proc(vm: ^Interp, p: ^Object, out: ^[dynamic]string, all: bool) {
 reflect_target_keys :: proc(vm: ^Interp, target: Value, out: ^[dynamic]string) {
     if p := proxy_state(target); p != nil { proxy_keys(vm, p, out, true); return }
     own_keys_any(vm, target, out, true)
+    target_symbol_keys(vm, target, out)
+}
+
+target_symbol_keys :: proc(vm: ^Interp, target: Value, out: ^[dynamic]string) {
     #partial switch t in target {
     case ^Regex, ^Collection:
-        if own := native_own_properties(vm, t); own != nil {
-            keys: [dynamic]string
-            defer delete(keys)
-            reflect_target_keys(vm, own, &keys)
-            for k in keys do if is_symbol_key(k) { append(out, k) }
-        }
+        if own := native_own_properties(vm, t); own != nil do append_symbol_keys(own, out)
     case ^Object:
-        seen: map[string]bool
-        defer delete(seen)
-        for k in t.korder do if is_symbol_key(k) && okey_alive(t, k) { append(out, k); seen[k] = true }
-        for k in t.props do if is_symbol_key(k) && !seen[k] { append(out, k); seen[k] = true }
-        for k in t.getters do if is_symbol_key(k) && !seen[k] { append(out, k); seen[k] = true }
-        for k in t.setters do if is_symbol_key(k) && !seen[k] { append(out, k); seen[k] = true }
+        append_symbol_keys(t, out)
     case ^Array:
-        append(out, "length")
-        for k in t.props do if is_symbol_key(k) do append(out, k)
+        for k in t.korder do if is_symbol_key(k) { append(out, k) }
     case ^Function:
-        append(out, "length", "name")
-        if !t.is_arrow && !t.non_constructor {
-            get_member(vm, t, "prototype")
-            append(out, "prototype")
+        view := function_view(t)
+        append_symbol_keys(&view, out)
+    }
+}
+
+@(private = "file")
+append_symbol_keys :: proc(o: ^Object, out: ^[dynamic]string) {
+    seen: map[string]bool
+    defer delete(seen)
+    for k in o.korder do if is_symbol_key(k) && okey_alive(o, k) { append(out, k); seen[k] = true }
+    for k in o.props do if is_symbol_key(k) && !seen[k] { append(out, k); seen[k] = true }
+    for k in o.getters do if is_symbol_key(k) && !seen[k] { append(out, k); seen[k] = true }
+    for k in o.setters do if is_symbol_key(k) && !seen[k] { append(out, k); seen[k] = true }
+}
+
+proxy_own_descriptor :: proc(vm: ^Interp, p: ^Object, key: string) -> Value {
+    args := []Value{p.px_target, proxy_key_value(vm, key)}
+    trap, found := proxy_trap(vm, p, "getOwnPropertyDescriptor")
+    if vm.throwing do return nil
+    if !found do return obj_get_own_property_descriptor(vm, nil, args)
+    result := call_function(vm, trap, p.px_handler, args)
+    if vm.throwing do return nil
+    if result == nil {
+        old := obj_get_own_property_descriptor(vm, nil, args)
+        if vm.throwing || old == nil do return nil
+        if !truthy(get_member(vm, old, "configurable")) || !proxy_target_extensible(vm, p.px_target) {
+            if !vm.throwing do throw_type_error(vm, "getOwnPropertyDescriptor trap hid a protected property")
         }
-        for k in t.props {
-            if k == "length" || k == "name" || k == "prototype" do continue
-            present := false
-            for old in out^ do if old == k { present = true; break }
-            if !present do append(out, k)
+        return nil
+    }
+    desc, ok := result.(^Object)
+    if !ok { throw_type_error(vm, "getOwnPropertyDescriptor trap returned an invalid descriptor"); return nil }
+    normalized := normalize_descriptor(vm, desc)
+    if vm.throwing do return nil
+    // Complete the descriptor before testing compatibility and exposing it.
+    view := new_object(vm)
+    if !apply_normalized_descriptor(vm, view, key, normalized) do return nil
+    complete := obj_get_own_property_descriptor(vm, nil, []Value{view, args[1]}).(^Object)
+    if !proxy_validate_descriptor(vm, p.px_target, key, complete) do return nil
+    return complete
+}
+
+// Validate a successful trap against a snapshot of the target's current
+// descriptor. Applying to the snapshot leaves target mutations to the trap.
+proxy_validate_descriptor :: proc(vm: ^Interp, target: Value, key: string, desc: ^Object) -> bool {
+    old := obj_get_own_property_descriptor(vm, nil, []Value{target, proxy_key_value(vm, key)})
+    if vm.throwing do return false
+    extensible := proxy_target_extensible(vm, target)
+    if vm.throwing do return false
+    view := new_object(vm)
+    existing, present := old.(^Object)
+    if present do apply_normalized_descriptor(vm, view, key, existing)
+    view.non_extensible = !extensible
+    configurable, has_configurable := desc.props["configurable"]
+    if has_configurable && !truthy(configurable) && (!present || truthy(existing.props["configurable"])) {
+        throw_type_error(vm, "Proxy trap cannot report a new non-configurable property")
+        return false
+    }
+    if present && !truthy(existing.props["configurable"]) && truthy(existing.props["writable"]) {
+        if writable, explicit := desc.props["writable"]; explicit && !truthy(writable) {
+            throw_type_error(vm, "Proxy trap cannot report a writable target property as read-only")
+            return false
         }
     }
+    return apply_normalized_descriptor(vm, view, key, desc)
 }
 
 proxy_key_value :: proc(vm: ^Interp, key: string) -> Value {

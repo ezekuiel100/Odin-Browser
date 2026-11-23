@@ -221,18 +221,17 @@ collect_form_controls :: proc(n, form: ^dom.Node, out: ^[dynamic]^dom.Node, list
 named_snapshot :: proc(vm: ^Interp, nodes: []^dom.Node) -> ^Array {
     arr := new_array(vm)
     for n in nodes do append(&arr.items, wrap_element(vm, n))
-    arr.props = make(map[string]Value)
     // `item`/`namedItem` PRÓPRIOS: os do HTMLCollection.prototype leem o Coll_State,
     // que um ^Array não tem. Nomeadas: id antes de name, o 1º de cada vence.
-    arr.props["item"] = mk_native(vm, snapshot_item)
-    arr.props["namedItem"] = mk_native(vm, snapshot_named_item)
+    array_put(arr, "item", mk_native(vm, snapshot_item))
+    array_put(arr, "namedItem", mk_native(vm, snapshot_named_item))
     for key in ([2]string{"id", "name"}) {
         for n, i in nodes {
             v, ok := n.attrs[key]
             if !ok || v == "" || v == "length" || v == "item" || v == "namedItem" do continue
             owned := own_str_raw(vm, v)
             if _, dup := arr.props[owned]; dup do continue
-            arr.props[owned] = arr.items[i]
+            array_put(arr, owned, arr.items[i])
         }
     }
     return arr

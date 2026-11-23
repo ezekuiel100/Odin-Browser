@@ -5,5 +5,8 @@ package js
 infer_binding_name :: proc(n: ^Node, value: Value, name: string) {
     if n == nil || name == "" || n.name != "" do return
     if n.kind != .Func && n.kind != .Class do return
-    if f, ok := value.(^Function); ok do f.name = name
+    if f, ok := value.(^Function); ok {
+        f.name = name
+        if f.metadata_name do f.props["name"] = name
+    }
 }

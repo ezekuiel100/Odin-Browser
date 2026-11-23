@@ -371,6 +371,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
 
         delete(f.attrs)
         delete(f.props)
+        delete(f.korder)
         if f.class_keys != nil do delete(f.class_keys)
         if f.bind_args != nil do delete(f.bind_args)
         if f.getters != nil do delete(f.getters)
@@ -398,6 +399,7 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
 
         delete(a.items)
         if a.props != nil do delete(a.props)
+        delete(a.korder)
         delete(a.holes)
         if a.args != nil do free(a.args)
         free(a)

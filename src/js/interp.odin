@@ -83,6 +83,7 @@ Array_Buffer :: struct {
 }
 
 Array :: struct {
+    korder: [dynamic]string,
     items: [dynamic]Value,
     descriptors: ^Object, // Lazy attributes/accessors; data values stay in items/props.
     frozen: bool, // Object.freeze: itens não mudam e o array não cresce
@@ -252,6 +253,9 @@ Function :: struct {
     name:     string,
     attrs: map[string]Prop_Attrs,
     native_length: int,
+    own_initialized: bool,
+    metadata_name: bool, // name was materialized before binding inference
+    korder: [dynamic]string,
     non_constructor: bool,
     is_arrow: bool, // arrow não vincula `this` próprio (herda o léxico via closure)
     is_async: bool, // devolve Promise; throw vira rejeição (ver call_function)
@@ -1239,6 +1243,15 @@ to_number :: proc(vm: ^Interp, v: Value) -> f64 {
     return as_number(v) // primitivos + array/função/regex (as_number já cobre)
 }
 
+function_create_prototype :: proc(vm: ^Interp, f: ^Function) -> ^Object {
+    if f.props == nil do f.props = make(map[string]Value)
+    proto := new_object(vm)
+    oput(proto, "constructor", f)
+    mark_non_enumerable(proto, "constructor")
+    f.props["prototype"] = proto
+    return proto
+}
+
 new_function :: proc(vm: ^Interp) -> ^Function {
     f := new(Function)
     f.script = vm.cur_script
@@ -1280,6 +1293,7 @@ vm_destroy :: proc(vm: ^Interp) {
     for f in vm.all_funcs {
         delete(f.attrs)
         delete(f.props)
+        delete(f.korder)
         if f.class_keys != nil do delete(f.class_keys)
         if f.bind_args != nil do delete(f.bind_args)
         if f.getters != nil do delete(f.getters)
@@ -1314,6 +1328,7 @@ vm_destroy :: proc(vm: ^Interp) {
     for a in vm.all_arrays {
         delete(a.items)
         if a.props != nil do delete(a.props)
+        delete(a.korder)
         delete(a.holes)
         if a.args != nil do free(a.args)
         free(a)
@@ -1723,8 +1738,9 @@ with_has_property :: proc(vm: ^Interp, obj: Value, name: string) -> bool {
 // que resolve num `with`.
 delete_property_value :: proc(vm: ^Interp, obj: Value, k: string, strict: bool) -> Value {
     if p := proxy_state(obj); p != nil {
-        proxy_delete(vm, p, k)
-        return true
+        ok := proxy_delete(vm, p, k)
+        if !ok && strict && !vm.throwing do throw_type_error(vm, "Cannot delete proxy property")
+        return ok
     }
     if r, regex := obj.(^Regex); regex && k == "lastIndex" {
         if strict { throw_type_error(vm, "Cannot delete property 'lastIndex'"); return nil }
@@ -1734,7 +1750,6 @@ delete_property_value :: proc(vm: ^Interp, obj: Value, k: string, strict: bool) 
     ok := true
     #partial switch o in obj {
     case ^Object:
-        if o.px_handler != nil { proxy_delete(vm, o, k); return true } // trap deleteProperty
         if o.get == storage_get { storage_remove_key(o, k); return true } // delete localStorage.x
         if okey_alive(o, k) && .Configurable not_in prop_attrs(o, k) {
             ok = false
@@ -1744,9 +1759,12 @@ delete_property_value :: proc(vm: ^Interp, obj: Value, k: string, strict: bool) 
             delete_key(&o.attrs, k)
         }
     case ^Function:
+        function_prepare_own(vm, o)
         if a, explicit := o.attrs[k]; explicit && .Configurable not_in a {
             ok = false
         } else {
+            if k == "name" do o.metadata_name = false
+            forget_key(&o.korder, k)
             delete_key(&o.props, k); delete_key(&o.getters, k); delete_key(&o.setters, k)
             delete_key(&o.attrs, k)
         }
@@ -2473,6 +2491,12 @@ js_in :: proc(vm: ^Interp, l, r: Value) -> bool {
         // HasProperty, que sobe a cadeia inteira.
         if x := proto_exotic_end(o); x != nil do return js_in(vm, l, x)
         return false
+    case ^Function:
+        for f := o; f != nil; f = f.super_ctor {
+            if truthy(obj_has_own_property(vm, f, []Value{key})) && (f == o || key != "prototype") do return true
+        }
+        if vm.function_proto != nil do return js_in(vm, key, vm.function_proto)
+        return false
     case ^Array:
         if idx, ok := array_index_name(key); ok do return arr_has_index(o, idx)
         if o.props != nil { if _, ok := o.props[key]; ok do return true }
@@ -2619,7 +2643,7 @@ okey_accessor :: proc(o: ^Object, k: string) {
 // deve ir p/ o FIM da ordem, como na spec).
 oremove :: proc(o: ^Object, k: string) {
     if okey_alive(o, k) {
-        for kk, i in o.korder do if kk == k { ordered_remove(&o.korder, i); break }
+        forget_key(&o.korder, k)
     }
     delete_key(&o.props, k)
 }
@@ -2628,10 +2652,8 @@ oremove :: proc(o: ^Object, k: string) {
 // inteiro canônico sem zero à esquerda ("0", "7", "42" — não "07", "1.5", "-1").
 @(private = "file")
 is_index_key :: proc(k: string) -> bool {
-    if len(k) == 0 || len(k) > 10 do return false
-    if len(k) > 1 && k[0] == '0' do return false
-    for c in transmute([]u8)k do if c < '0' || c > '9' do return false
-    return true
+    _, indexed := array_index_name(k)
+    return indexed
 }
 
 // Chaves próprias enumeráveis na ordem da spec (OrdinaryOwnPropertyKeys):
@@ -2947,10 +2969,18 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         if name == "__proto__" do return obj_get_prototype_of(vm, nil, []Value{o})
         // getter static de classe (static get x(){}) — invoca com this = a classe
         if o.getters != nil {
-            if g, ok := o.getters[name]; ok do return call_function(vm, g, o, nil)
+            if g, ok := o.getters[name]; ok {
+                if g == nil do return nil
+                return call_function(vm, g, o, nil)
+            }
         }
+        if _, setter_only := o.setters[name]; setter_only do return nil
         if o.props != nil { // propriedades estáticas (ex.: Promise.resolve)
             if v, ok := o.props[name]; ok do return v
+        }
+        if !o.own_initialized {
+            if name == "name" do return o.name
+            if name == "length" do return function_length(o)
         }
         // HERANÇA ESTÁTICA: `class B extends A` faz B herdar os membros static de A
         // (spec: o [[Prototype]] de B é A). Sem subir a cadeia, `B.metodoStatic` era
@@ -2970,8 +3000,6 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         case "toString": return vm.fn_tostring_fn
         case "apply": return vm.fn_apply_fn
         case "bind":  return vm.fn_bind_fn
-        case "name":  return o.name
-        case "length": return function_length(o)
         }
         // toda função (não-arrow) tem um `.prototype` (objeto) criado sob demanda —
         // é onde `Ctor.prototype.metodo = fn` grava e de onde `new Ctor()` herda.
@@ -2981,14 +3009,7 @@ get_member :: proc(vm: ^Interp, obj: Value, name: string) -> Value {
         // bind nativo via `!boundFn.hasOwnProperty('prototype')` — se o auto-proto
         // aparecer, NATIVE_BIND=false e o core-js embrulha Map/Set e usa caminhos
         // uncurryThis alternativos (foi a raiz do bug do M97). Ver obj_has_own_property.
-        if name == "prototype" && !o.is_arrow && !o.non_constructor && o.native == nil && o.bind_target == nil {
-            if o.props == nil do o.props = make(map[string]Value)
-            proto := new_object(vm)
-            proto.props["constructor"] = o
-            mark_non_enumerable(proto, "constructor")
-            o.props["prototype"] = proto
-            return proto
-        }
+        if name == "prototype" && function_has_lazy_prototype(o) do return function_create_prototype(vm, o)
         // funções herdam de Object.prototype (hasOwnProperty, isPrototypeOf, ...);
         // sem isto `algumaFn.hasOwnProperty(...)` lançava "is not a function".
         if name == "constructor" do return global_ctor(vm, "Function")
@@ -3082,6 +3103,7 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
         oput(o, name, val)
         return true
     case ^Function:
+        function_prepare_own(vm, o)
         if a, explicit := o.attrs[name]; explicit {
             if _, accessor := o.getters[name]; accessor {
                 if setter, ok := o.setters[name]; ok && setter != nil {
@@ -3094,11 +3116,13 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
         }
         // setter static de classe (static set x(v){}) — invoca com this = a classe
         if o.setters != nil {
-            if s, ok := o.setters[name]; ok { call_function(vm, s, o, []Value{val}); return true }
+            if s, ok := o.setters[name]; ok {
+                if s == nil do return false
+                call_function(vm, s, o, []Value{val}); return true
+            }
         }
         // escrever propriedade estática numa função (ex.: Ctor.prop = x)
-        if o.props == nil do o.props = make(map[string]Value)
-        o.props[name] = val
+        function_put(o, name, val)
         return true
     case ^Regex:
         if name == "lastIndex" { // p/ loops de exec global
@@ -3124,8 +3148,7 @@ set_member :: proc(vm: ^Interp, obj: Value, name: string, val: Value) -> bool {
         if _, exists := o.props[name]; exists {
             if .Writable not_in array_attrs(o, name) do return false
         } else if o.sealed { return false }
-        if o.props == nil do o.props = make(map[string]Value)
-        o.props[name] = val
+        array_put(o, name, val)
         return true
     case f64, bool, string, ^Symbol, ^BigInt:
         return false // primitivo não guarda prop: `"s".x = 1` é ignorado / TypeError strict
@@ -5047,7 +5070,7 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     // (Babel `_inherits`, detecção de tipo via obj.constructor.prototype) lê undefined
     // e quebra o bundle inteiro — sintoma "reading 'prototype' of undefined" que
     // deixava tradebig/google em branco. Não-enumerável (não aparece em for-in/keys).
-    proto.props["constructor"] = ctor
+    oput(proto, "constructor", ctor)
     mark_non_enumerable(proto, "constructor")
 
     // Resolve keys in source order and install all methods before static inits.
@@ -5070,7 +5093,7 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
                 if proto.setters == nil do proto.setters = make(map[string]^Function)
                 proto.setters[key] = fn
             case: // método normal
-                proto.props[key] = fn
+                oput(proto, key, fn)
             }
             // membro de classe é NÃO-enumerável (spec §15.7.14): `Object.keys(C.prototype)`
             // vem vazio no navegador. Só passou a ser expressável com o mapa de atributos.
@@ -5078,6 +5101,9 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             continue
         }
         fn := build_method(vm, m, cenv, super_fn, super_proto)
+        function_record_key(ctor, key)
+        if ctor.attrs == nil do ctor.attrs = make(map[string]Prop_Attrs)
+        ctor.attrs[key] = {.Writable, .Configurable}
         switch m.acc {
         case 1: // getter static → getters da própria construtora (get_member ^Function)
             if ctor.getters == nil do ctor.getters = make(map[string]^Function)
@@ -5101,7 +5127,11 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             v: Value = nil
             if m.right != nil do v = eval(vm, m.right, senv)
             if vm.throwing do return nil
-            ctor.props[ctor.class_keys[i]] = v
+            key := ctor.class_keys[i]
+            function_put(ctor, key, v)
+            delete_key(&ctor.getters, key)
+            delete_key(&ctor.setters, key)
+            delete_key(&ctor.attrs, key)
         case .StaticBlock:
             senv := new_env(vm, cenv)
             env_define(senv, "this", ctor) // `this` no bloco static é a própria classe
@@ -5631,8 +5661,7 @@ eval_tagged :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         // de tamanho diferente — o lit-html valida `strings.raw.length`.
         for it in strs.items do append(&raws.items, it)
     }
-    strs.props = make(map[string]Value)
-    strs.props["raw"] = raws
+    array_put(strs, "raw", raws)
     args: [dynamic]Value
     defer delete(args)
     append(&args, strs)

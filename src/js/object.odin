@@ -1,6 +1,7 @@
 package js
 
 import "core:math"
+import "core:slice"
 import "core:strings"
 
 // O objeto/função global `Object` e seus estáticos (keys/values/entries/assign/
@@ -276,6 +277,113 @@ obj_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 // package-visible: o spread de object literal (`{...src}`) em interp.odin reusa —
 // era a MESMA lista de tipos escrita duas vezes, e a cópia de lá tinha ficado só no
 // `^Object` (M220).
+forget_key :: proc(order: ^[dynamic]string, key: string) {
+    for k, i in order^ {
+        if k != key do continue
+        ordered_remove(order, i)
+        return
+    }
+}
+
+function_has_lazy_prototype :: proc(f: ^Function) -> bool {
+    return !f.is_arrow && f.native == nil && f.bind_target == nil &&
+           (f.is_generator || (!f.is_async && !f.non_constructor))
+}
+
+function_view :: proc(f: ^Function) -> Object {
+    return {props = f.props, getters = f.getters, setters = f.setters, attrs = f.attrs, korder = f.korder}
+}
+
+function_store_view :: proc(f: ^Function, view: ^Object) {
+    f.props, f.getters, f.setters, f.attrs, f.korder = view.props, view.getters, view.setters, view.attrs, view.korder
+}
+
+function_record_key :: proc(f: ^Function, key: string) {
+    view := function_view(f)
+    okey_accessor(&view, key)
+    f.korder = view.korder
+}
+
+function_put :: proc(f: ^Function, key: string, value: Value) {
+    if key == "name" do f.metadata_name = false
+    if f.props == nil do f.props = make(map[string]Value)
+    view := function_view(f)
+    oput(&view, key, value)
+    function_store_view(f, &view)
+}
+
+// Materialize function metadata when reflection or mutation needs the ordinary
+// descriptor rules. Keep intrinsic keys ahead of properties added by scripts.
+function_prepare_own :: proc(vm: ^Interp, f: ^Function) {
+    if f.own_initialized do return
+    if f.props == nil do f.props = make(map[string]Value)
+    view := function_view(f)
+    if !okey_alive(&view, "prototype") && function_has_lazy_prototype(f) {
+        function_create_prototype(vm, f)
+        view = function_view(f)
+    }
+    view.korder = nil
+    for key in ([?]string{"length", "name"}) {
+        if !okey_alive(&view, key) {
+            if key == "name" {
+                view.props[key] = f.name
+                f.metadata_name = true
+            } else {
+                view.props[key] = function_length(f)
+            }
+            set_prop_attrs(&view, key, {.Configurable})
+        }
+        append(&view.korder, key)
+    }
+    if okey_alive(&view, "prototype") {
+        if _, exists := view.attrs["prototype"]; !exists {
+            set_prop_attrs(&view, "prototype", {} if f.class_node != nil else {.Writable})
+        }
+        append(&view.korder, "prototype")
+    }
+    // Native installers may populate the map directly. Give those keys a
+    // deterministic order before subsequent script writes.
+    seen: map[string]bool
+    defer delete(seen)
+    for k in view.korder do seen[k] = true
+    for k in f.korder {
+        if seen[k] do continue
+        seen[k] = true
+        append(&view.korder, k)
+    }
+    native_start := len(view.korder)
+    for k in view.props {
+        if seen[k] do continue
+        seen[k] = true
+        append(&view.korder, k)
+    }
+    for k in view.getters {
+        if seen[k] do continue
+        seen[k] = true
+        append(&view.korder, k)
+    }
+    for k in view.setters do if !seen[k] do append(&view.korder, k)
+    slice.sort(view.korder[native_start:])
+    delete(f.korder)
+    function_store_view(f, &view)
+    f.own_initialized = true
+}
+
+function_define_property :: proc(vm: ^Interp, f: ^Function, key: string, desc: ^Object, throw_on_reject := true) -> bool {
+    normalized := normalize_descriptor(vm, desc)
+    if vm.throwing do return false
+    return function_apply_descriptor(vm, f, key, normalized, throw_on_reject)
+}
+
+function_apply_descriptor :: proc(vm: ^Interp, f: ^Function, key: string, desc: ^Object, throw_on_reject: bool) -> bool {
+    function_prepare_own(vm, f)
+    view := function_view(f)
+    result := apply_normalized_descriptor(vm, &view, key, desc, throw_on_reject)
+    if result && key == "name" do f.metadata_name = false
+    function_store_view(f, &view)
+    return result
+}
+
 own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string, all: bool = false) {
     if p := proxy_state(v); p != nil { proxy_keys(vm, p, out, all); return }
     #partial switch x in v {
@@ -294,28 +402,22 @@ own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string, all: bool = f
             for k in keys do append(out, k)
         }
     case ^Function:
-        // `prototype`/`name`/`length` são próprias mas NÃO-enumeráveis (spec) —
-        // só as que o autor pôs devem aparecer. ⚠️ isso esconde um `f.length = 5`
-        // explícito; é o preço de não termos atributos de propriedade em Function.
-        for k in x.props {
-            if a, explicit := x.attrs[k]; explicit && .Enumerable not_in a do continue
-            if is_non_enumerable_key(k) do continue
-            switch k {
-            case "prototype", "name", "length", "caller", "arguments": continue
-            }
-            append(out, k)
-        }
+        function_prepare_own(vm, x)
+        view := function_view(x)
+        own_string_keys(vm, &view, out, all)
     case ^Array:
         for i in 0 ..< len(x.items) {
-            if arr_is_hole(x, i) do continue // buraco não é chave própria
-            s, _ := v_to_key_string(vm, f64(i))
-            if !all && .Enumerable not_in array_attrs(x, s) do continue
-            append(out, s)
+            if arr_is_hole(x, i) do continue
+            k := key_string(vm, f64(i))
+            if all || .Enumerable in array_attrs(x, k) do append(out, k)
         }
-        for k in x.props {
+        if all {
+            append(out, "length")
+            if x.args != nil && x.args.callee != nil && !x.args.callee.strict do append(out, "callee")
+        }
+        for k in x.korder {
             if is_non_enumerable_key(k) do continue
-            if !all && .Enumerable not_in array_attrs(x, k) do continue
-            append(out, k)
+            if all || .Enumerable in array_attrs(x, k) do append(out, k)
         }
     case string:
         // índices em CODE UNITS UTF-16, como o resto do motor (ver M167)
@@ -323,6 +425,7 @@ own_keys_any :: proc(vm: ^Interp, v: Value, out: ^[dynamic]string, all: bool = f
             s, _ := v_to_key_string(vm, f64(i))
             append(out, s)
         }
+        if all do append(out, "length")
     }
 }
 
@@ -566,63 +669,35 @@ obj_prevent_extensions :: proc(vm: ^Interp, this: Value, args: []Value) -> Value
 // (`Object.defineProperties(t, Object.getOwnPropertyDescriptors(s))`).
 @(private = "file")
 obj_get_own_property_descriptors :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    out := new_object(vm)
     target := arg(args, 0)
-    seen: map[string]bool
-    defer delete(seen)
-    add_key :: proc(vm: ^Interp, target: Value, out: ^Object, seen: ^map[string]bool, key: string) {
-        if is_non_enumerable_key(key) || seen[key] do return
-        seen[key] = true
-        d := obj_get_own_property_descriptor(vm, nil, []Value{target, key})
+    if is_nullish(target) { throw_type_error(vm, "Cannot convert undefined or null to object"); return nil }
+    keys: [dynamic]string
+    defer delete(keys)
+    reflect_target_keys(vm, target, &keys)
+    if vm.throwing do return nil
+    out := new_object(vm)
+    for key in keys {
+        d := obj_get_own_property_descriptor(vm, nil, []Value{target, proxy_key_value(vm, key)})
+        if vm.throwing do return nil
         if d != nil do oput(out, key, d)
     }
-    if _, isarr := target.(^Array); isarr {
-        keys: [dynamic]string
-        defer delete(keys)
-        own_keys_any(vm, target, &keys, true) // índices presentes + props
-        for k in keys do add_key(vm, target, out, &seen, k)
-        add_key(vm, target, out, &seen, "length")
-        return out
-    }
-    o, ok := target.(^Object)
-    if !ok do return out
-    for k in o.props do add_key(vm, target, out, &seen, k)
-    if o.getters != nil do for k in o.getters do add_key(vm, target, out, &seen, k)
-    if o.setters != nil do for k in o.setters do add_key(vm, target, out, &seen, k)
     return out
 }
 
-// Object.getOwnPropertySymbols(o): os símbolos usados como chave PRÓPRIA de `o`.
-// Devolvia array vazio porque a chave-string não permitia recuperar o ^Symbol; agora
-// `symbol_key` mantém o mapa reverso (vm.symbol_keys). Ordem de inserção (korder),
-// como as chaves-string.
 @(private = "file")
 obj_get_own_property_symbols :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    out := new_array(vm)
-    if p := proxy_state(arg(args, 0)); p != nil {
-        keys: [dynamic]string
-        defer delete(keys)
+    target := arg(args, 0)
+    if is_nullish(target) { throw_type_error(vm, "Cannot convert undefined or null to object"); return nil }
+    keys: [dynamic]string
+    defer delete(keys)
+    if p := proxy_state(target); p != nil {
         proxy_keys(vm, p, &keys, true)
-        for k in keys {
-            if sym, ok := vm.symbol_keys[k]; ok do append(&out.items, sym)
-        }
-        return out
+    } else {
+        target_symbol_keys(vm, target, &keys)
     }
-    o, ok := arg(args, 0).(^Object)
-    if !ok || vm.symbol_keys == nil do return out
-    seen: map[string]bool
-    defer delete(seen)
-    emit :: proc(vm: ^Interp, out: ^Array, seen: ^map[string]bool, k: string) {
-        if !is_symbol_key(k) || seen[k] do return
-        sym, has := vm.symbol_keys[k]
-        if !has do return // símbolo bem-conhecido instalado como string crua: não é um ^Symbol
-        seen[k] = true
-        append(&out.items, sym)
-    }
-    for k in o.korder do if okey_alive(o, k) do emit(vm, out, &seen, k)
-    for k in o.props do emit(vm, out, &seen, k) // escritas nativas que não passaram por oput
-    if o.getters != nil do for k in o.getters do emit(vm, out, &seen, k)
-    if o.setters != nil do for k in o.setters do emit(vm, out, &seen, k)
+    if vm.throwing do return nil
+    out := new_array(vm)
+    for k in keys do if sym, ok := vm.symbol_keys[k]; ok do append(&out.items, sym)
     return out
 }
 
@@ -692,7 +767,12 @@ normalize_descriptor :: proc(vm: ^Interp, desc: ^Object) -> ^Object {
             _, data := cur.props[field]
             _, getter := cur.getters[field]
             _, setter := cur.setters[field]
-            if data || getter || setter { normalized.props[field] = get_member(vm, desc, field); break }
+            if data || getter || setter {
+                value := get_member(vm, desc, field)
+                if field == "enumerable" || field == "configurable" || field == "writable" do value = truthy(value)
+                oput(normalized, field, value)
+                break
+            }
         }
         if vm.throwing do return normalized
     }
@@ -752,7 +832,12 @@ apply_normalized_descriptor :: proc(vm: ^Interp, o: ^Object, key: string, desc: 
         if hs || !oldacc do o.setters[key] = sf
     } else if hv || hw || !existed {
         if oldacc { delete_key(&o.getters, key); delete_key(&o.setters, key); a -= {.Writable} }
-        if hv { oput(o, key, v) } else if !ov { oput(o, key, nil) }
+        if existed {
+            if o.props == nil do o.props = make(map[string]Value)
+            if hv { o.props[key] = v } else if oldacc { o.props[key] = nil }
+        } else {
+            oput(o, key, v)
+        }
     }
     if he do a = truthy(e) ? a + {.Enumerable} : a - {.Enumerable}
     if hw do a = truthy(w) ? a + {.Writable} : a - {.Writable}
@@ -803,11 +888,7 @@ create_data_property :: proc(vm: ^Interp, target: Value, key: string, value: Val
     case ^Array:
         return array_define_property(vm, o, key, &desc, false)
     case ^Function:
-        view := Object{props = o.props, getters = o.getters, setters = o.setters, attrs = o.attrs}
-        defer delete(view.korder)
-        result := apply_normalized_descriptor(vm, &view, key, &desc, false)
-        o.props = view.props; o.getters = view.getters; o.setters = view.setters; o.attrs = view.attrs
-        return result
+        return function_apply_descriptor(vm, o, key, &desc, false)
     }
     return false
 }
@@ -815,102 +896,92 @@ create_data_property :: proc(vm: ^Interp, target: Value, key: string, value: Val
 // Object.defineProperty(obj, key, descriptor) — devolve obj.
 // package-visible: Reflect.defineProperty (proxy.odin) delega aqui.
 obj_define_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    if a, aok := arg(args, 0).(^Array); aok {
-        key := key_string(vm, arg(args, 1))
-        if vm.throwing do return nil
-        desc, dok := arg(args, 2).(^Object)
-        if !dok { throw_type_error(vm, "Property descriptor must be an object"); return nil }
-        array_define_property(vm, a, key, desc)
-        return a
-    }
-    if fn, fok := arg(args, 0).(^Function); fok {
-        key := key_string(vm, arg(args, 1))
-        desc, dok := arg(args, 2).(^Object)
-        if !dok { throw_type_error(vm, "Property descriptor must be an object"); return nil }
-        if fn.props == nil do fn.props = make(map[string]Value)
-        view := Object{props = fn.props, getters = fn.getters, setters = fn.setters, attrs = fn.attrs}
-        defer delete(view.korder)
-        apply_descriptor(vm, &view, key, desc)
-        fn.props = view.props; fn.getters = view.getters; fn.setters = view.setters; fn.attrs = view.attrs
-        return fn
-    }
-    if re, rok := arg(args, 0).(^Regex); rok {
-        key := key_string(vm, arg(args, 1))
-        if vm.throwing do return nil
-        desc, dok := arg(args, 2).(^Object)
-        if !dok { throw_type_error(vm, "Property descriptor must be an object"); return nil }
-        regex_define_property(vm, re, key, desc)
-        return re
-    }
-    if c, collection := arg(args, 0).(^Collection); collection {
-        key := key_string(vm, arg(args, 1))
-        if vm.throwing do return nil
-        desc, valid := arg(args, 2).(^Object)
-        if !valid { throw_type_error(vm, "Property descriptor must be an object"); return nil }
-        apply_descriptor(vm, native_own_properties(vm, c, true), own_str_raw(vm, key), desc)
-        return c
-    }
-    o, ok := arg(args, 0).(^Object)
-    if !ok {
-        throw_type_error(vm, "Object.defineProperty called on non-object")
-        return nil
-    }
-    key := key_string(vm, arg(args, 1))
-    if desc, dok := arg(args, 2).(^Object); dok { apply_descriptor(vm, o, key, desc) } else { throw_type_error(vm, "Property descriptor must be an object") }
-    return o
+    target := arg(args, 0)
+    define_own_property(vm, target, arg(args, 1), arg(args, 2), true)
+    if vm.throwing do return nil
+    return target
 }
 
-// Object.defineProperty numa RegExp. Antes lançava "called on non-object" — uma
-// regex É objeto. Acessor (get/set) vira acessor PRÓPRIO da ^Regex (sombreia
-// `global`, `flags`, … no get_member). lastIndex remains a native own property.
-@(private = "file")
-regex_define_property :: proc(vm: ^Interp, re: ^Regex, key: string, desc: ^Object) {
-    if key != "lastIndex" {
-        apply_descriptor(vm, native_own_properties(vm, re, true), own_str_raw(vm, key), desc)
-        return
+define_own_property :: proc(vm: ^Interp, target, property, descriptor: Value, throw_on_reject: bool) -> bool {
+    if is_primitive(target) { throw_type_error(vm, "defineProperty requires an object"); return false }
+    key := key_string(vm, property)
+    if vm.throwing do return false
+    desc, valid := descriptor.(^Object)
+    if !valid { throw_type_error(vm, "Property descriptor must be an object"); return false }
+    if p := proxy_state(target); p != nil {
+        if trap, found := proxy_trap(vm, p, "defineProperty"); found {
+            normalized := normalize_descriptor(vm, desc)
+            if vm.throwing do return false
+            trap_desc := new_object(vm)
+            for field in ([?]string{"value", "writable", "get", "set", "enumerable", "configurable"}) {
+                if value, exists := normalized.props[field]; exists do oput(trap_desc, field, value)
+            }
+            result := call_function(vm, trap, p.px_handler, []Value{p.px_target, proxy_key_value(vm, key), trap_desc})
+            if vm.throwing do return false
+            if !truthy(result) {
+                if throw_on_reject do throw_type_error(vm, "defineProperty trap returned false")
+                return false
+            }
+            return proxy_validate_descriptor(vm, p.px_target, key, normalized)
+        }
+        if vm.throwing do return false
+        return define_own_property(vm, p.px_target, proxy_key_value(vm, key), desc, throw_on_reject)
     }
-    normalized := normalize_descriptor(vm, desc)
-    if vm.throwing do return
-    view := new_object(vm)
-    oput(view, "lastIndex", f64(re.last_index))
-    attrs: Prop_Attrs
-    if !re.last_index_ro do attrs += {.Writable}
-    set_prop_attrs(view, "lastIndex", attrs)
-    if !apply_normalized_descriptor(vm, view, "lastIndex", normalized) do return
-    re.last_index = as_int(view.props["lastIndex"])
-    re.last_index_ro = .Writable not_in prop_attrs(view, "lastIndex")
+    #partial switch o in target {
+    case ^Array: return array_define_property(vm, o, key, desc, throw_on_reject)
+    case ^Function: return function_define_property(vm, o, key, desc, throw_on_reject)
+    case ^Object, ^Regex, ^Collection:
+        normalized := normalize_descriptor(vm, desc)
+        if vm.throwing do return false
+        if re, regex := o.(^Regex); regex && key == "lastIndex" {
+            view := new_object(vm)
+            oput(view, key, f64(re.last_index))
+            if re.last_index_ro do set_prop_attrs(view, key, {})
+            else do set_prop_attrs(view, key, {.Writable})
+            if !apply_normalized_descriptor(vm, view, key, normalized, throw_on_reject) do return false
+            re.last_index = as_int(view.props[key])
+            re.last_index_ro = .Writable not_in prop_attrs(view, key)
+            return true
+        }
+        own, ordinary := o.(^Object)
+        if !ordinary do own = native_own_properties(vm, o, true)
+        return apply_normalized_descriptor(vm, own, own_str_raw(vm, key), normalized, throw_on_reject)
+    }
+    return false
 }
 
 // Object.defineProperties(obj, {k1: desc1, ...}) — devolve obj.
 @(private = "file")
 obj_define_properties :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    _, isarr := arg(args, 0).(^Array)
-    _, isregex := arg(args, 0).(^Regex)
-    _, iscoll := arg(args, 0).(^Collection)
-    if isarr || isregex || iscoll {
-        keys: [dynamic]string
-        descs: [dynamic]^Object
-        defer delete(keys)
-        defer delete(descs)
-        own_keys_any(vm, arg(args, 1), &keys)
-        for key in keys {
-            value := get_index(vm, arg(args, 1), key)
-            if vm.throwing do return nil
-            desc, valid := value.(^Object)
-            if !valid { throw_type_error(vm, "Property descriptor must be an object"); return nil }
-            append(&descs, normalize_descriptor(vm, desc))
-            if vm.throwing do return nil
-        }
-        for desc, i in descs {
-            obj_define_property(vm, nil, []Value{arg(args, 0), keys[i], desc})
-            if vm.throwing do return nil
-        }
-        return args[0]
+    target, descriptors := arg(args, 0), arg(args, 1)
+    if is_primitive(target) || is_nullish(descriptors) {
+        throw_type_error(vm, "Invalid Object.defineProperties arguments")
+        return nil
     }
-    o, ok := arg(args, 0).(^Object)
-    if !ok do return arg(args, 0)
-    apply_descriptors(vm, o, arg(args, 1)) // MESMA regra do Object.create (ver lá)
-    return o
+    keys: [dynamic]string
+    defer delete(keys)
+    reflect_target_keys(vm, descriptors, &keys)
+    if vm.throwing do return nil
+    Property_Definition :: struct { key: Value, descriptor: ^Object }
+    definitions: [dynamic]Property_Definition
+    defer delete(definitions)
+    for raw_key in keys {
+        key := proxy_key_value(vm, raw_key)
+        own := obj_get_own_property_descriptor(vm, nil, []Value{descriptors, key})
+        if vm.throwing do return nil
+        if own == nil || !truthy(get_member(vm, own, "enumerable")) do continue
+        value := get_index(vm, descriptors, key)
+        if vm.throwing do return nil
+        desc, valid := value.(^Object)
+        if !valid { throw_type_error(vm, "Property descriptor must be an object"); return nil }
+        normalized := normalize_descriptor(vm, desc)
+        if vm.throwing do return nil
+        append(&definitions, Property_Definition{key, normalized})
+    }
+    for definition in definitions {
+        if !define_own_property(vm, target, definition.key, definition.descriptor, true) do return nil
+    }
+    return target
 }
 
 // Object.getOwnPropertyDescriptor(obj, key) — descritor ou undefined (nil).
@@ -931,26 +1002,14 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
         return obj_get_own_property_descriptor(vm, nil, []Value{own, key})
     }
     if p := proxy_state(arg(args, 0)); p != nil {
-        if trap, ok := proxy_trap(vm, p, "getOwnPropertyDescriptor"); ok {
-            return call_function(vm, trap, p.px_handler, []Value{p.px_target, arg(args, 1)})
-        }
+        key := key_string(vm, arg(args, 1))
         if vm.throwing do return nil
-        return obj_get_own_property_descriptor(vm, nil, []Value{p.px_target, arg(args, 1)})
+        return proxy_own_descriptor(vm, p, key)
     }
     if fn, fok := arg(args, 0).(^Function); fok {
-        key := key_string(vm, arg(args, 1))
-        _, data := fn.props[key]; _, getter := fn.getters[key]; _, setter := fn.setters[key]
-        if data || getter || setter {
-            view := Object{props = fn.props, getters = fn.getters, setters = fn.setters, attrs = fn.attrs}
-            return obj_get_own_property_descriptor(vm, nil, []Value{&view, arg(args, 1)})
-        }
-        if key == "name" || key == "length" {
-            d := new_object(vm)
-            d.props["value"] = get_member(vm, fn, key)
-            d.props["writable"] = false; d.props["enumerable"] = false; d.props["configurable"] = true
-            return d
-        }
-        return nil
+        function_prepare_own(vm, fn)
+        view := function_view(fn)
+        return obj_get_own_property_descriptor(vm, nil, []Value{&view, arg(args, 1)})
     }
     if arr, aok := arg(args, 0).(^Array); aok {
         // array: índices PRESENTES (buraco = sem descritor), `length` e props não-índice.
@@ -961,10 +1020,10 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
             g, hg := m.getters[key]; s, hs := m.setters[key]
             if hg || hs {
                 d := new_object(vm)
-                d.props["get"] = g if g != nil else nil
-                d.props["set"] = s if s != nil else nil
-                d.props["enumerable"] = .Enumerable in attrs
-                d.props["configurable"] = .Configurable in attrs
+                oput(d, "get", g if g != nil else nil)
+                oput(d, "set", s if s != nil else nil)
+                oput(d, "enumerable", .Enumerable in attrs)
+                oput(d, "configurable", .Configurable in attrs)
                 return d
             }
         }
@@ -998,30 +1057,30 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
     if o.getters != nil {
         if g, gok := o.getters[key]; gok {
             d := new_object(vm)
-            d.props["get"] = g if g != nil else nil
-            d.props["set"] = nil
-            if o.setters != nil { if s, sok := o.setters[key]; sok do d.props["set"] = s if s != nil else nil }
-            d.props["enumerable"] = enumerable
-            d.props["configurable"] = configurable
+            oput(d, "get", g if g != nil else nil)
+            oput(d, "set", nil)
+            if o.setters != nil { if s, sok := o.setters[key]; sok do oput(d, "set", s if s != nil else nil) }
+            oput(d, "enumerable", enumerable)
+            oput(d, "configurable", configurable)
             return d
         }
     }
     if o.setters != nil {
         if s, sok := o.setters[key]; sok {
             d := new_object(vm)
-            d.props["get"] = nil
-            d.props["set"] = s if s != nil else nil
-            d.props["enumerable"] = enumerable
-            d.props["configurable"] = configurable
+            oput(d, "get", nil)
+            oput(d, "set", s if s != nil else nil)
+            oput(d, "enumerable", enumerable)
+            oput(d, "configurable", configurable)
             return d
         }
     }
     if v, vok := o.props[key]; vok {
         d := new_object(vm)
-        d.props["value"] = v
-        d.props["writable"] = .Writable in a
-        d.props["enumerable"] = enumerable
-        d.props["configurable"] = configurable
+        oput(d, "value", v)
+        oput(d, "writable", .Writable in a)
+        oput(d, "enumerable", enumerable)
+        oput(d, "configurable", configurable)
         return d
     }
     return nil
@@ -1031,58 +1090,20 @@ obj_get_own_property_descriptor :: proc(vm: ^Interp, this: Value, args: []Value)
 // não-enumeráveis), excluindo símbolos.
 @(private = "file")
 obj_get_own_property_names :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    target := arg(args, 0)
+    if is_nullish(target) { throw_type_error(vm, "Cannot convert undefined or null to object"); return nil }
+    keys: [dynamic]string
+    defer delete(keys)
+    reflect_target_keys(vm, target, &keys)
+    if vm.throwing do return nil
     out := new_array(vm)
-    #partial switch native in arg(args, 0) {
-    case ^Regex, ^Collection:
-        keys: [dynamic]string
-        defer delete(keys)
-        own_keys_any(vm, native, &keys, true)
-        for k in keys do append(&out.items, own_str(vm, k))
-        return out
-    }
-    if p := proxy_state(arg(args, 0)); p != nil {
-        keys: [dynamic]string
-        defer delete(keys)
-        proxy_keys(vm, p, &keys, true)
-        for k in keys {
-            if !is_non_enumerable_key(k) do append(&out.items, own_str(vm, k))
-        }
-        return out
-    }
-    seen: map[string]bool
-    defer delete(seen)
-    #partial switch o in arg(args, 0) {
-    case ^Object:
-        // ordem da spec (índices, inserção) — antes iterava o map do Odin, sem
-        // ordem nenhuma, e esquecia chave que só tem setter
-        keys: [dynamic]string
-        defer delete(keys)
-        own_string_keys(vm, o, &keys, true)
-        for k in keys do if !seen[k] { seen[k] = true; append(&out.items, k) }
-    case ^Function:
-        // aqui as NÃO-enumeráveis contam (é o propósito desta função), então
-        // `prototype`/`name`/`length` entram — ao contrário de Object.keys.
-        for k in o.props do if !is_non_enumerable_key(k) && !seen[k] { seen[k] = true; append(&out.items, k) }
-        for k in ([?]string{"length", "name"}) do if !seen[k] { seen[k] = true; append(&out.items, k) }
-    case ^Array:
-        keys: [dynamic]string
-        defer delete(keys)
-        own_keys_any(vm, o, &keys, true)
-        for k in keys do if !seen[k] { seen[k] = true; append(&out.items, k) }
-        if !seen["length"] { seen["length"] = true; append(&out.items, "length") }
-    case string:
-        keys: [dynamic]string
-        defer delete(keys)
-        own_keys_any(vm, o, &keys)
-        for k in keys do append(&out.items, k)
-        append(&out.items, "length")
-    }
+    for k in keys do if !is_non_enumerable_key(k) do append(&out.items, own_str(vm, k))
     return out
 }
 
 // obj.hasOwnProperty(name): true se `name` está nos props PRÓPRIOS (não na cadeia).
-@(private = "file")
 obj_has_own_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    if proxy_state(this) != nil do return obj_get_own_property_descriptor(vm, nil, []Value{this, arg(args, 0)}) != nil
     #partial switch _ in this {
     case ^Regex, ^Collection:
         return obj_get_own_property_descriptor(vm, nil, []Value{this, arg(args, 0)}) != nil
@@ -1097,28 +1118,14 @@ obj_has_own_property :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         if o.getters != nil { if _, has := o.getters[name]; has do return true }
         if o.setters != nil { if _, has := o.setters[name]; has do return true }
     case ^Function:
-        // funções têm props próprias (estáticas) + os intrínsecos name/length,
-        // e prototype quando não-arrow/não-nativa/não-bound (ver get_member).
-        if o.props != nil { if _, has := o.props[name]; has do return true }
-        if o.getters != nil { if _, has := o.getters[name]; has do return true }
-        if name == "length" || name == "name" do return true
-        // bound fns (o.bind_target != nil) NÃO têm prototype própria — o core-js usa
-        // exatamente `!boundFn.hasOwnProperty('prototype')` p/ detectar bind nativo.
-        if name == "prototype" && !o.is_arrow && !o.non_constructor && o.native == nil && o.bind_target == nil do return true
+        function_prepare_own(vm, o)
+        view := function_view(o)
+        return okey_alive(&view, name)
     case ^Array:
-        // índices dentro do range, `length`, e props não-índice (a mais importante:
-        // `raw` do array de um template TAGUEADO). O lit-html valida o template com
-        // `strings.hasOwnProperty('raw')` e lançava "invalid template strings array".
         if name == "length" do return true
-        if o.props != nil { if _, has := o.props[name]; has do return true }
-        if len(name) > 0 && len(name) <= 10 {
-            all_dig := true
-            for c in transmute([]u8)name { if c < '0' || c > '9' { all_dig = false; break } }
-            if all_dig {
-                n := int(as_number(name))
-                return arr_has_index(o, n)
-            }
-        }
+        if name == "callee" && o.args != nil && o.args.callee != nil && !o.args.callee.strict do return true
+        if _, has := o.props[name]; has do return true
+        if n, indexed := array_index_name(name); indexed do return arr_has_index(o, n)
     }
     return false
 }

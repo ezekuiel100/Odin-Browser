@@ -1707,11 +1707,10 @@ regex_result_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> V
             append(&arr.items, own_str(vm, str_rslice(s, gs, ge)))
         }
     }
-    arr.props = make(map[string]Value)
-    arr.props["index"] = f64(m.groups[0]) // em unidades UTF-16
-    arr.props["input"] = own_str(vm, s)
-    if len(re.gnames) > 0 do arr.props["groups"] = regex_groups_object(vm, re, s, m) // m.groups.nome
-    if re.has_indices do arr.props["indices"] = regex_indices_array(vm, re, s, m)
+    array_put(arr, "index", f64(m.groups[0])) // em unidades UTF-16
+    array_put(arr, "input", own_str(vm, s))
+    if len(re.gnames) > 0 do array_put(arr, "groups", regex_groups_object(vm, re, s, m)) // m.groups.nome
+    if re.has_indices do array_put(arr, "indices", regex_indices_array(vm, re, s, m))
     return arr
 }
 
@@ -1730,7 +1729,6 @@ regex_indices_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> 
     }
     ind := new_array(vm)
     for g in 0 ..= re.ngroups do append(&ind.items, pair(vm, s, m, g))
-    ind.props = make(map[string]Value)
     if len(re.gnames) > 0 {
         Pair :: struct { name: string, gi: int }
         pairs := make([dynamic]Pair, 0, len(re.gnames), context.temp_allocator)
@@ -1741,9 +1739,9 @@ regex_indices_array :: proc(vm: ^Interp, re: ^Regex, s: string, m: Re_Match) -> 
         gobj := new_object(vm)
         gobj.proto = nil
         for p in pairs do oput(gobj, own_str_raw(vm, p.name), pair(vm, s, m, regex_named_group(re, p.name, m)))
-        ind.props["groups"] = gobj
+        array_put(ind, "groups", gobj)
     } else {
-        ind.props["groups"] = nil
+        array_put(ind, "groups", nil)
     }
     return ind
 }

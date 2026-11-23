@@ -2,6 +2,12 @@ package js
 
 import "core:math"
 
+array_put :: proc(a: ^Array, key: string, value: Value) {
+    if a.props == nil do a.props = make(map[string]Value)
+    if _, exists := a.props[key]; !exists do append(&a.korder, key)
+    a.props[key] = value
+}
+
 // Own indexed Get, preserving Receiver for accessors. A present undefined value
 // must stop lookup; only a hole continues through the prototype chain.
 array_get_own_index :: proc(vm: ^Interp, a: ^Array, index: int, key: string, receiver: Value) -> (Value, bool) {
@@ -79,8 +85,7 @@ array_define_property :: proc(vm: ^Interp, a: ^Array, key: string, source: ^Obje
         a.items[idx] = view.props[key]
         arr_fill_slot(a, idx)
     } else {
-        if a.props == nil do a.props = make(map[string]Value)
-        a.props[key] = view.props[key]
+        array_put(a, key, view.props[key])
     }
     if a.descriptors == nil do a.descriptors = new_object(vm)
     m := a.descriptors
@@ -105,7 +110,10 @@ array_delete_property :: proc(a: ^Array, key: string) -> bool {
         a.items[idx] = nil
         arr_mark_hole(a, idx)
         if a.args != nil && idx < 64 do a.args.unmapped |= u64(1) << uint(idx)
-    } else { delete_key(&a.props, key) }
+    } else {
+        forget_key(&a.korder, key)
+        delete_key(&a.props, key)
+    }
     if m := a.descriptors; m != nil {
         delete_key(&m.attrs, key); delete_key(&m.getters, key); delete_key(&m.setters, key)
     }
