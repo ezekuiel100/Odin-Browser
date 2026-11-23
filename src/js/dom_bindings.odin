@@ -179,6 +179,7 @@ install_dom :: proc(vm: ^Interp, root: ^dom.Node) {
     doc.props["createTextNode"]   = mk_dom(vm, native_create_text_node)
     doc.props["createComment"]    = mk_dom(vm, native_create_comment)
     doc.props["createDocumentFragment"] = mk_dom(vm, native_create_document_fragment)
+    doc.props["createRange"] = mk_dom(vm, native_create_range)
     doc.props["importNode"] = mk_dom(vm, native_import_node)
     doc.props["adoptNode"]  = mk_dom(vm, native_adopt_node) // MOVE, nao clona
     // nodeType=9 (DOCUMENT_NODE) / nodeName="#document". FALTAVAM no objeto document
@@ -2371,6 +2372,7 @@ native_create_html_document :: proc(vm: ^Interp, this: Value, args: []Value) -> 
     d.props["createTextNode"]  = mk_dom(vm, native_create_text_node)
     d.props["createComment"]   = mk_dom(vm, native_create_comment)
     d.props["createDocumentFragment"] = mk_dom(vm, native_create_document_fragment)
+    d.props["createRange"] = mk_dom(vm, native_create_range)
     d.props["importNode"] = mk_dom(vm, native_import_node)
     d.props["adoptNode"]  = mk_dom(vm, native_adopt_node)
     d.props["getElementsByTagName"] = mk_dom(vm, native_get_elements_by_tag_name)
@@ -4418,4 +4420,70 @@ dom_elem_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> bool 
         return true
     }
     return false
+}
+
+// Initial Range support: HTML fragment construction (used by Reddit's
+// faceplate components). Reuse the contextual HTML parser, not a dummy object
+// or an innerHTML assignment to the live document. Selection editing, live
+// boundary adjustment and Range geometry are not implemented here yet.
+native_create_range :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    r := new_object(vm)
+    // Keep the document wrapper alive and preserve the originating document,
+    // including documents created through implementation.createHTMLDocument.
+    r.props["startContainer"] = this
+    r.props["endContainer"] = this
+    r.props["commonAncestorContainer"] = this
+    r.props["startOffset"] = f64(0)
+    r.props["endOffset"] = f64(0)
+    r.props["collapsed"] = true
+    r.props["createContextualFragment"] = mk_dom(vm, native_range_contextual_fragment)
+    r.props["selectNodeContents"] = mk_dom(vm, native_range_select_contents)
+    return r
+}
+
+native_range_select_contents :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    r, ok := this.(^Object)
+    if !ok do return nil
+    n := node_of(arg(args, 0))
+    if n == nil {
+        throw_type_error(vm, "selectNodeContents requires a Node")
+        return nil
+    }
+
+    count := len(n.children)
+    if n.kind == .Text || n.kind == .Comment {
+        // DOM offsets count UTF-16 code units, not bytes or Unicode scalars.
+        count = 0
+        for ch in n.text { count += ch > 0xffff ? 2 : 1 }
+    }
+    r.props["startContainer"] = args[0]
+    r.props["endContainer"] = args[0]
+    r.props["commonAncestorContainer"] = args[0]
+    r.props["startOffset"] = f64(0)
+    r.props["endOffset"] = f64(count)
+    r.props["collapsed"] = count == 0
+    return nil
+}
+
+native_range_contextual_fragment :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    r, ok := this.(^Object)
+    if !ok do return nil
+    if len(args) == 0 {
+        throw_type_error(vm, "createContextualFragment requires an HTML string")
+        return nil
+    }
+    ctx := node_of(r.props["startContainer"])
+    if ctx != nil && ctx.kind != .Element do ctx = ctx.parent
+    // Per HTML fragment parsing, the initial Document boundary and an HTML
+    // root element use a body context. Text boundaries use their parent.
+    if ctx != nil && ctx.tag == "html" && ctx.ns == "" do ctx = nil
+    source := to_js_string(vm, args[0])
+    if vm.throwing do return nil
+    parsed := parse_html_fragment(ctx, source)
+    frag := native_create_document_fragment(vm, nil, nil)
+    node := node_of(frag)
+    for child in parsed.children do dom.append_child(node, child)
+    dom.kids_clear(parsed)
+    dom.free_tree(parsed)
+    return frag
 }
