@@ -1530,6 +1530,20 @@ custom_elements_define :: proc(vm: ^Interp, this: Value, args: []Value) -> Value
     if vm.custom_elements == nil do vm.custom_elements = make(map[string]^Function)
     lower := strings.to_lower(name, context.temp_allocator)
     if _, exists := vm.custom_elements[lower]; exists do return nil // já definido
+    // Reading observedAttributes also runs ReactiveElement/Lit's finalization:
+    // it installs the attribute-to-property converters before any upgrade.
+    observed := get_member(vm, ctor, "observedAttributes")
+    if vm.throwing do return nil
+    snapshot := new_array(vm)
+    if a, ok := observed.(^Array); ok {
+        for v in a.items {
+            append(&snapshot.items, own_str(vm, to_js_string(vm, v)))
+            if vm.throwing do return nil
+        }
+    }
+    ctor.props[CE_OBSERVED_KEY] = snapshot
+    if ctor.attrs == nil do ctor.attrs = make(map[string]Prop_Attrs)
+    ctor.attrs[CE_OBSERVED_KEY] = ATTRS_DEFAULT - {.Enumerable}
     vm.custom_elements[strings.clone(lower)] = ctor
     // upgrade dos elementos que JÁ estão no documento
     if vm.document_node != nil do upgrade_tree(vm, cast(^dom.Node) vm.document_node, lower, ctor)
@@ -1598,6 +1612,16 @@ upgrade_element :: proc(vm: ^Interp, n: ^dom.Node, ctor: ^Function, run_connecte
         vm.pending_new_target = ctor // new.target = a classe (setup_call_scope consome)
         call_function(vm, ctor, w, nil) // roda o constructor com this = o elemento
         vm_clear_uncaught(vm)           // um componente que lança não derruba os outros
+        // Existing attributes must be delivered after construction and BEFORE
+        // connectedCallback. Snapshot names/values: callbacks may mutate attrs.
+        names := make([dynamic]string, context.temp_allocator)
+        dom.attr_names(n, &names)
+        values := make([dynamic]Value, context.temp_allocator)
+        for name, i in names {
+            names[i] = strings.clone(name, context.temp_allocator)
+            append(&values, own_str(vm, n.attrs[name]))
+        }
+        for name, i in names do ce_attribute_changed(vm, n, name, JS_Null{}, values[i])
     }
 
     // connectedCallback tem marca PRÓPRIA, separada da construção: um elemento que
@@ -1636,6 +1660,28 @@ class_proto_defines :: proc(vm: ^Interp, o: ^Object, name: string) -> bool {
 UPGRADED_KEY :: "__ce_upgraded"
 @(private = "file")
 CONNECTED_KEY :: "__ce_connected"
+
+@(private = "file")
+CE_OBSERVED_KEY :: "__ce_observed_attributes"
+
+@(private = "file")
+ce_attribute_changed :: proc(vm: ^Interp, node: ^dom.Node, name: string, old, value: Value) {
+    if !node.ce_defined do return
+    ctor := vm.custom_elements[node.tag]
+    if ctor == nil do return
+    observed, ok := ctor.props[CE_OBSERVED_KEY].(^Array)
+    if !ok do return
+    for item in observed.items {
+        if s, sok := item.(string); sok && s == name {
+            w := wrap_element(vm, node)
+            if cb, cok := get_member(vm, w, "attributeChangedCallback").(^Function); cok {
+                call_function(vm, cb, w, []Value{own_str(vm, name), old, value, JS_Null{}})
+                vm_clear_uncaught(vm) // report callback errors without aborting the DOM operation
+            }
+            return
+        }
+    }
+}
 
 // Nome de tag como a spec expõe em `tagName`/`nodeName` (que devem ser IGUAIS):
 // MAIÚSCULO p/ elemento HTML (namespace vazio), preservando a caixa p/ conteúdo
@@ -1954,6 +2000,19 @@ install_dom_interfaces :: proc(vm: ^Interp) {
         if media_proto == nil do media_proto = vm.dom_element_proto
         env_define(vm.global, "HTMLVideoElement", mk_dom_interface(vm, "HTMLVideoElement", media_proto))
         env_define(vm.global, "HTMLAudioElement", mk_dom_interface(vm, "HTMLAudioElement", media_proto))
+        // Players reference these constants while their module initializes,
+        // even when no media has been loaded or decoded.
+        error_ctor := mk_dom(vm, native_media_error_constructor)
+        error_ctor.name = "MediaError"
+        error_proto := attach_prototype(vm, error_ctor, vm.object_proto)
+        error_ctor.attrs = make(map[string]Prop_Attrs)
+        for name, i in ([]string{"MEDIA_ERR_ABORTED", "MEDIA_ERR_NETWORK", "MEDIA_ERR_DECODE", "MEDIA_ERR_SRC_NOT_SUPPORTED"}) {
+            error_ctor.props[name] = f64(i + 1)
+            error_ctor.attrs[name] = {.Enumerable}
+            error_proto.props[name] = f64(i + 1)
+            set_prop_attrs(error_proto, name, {.Enumerable})
+        }
+        env_define(vm.global, "MediaError", error_ctor)
     }
 
     // Mapa TAG → prototype específico: `<script>` deve dar `instanceof
@@ -2151,6 +2210,10 @@ set_attr_val :: proc(vm: ^Interp, node: ^dom.Node, key: string, val: Value) {
 // apontar quem esquecer). Ver mutation_observer.odin.
 @(private = "file")
 set_attr_str :: proc(vm: ^Interp, node: ^dom.Node, key, val: string) {
+    old_value: Value = JS_Null{}
+    if node.ce_defined {
+        if old, had := node.attrs[key]; had do old_value = own_str(vm, old)
+    }
     if mo_active(vm) {
         old, had := node.attrs[key]
         mo_record_attr(vm, node, key, old, had) // valor ANTIGO: tem de ser lido antes
@@ -2158,6 +2221,7 @@ set_attr_str :: proc(vm: ^Interp, node: ^dom.Node, key, val: string) {
     // dom.set_attr mantém a ORDEM de documento (a spec exige em
     // getAttributeNames()/.attributes; o lit-html depende dela).
     dom.set_attr(node, strings.clone(key), strings.clone(val))
+    if node.ce_defined do ce_attribute_changed(vm, node, key, old_value, own_str(vm, val))
 }
 
 @(private = "file")
@@ -2942,11 +3006,15 @@ native_insert_adjacent_html :: proc(vm: ^Interp, this: Value, args: []Value) -> 
 // Par de set_attr_str: mesmo funil, mesma razão para receber o `vm`.
 @(private = "file")
 remove_attr_owned :: proc(vm: ^Interp, node: ^dom.Node, name: string) {
+    old_value: Value = JS_Null{}
+    old, had := node.attrs[name]
+    if had && node.ce_defined do old_value = own_str(vm, old)
     if mo_active(vm) {
         old, had := node.attrs[name]
         if had do mo_record_attr(vm, node, name, old, true) // remoção também é "attributes"
     }
     dom.del_attr(node, name) // tira do map E da ordem
+    if had do ce_attribute_changed(vm, node, name, old_value, JS_Null{})
 }
 
 @(private = "file")

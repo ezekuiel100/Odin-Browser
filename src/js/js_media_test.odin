@@ -29,6 +29,23 @@ media_dom :: proc() -> ^dom.Node {
 }
 
 @(test)
+media_error_constants_for_player_init :: proc(t: ^testing.T) {
+    root := media_dom(); defer dom.free_tree(root)
+    r := run_with_dom(`
+        var codes = [MediaError.MEDIA_ERR_ABORTED, MediaError.MEDIA_ERR_NETWORK,
+            MediaError.MEDIA_ERR_DECODE, MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED];
+        var illegal = false;
+        try { new MediaError(); } catch(e) { illegal = e.name === 'TypeError'; }
+        var desc = Object.getOwnPropertyDescriptor(MediaError, 'MEDIA_ERR_NETWORK');
+        codes.join(',') + '|' + MediaError.prototype.MEDIA_ERR_DECODE + '|' + illegal + '|' +
+            (document.getElementById('v').error === null) + '|' +
+            desc.writable + '|' + desc.configurable;
+    `, root)
+    s, _ := r.(string)
+    testing.expect_value(t, s, "1,2,3,4|3|true|true|false|false")
+}
+
+@(test)
 media_tem_play_pause_load :: proc(t: ^testing.T) {
     root := media_dom(); defer dom.free_tree(root)
     r := run_with_dom(`

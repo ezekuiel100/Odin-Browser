@@ -36,6 +36,11 @@ package js
 import "core:math"
 import dom "../dom"
 
+native_media_error_constructor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    throw_type_error(vm, "Illegal constructor: MediaError")
+    return nil
+}
+
 Media_State :: struct {
     paused:        bool,
     ended:         bool,
@@ -125,6 +130,7 @@ media_get :: proc(vm: ^Interp, node: ^dom.Node, name: string) -> (Value, bool) {
     m := media_state_of(vm, node)
     if m == nil do return nil, false
     switch name {
+    case "error":        return JS_Null{}, true // no decoder: no MediaError has been raised
     case "paused":       return m.paused, true
     case "ended":        return m.ended, true
     case "currentTime":  return m.current_time, true
