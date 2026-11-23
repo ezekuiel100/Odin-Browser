@@ -16,6 +16,7 @@ import "core:encoding/base64"
 import "core:time"
 
 @(private) g_inited: bool
+@(private) g_init_lock: sync.Mutex
 
 // Pool COMPARTILHADO de conexões/DNS/sessões-TLS entre os worker threads de fetch.
 // Sem ele, cada fetch abre conexão nova (handshake TLS por imagem) e alguns CDNs
@@ -47,8 +48,8 @@ Response :: struct {
     ok:     bool,
     err:    string, // mensagem de erro (válida só quando ok == false)
     // Content-Type CRU do servidor (ex. "text/html; charset=utf-8"), fatia de
-    // memória da libcurl — válida só até o próximo uso do handle, então quem
-    // precisa guardar deve clonar. "" quando o servidor não mandou.
+    // arena temporária do chamador — válida até free_all(temp). Quem precisar
+    // guardar além disso deve clonar. "" quando o servidor não mandou.
     content_type: string,
     // Retry-After (segundos) de uma resposta 429/503. 0 = header ausente. O loader
     // de imagens honra isto no backoff (upload.wikimedia manda `Retry-After: 1`).
@@ -56,6 +57,8 @@ Response :: struct {
 }
 
 ensure_init :: proc() {
+    sync.mutex_lock(&g_init_lock)
+    defer sync.mutex_unlock(&g_init_lock)
     if !g_inited {
         curl.global_init(curl.GLOBAL_DEFAULT)
         // Cria o pool compartilhado UMA vez (chamado pela main thread no 1º fetch,
@@ -203,7 +206,7 @@ fetch_opts :: proc(url: string, accept := "text/html,application/xhtml+xml,appli
 
     h := curl.easy_init()
     if h == nil {
-        return {err = "curl_easy_init falhou"}
+        return {err = strings.clone("curl_easy_init falhou")}
     }
     defer curl.easy_cleanup(h)
 
@@ -299,7 +302,7 @@ fetch_opts :: proc(url: string, accept := "text/html,application/xhtml+xml,appli
         body         = out,
         status       = int(status),
         ok           = true,
-        content_type = ct_c != nil ? string(ct_c) : "",
+        content_type = ct_c != nil ? strings.clone(string(ct_c), context.temp_allocator) : "",
         retry_after  = retry_after_secs,
     }
 }

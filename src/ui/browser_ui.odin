@@ -50,6 +50,8 @@ Tab :: struct {
     title:   string,
     url:     string,
     loading: bool,
+    preview_visible: bool,
+    navigation_id: u64,
     content: string,         // corpo HTML cru recebido da rede
     status:  int,            // código HTTP
     dom:     ^dompkg.Node,   // árvore DOM parseada
@@ -104,6 +106,9 @@ Fetch_Job :: struct {
     font_families: int,
     dom_fp: u64,
     tab_id:  u64,           // aba que pediu (pode ter sido fechada)
+    navigation_id: u64,
+    preview: ^Fetch_Job,    // independent DOM; allocated before starting worker
+    delivered: bool,       // UI-thread only (for the preview)
     resp:    net.Response,  // preenchido pela thread
     dom:     ^dompkg.Node,  // DOM parseado pela thread
     styles:  map[^dompkg.Node]Computed, // estilos computados pela thread
@@ -1266,7 +1271,7 @@ draw_content :: proc(s: ^State) {
     // telas internas (nova aba / carregando) usam o fundo escuro.
     bg : u32 = PAGE_BG
     rendering := len(s.tabs) > 0 && s.tabs[s.active].url != "" &&
-                 !s.tabs[s.active].loading && s.tabs[s.active].dom != nil
+                 (!s.tabs[s.active].loading || s.tabs[s.active].preview_visible) && s.tabs[s.active].dom != nil
     if rendering do bg = s.tabs[s.active].page_bg
 
     push_col(.ChildBg, bg)
@@ -1296,7 +1301,7 @@ draw_content :: proc(s: ^State) {
     switch {
     case tab.url == "":
         draw_new_tab_page(s, avail)
-    case tab.loading:
+    case tab.loading && !tab.preview_visible:
         im.SetCursorPos({16, 16})
         push_col(.Text, SUBTEXT_C)
         im.TextUnformatted(fmt.ctprintf("Carregando %s ...", tab.url))
@@ -2080,6 +2085,8 @@ start_navigation :: proc(s: ^State, url: string, record := true, auto_https := f
     tab.url     = strings.clone(url) // posse própria (estável)
     tab.title   = strings.clone(url)
     tab.loading = true
+    tab.preview_visible = false
+    tab.navigation_id += 1
     loading_trace_event(fmt.tprintf("navigation tab=%d", tab.id))
     if !background {
         s.status = fmt.aprintf("Conectando a %s ...", url)
@@ -2091,6 +2098,7 @@ start_navigation :: proc(s: ^State, url: string, record := true, auto_https := f
     job.url        = strings.clone(url)
     job.auto_https = auto_https
     job.tab_id     = tab.id
+    job.navigation_id = tab.navigation_id
     job.viewport_w = im.GetIO().DisplaySize.x // p/ @media e vw (largura no momento da carga)
     if job.viewport_w < 1 do job.viewport_w = 1280
     // CSS must see the PAGE viewport, not the height of the entire window.
@@ -2098,6 +2106,11 @@ start_navigation :: proc(s: ^State, url: string, record := true, auto_https := f
     job.viewport_h = im.GetIO().DisplaySize.y - TAB_H - 48 - 24
     if g_devtools_open do job.viewport_h -= g_devtools_h
     if job.viewport_h < 1 do job.viewport_h = 1
+    job.preview = new(Fetch_Job)
+    job.preview.tab_id = job.tab_id
+    job.preview.navigation_id = job.navigation_id
+    job.preview.viewport_w = job.viewport_w
+    job.preview.viewport_h = job.viewport_h
     append(&g_jobs, job)
     thread.create_and_start_with_poly_data(job, fetch_worker, self_cleanup = true)
 }
@@ -2152,6 +2165,9 @@ fetch_worker :: proc(job: ^Fetch_Job) {
         // parse+normalize_document: o scaffold html/head/body agora sai do próprio
         // algoritmo. Fecha o buraco medido no M141 (legado 429/1509 vs 1680).
         job.dom = htmlp.parse_render(job.resp.body)
+        resources := page_resources_start(job.dom, job.url)
+        defer page_resources_free(resources)
+        page_publish_preview(job, resources)
         loading_trace_event(fmt.tprintf("job=%d scripts-start", job.tab_id))
         // O tamanho do viewport ANTES de rodar script alheio: `window.innerWidth`
         // é lido no carregamento (mobile×desktop) e este worker é OUTRA thread, com
@@ -2159,22 +2175,15 @@ fetch_worker :: proc(job: ^Fetch_Job) {
         // estilos deste job ainda não pertence a nenhuma aba, e publicá-lo daqui
         // seria corrida com a main (ver o aviso em computed_om.odin).
         js_viewport_set(job.viewport_w, job.viewport_h)
-        job.vm = load_page_scripts(job.dom, job.url) // roda <script> inline E externos (src=)
+        job.vm = load_page_scripts(job.dom, job.url, resources) // execution order stays unchanged
         loading_trace_event(fmt.tprintf("job=%d css-start", job.tab_id))
-        css_text := collect_page_css(job.dom, job.url) // inclui <link> externos (temp)
+        css_text := collect_page_css(job.dom, job.url, resources)
         job.css_text = strings.clone(css_text)         // DONO: sobrevive ao free_all(temp) abaixo
         // As rules ficam NO JOB e são transferidas à aba (poll_jobs) em vez de
         // liberadas aqui: sobrevivem ao free_all(temp) abaixo porque suas strings
         // são owned, poupam o parse do 1º restyle e mantêm válidas as fatias `_raw`
         // que o Computed guarda p/ dentro de rule.decls.
-        job.rules, job.kf = csspkg.parse(job.css_text)
-        loading_trace_event(fmt.tprintf("job=%d styles-start", job.tab_id))
-        job.zoom_applied = g_zoom
-        job.style_dark = g_prefers_dark
-        job.font_families = len(g_face_families)
-        job.styles, job.page_bg = compute_styles(job.dom, &job.rules, job.viewport_w, job.viewport_h, job.kf[:])
-        job.layout = build_layout(job.dom, job.styles, job.url)
-        job.dom_fp = dompkg.fingerprint(job.dom)
+        fetch_job_prepare_layout(job)
         loading_trace_event(fmt.tprintf("job=%d ready", job.tab_id))
     }
     free_all(context.temp_allocator)
@@ -2215,7 +2224,7 @@ MAX_SCRIPTS :: 48 // teto de <script src> baixados por página (apps webpack/Nex
 // externos (src=) pela rede — espelho do collect_page_css. Cada script roda
 // SEPARADO no mesmo vm (globais compartilhadas): um script quebrado ou uma
 // exceção não impede os seguintes. Roda na thread de trabalho.
-load_page_scripts :: proc(dom: ^dompkg.Node, base_url: string) -> ^jspkg.Interp {
+load_page_scripts :: proc(dom: ^dompkg.Node, base_url: string, resources: ^Page_Resources = nil) -> ^jspkg.Interp {
     vm := jspkg.vm_create_with_dom(dom)
     vm.base_url = strings.clone(base_url) // p/ fetch() com URL relativa
 
@@ -2257,7 +2266,7 @@ load_page_scripts :: proc(dom: ^dompkg.Node, base_url: string) -> ^jspkg.Interp 
             if ext_count >= MAX_SCRIPTS do continue // teto de rede; inline não conta
             ext_count += 1
             abs := net.resolve_url(base_url, src, context.temp_allocator)
-            resp := net.fetch(abs)
+            resp := page_resource_fetch(resources, abs)
             if resp.ok && response_is_not_js(resp.status, resp.content_type, resp.body) {
                 // A resposta não é JavaScript — erro HTTP, JSON de API, ou o
                 // index.html do fallback de SPA/404 (200) p/ um asset que não
@@ -2405,11 +2414,11 @@ collect_scripts_rec :: proc(n: ^dompkg.Node, out: ^[dynamic]^dompkg.Node) {
 }
 
 // Junta o CSS da página: conteúdo dos <style> + folhas externas (<link>).
-// Roda na thread de trabalho (pode baixar várias folhas em sequência).
-collect_page_css :: proc(dom: ^dompkg.Node, base_url: string) -> string {
+// Roda na thread de trabalho (reusa os downloads antecipados de folhas; importa várias folhas em sequência).
+collect_page_css :: proc(dom: ^dompkg.Node, base_url: string, resources: ^Page_Resources = nil) -> string {
     sb := strings.builder_make(context.temp_allocator)
     count := 0
-    imports := css_import_state(&count)
+    imports := css_import_state(&count, resources = resources)
     collect_css_rec(dom, base_url, &sb, &imports)
     return strings.to_string(sb)
 }
@@ -2653,102 +2662,129 @@ dispatch_select_change :: proc(s: ^State, vw, vh: f32) {
     if tab.dom != nil do restyle_tab(tab, vw, vh)
 }
 
-// Chamado a cada frame na thread da UI: entrega os resultados prontos.
+// Shared by the independent preview and final page.
+fetch_job_prepare_layout :: proc(job: ^Fetch_Job) {
+    job.rules, job.kf = csspkg.parse(job.css_text)
+    loading_trace_event(fmt.tprintf("job=%d styles-start", job.tab_id))
+    job.zoom_applied = g_zoom
+    job.style_dark = g_prefers_dark
+    job.font_families = len(g_face_families)
+    job.styles, job.page_bg = compute_styles(job.dom, &job.rules, job.viewport_w, job.viewport_h, job.kf[:])
+    job.layout = build_layout(job.dom, job.styles, job.url)
+    job.dom_fp = dompkg.fingerprint(job.dom)
+}
+
+fetch_job_apply :: proc(s: ^State, job: ^Fetch_Job, preview := false) -> bool {
+    consumed := false
+    for &tab in s.tabs {
+        if tab.id != job.tab_id || tab.navigation_id != job.navigation_id do continue
+        tab.loading = preview
+        tab.preview_visible = preview
+        if job.resp.ok {
+            g_dt_sel = nil; g_dt_hover = nil
+            js_style_source_clear()
+            // libera o conteúdo/DOM/estilos/layout anteriores
+            if tab.content != "" do delete(tab.content)
+            if tab.layout != nil do free_layout(tab.layout)
+            if tab.vm != nil     do jspkg.vm_free(tab.vm) // vm antes do DOM (referencia nós)
+            if tab.dom != nil    { transitions_clear(); dompkg.free_tree(tab.dom) }
+            if tab.tree != ""    do delete(tab.tree)
+            tab.tree = ""
+            if tab.styles != nil do free_styles(tab.styles)
+            if tab.css_text != "" do delete(tab.css_text)
+            tab_drop_rules(&tab) // o css_text vai mudar: as regras antigas não valem mais
+
+            // transfere o que a thread já preparou
+            tab.content = job.resp.body
+            job.resp.body = ""
+            tab.status  = job.resp.status
+            tab.dom     = job.dom
+            tab.styles  = job.styles
+            tab.page_bg = job.page_bg
+            tab.layout  = job.layout
+            tab.vm      = job.vm
+            tab.css_text = job.css_text
+            tab.rules = job.rules
+            tab.kf = job.kf
+            tab.rules_ready = true // já parseadas pela thread: o 1º restyle reusa
+            // Retain the worker's inputs, so the first UI frame can reuse
+            // its cascade/tree instead of rebuilding the whole page again.
+            tab.zoom_applied = job.zoom_applied
+            tab.style_vw = job.viewport_w
+            tab.style_vh = job.viewport_h
+            tab.style_dark = job.style_dark
+            tab.dom_fp = job.dom_fp
+            // Registration belongs to the atlas owner. Newly discovered
+            // family IDs require a restyle; already known families don't.
+            fontface_scan(tab.css_text, job.final_url != "" ? job.final_url : tab.url)
+            tab.sheet_deps = style_deps(tab.rules[:])
+            tab.relational_selectors = collect_relational_selectors(tab.rules[:])
+            tab.sheet_has_cq = false
+            for r in tab.rules do if r.cq_active { tab.sheet_has_cq = true; break }
+            tab.sheet_meta_ready = true
+            if job.font_families != len(g_face_families) do tab.zoom_applied = -1
+            job.styles = nil
+            job.dom = nil
+            job.layout = nil
+            job.vm = nil
+            job.css_text = ""     // transferido p/ a aba (evita free duplo)
+            job.rules = nil; job.kf = nil // idem
+
+            // fallback https→http: reflete a URL real na aba, histórico e barra
+            if job.final_url != "" && job.final_url != tab.url {
+                delete(tab.url)
+                tab.url = strings.clone(job.final_url)
+                if tab.hist_idx >= 0 && tab.hist_idx < len(tab.history) {
+                    delete(tab.history[tab.hist_idx])
+                    tab.history[tab.hist_idx] = strings.clone(job.final_url)
+                }
+                if tab.id == s.tabs[s.active].id do sync_url_buf(s)
+            }
+
+            s.status = fmt.aprintf("%s - %d - %d bytes - %d elementos",
+                tab.url, job.resp.status, len(tab.content), dompkg.count_elements(tab.dom))
+            consumed = true
+        } else {
+            tab.status = 0
+            s.status = fmt.aprintf("Falha: %s", job.resp.err)
+        }
+        break
+    }
+    return consumed
+}
+
+fetch_job_free :: proc(job: ^Fetch_Job) {
+    if job == nil do return
+    fetch_job_free(job.preview)
+    delete(job.resp.body)
+    if !job.resp.ok && job.resp.err != "" do delete(job.resp.err)
+    if job.vm != nil do jspkg.vm_free(job.vm)
+    if job.layout != nil do free_layout(job.layout)
+    if job.dom != nil do dompkg.free_tree(job.dom)
+    if job.styles != nil do free_styles(job.styles)
+    delete(job.css_text)
+    csspkg.free_rules(&job.rules); csspkg.free_keyframes(&job.kf)
+    delete(job.url); delete(job.final_url)
+    free(job)
+}
+
+// A completed final page supersedes its preview. Stale generations and closed
+// tabs are discarded, including previews which were never displayed.
 poll_jobs :: proc(s: ^State) {
     for i := len(g_jobs) - 1; i >= 0; i -= 1 {
         job := g_jobs[i]
-        if !bool(intrinsics.atomic_load(&job.done)) do continue
-        loading_trace_event(fmt.tprintf("job=%d delivery-start", job.tab_id))
-
-        consumed := false
-        for &tab in s.tabs {
-            if tab.id != job.tab_id do continue
-            tab.loading = false
-            if job.resp.ok {
-                // libera o conteúdo/DOM/estilos/layout anteriores
-                if tab.content != "" do delete(tab.content)
-                if tab.layout != nil do free_layout(tab.layout)
-                if tab.vm != nil     do jspkg.vm_free(tab.vm) // vm antes do DOM (referencia nós)
-                if tab.dom != nil    { transitions_clear(); dompkg.free_tree(tab.dom) }
-                if tab.tree != ""    do delete(tab.tree)
-                if tab.styles != nil do free_styles(tab.styles)
-                if tab.css_text != "" do delete(tab.css_text)
-                tab_drop_rules(&tab) // o css_text vai mudar: as regras antigas não valem mais
-
-                // transfere o que a thread já preparou
-                tab.content = job.resp.body
-                tab.status  = job.resp.status
-                tab.dom     = job.dom
-                tab.styles  = job.styles
-                tab.page_bg = job.page_bg
-                tab.layout  = job.layout
-                tab.vm      = job.vm
-                tab.css_text = job.css_text
-                tab.rules = job.rules
-                tab.kf = job.kf
-                tab.rules_ready = true // já parseadas pela thread: o 1º restyle reusa
-                // Retain the worker's inputs, so the first UI frame can reuse
-                // its cascade/tree instead of rebuilding the whole page again.
-                tab.zoom_applied = job.zoom_applied
-                tab.style_vw = job.viewport_w
-                tab.style_vh = job.viewport_h
-                tab.style_dark = job.style_dark
-                tab.dom_fp = job.dom_fp
-                // Registration belongs to the atlas owner. Newly discovered
-                // family IDs require a restyle; already known families don't.
-                fontface_scan(tab.css_text, job.final_url != "" ? job.final_url : tab.url)
-                tab.sheet_deps = style_deps(tab.rules[:])
-                tab.relational_selectors = collect_relational_selectors(tab.rules[:])
-                tab.sheet_has_cq = false
-                for r in tab.rules do if r.cq_active { tab.sheet_has_cq = true; break }
-                tab.sheet_meta_ready = true
-                if job.font_families != len(g_face_families) do tab.zoom_applied = -1
-                job.dom = nil
-                job.layout = nil
-                job.vm = nil
-                job.css_text = ""     // transferido p/ a aba (evita free duplo)
-                job.rules = nil; job.kf = nil // idem
-
-                // fallback https→http: reflete a URL real na aba, histórico e barra
-                if job.final_url != "" && job.final_url != tab.url {
-                    delete(tab.url)
-                    tab.url = strings.clone(job.final_url)
-                    if tab.hist_idx >= 0 && tab.hist_idx < len(tab.history) {
-                        delete(tab.history[tab.hist_idx])
-                        tab.history[tab.hist_idx] = strings.clone(job.final_url)
-                    }
-                    if tab.id == s.tabs[s.active].id do sync_url_buf(s)
-                }
-
-                s.status = fmt.aprintf("%s - %d - %d bytes - %d elementos",
-                    tab.url, job.resp.status, len(job.resp.body), dompkg.count_elements(tab.dom))
-                consumed = true
-            } else {
-                tab.status = 0
-                s.status = fmt.aprintf("Falha: %s", job.resp.err)
-            }
-            break
+        if bool(intrinsics.atomic_load(&job.done)) {
+            loading_trace_event(fmt.tprintf("job=%d delivery-start", job.tab_id))
+            fetch_job_apply(s, job)
+            ordered_remove(&g_jobs, i)
+            fetch_job_free(job)
+        } else if p := job.preview; p != nil && !p.delivered && bool(intrinsics.atomic_load(&p.done)) {
+            loading_trace_event(fmt.tprintf("job=%d preview-delivery", job.tab_id))
+            fetch_job_apply(s, p, preview = true)
+            p.delivered = true
         }
-        // aba foi fechada antes de terminar: descarta o que foi baixado
-        if !consumed {
-            if job.resp.ok && len(job.resp.body) > 0 do delete(job.resp.body)
-            if job.vm != nil do jspkg.vm_free(job.vm) // vm antes do DOM (referencia nós)
-            if job.layout != nil do free_layout(job.layout)
-            if job.dom != nil do dompkg.free_tree(job.dom)
-            if job.styles != nil do free_styles(job.styles)
-            if job.css_text != "" do delete(job.css_text)
-            csspkg.free_rules(&job.rules)     // não foram transferidas
-            csspkg.free_keyframes(&job.kf)
-        }
-
-        delete(job.url)
-        if job.final_url != "" do delete(job.final_url)
-        ordered_remove(&g_jobs, i)
-        free(job)
     }
 }
-
-// ── Estilo global ───────────────────────────────────────────────────────────
 
 apply_style :: proc() {
     style := im.GetStyle()

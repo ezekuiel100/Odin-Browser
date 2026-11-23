@@ -95,11 +95,13 @@ headless_fetch :: proc(url: string) -> bool {
     if !resp.ok do return false
 
     dom := htmlp.parse_render(resp.body) // parser de spec (ver browser_ui.odin)
-    fetch_vm := load_page_scripts(dom, url) // <script> inline + externos mutam o DOM antes do style/layout
+    resources := page_resources_start(dom, url)
+    defer page_resources_free(resources)
+    fetch_vm := load_page_scripts(dom, url, resources) // <script> inline + externos mutam o DOM antes do style/layout
     defer jspkg.vm_free(fetch_vm)
     fmt.eprintfln("[parse html+js] %.0fms", ms(t)); t = time.tick_now()
 
-    css_text := collect_page_css(dom, url) // inclui fetch dos <link> externos
+    css_text := collect_page_css(dom, url, resources) // inclui fetch dos <link> externos
     fmt.eprintfln("[css fetch+collect] %d bytes | %.0fms", len(css_text), ms(t)); t = time.tick_now()
     rules, kf := csspkg.parse(css_text)
     fmt.eprintfln("[css parse] %d regras | %.0fms", len(rules), ms(t)); t = time.tick_now()
@@ -986,6 +988,8 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
     defer delete(s.tabs)
 
     fmt.eprintfln("[diag] navegando p/ %s", url)
+    navigation_start := time.tick_now()
+    first_content_reported, load_reported := false, false
     start_navigation(&s, url)
 
     page_w: f32 = 1280
@@ -1091,6 +1095,16 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
         imgui_sdlr.RenderDrawData(im.GetDrawData(), renderer)
         sdl2.RenderPresent(renderer)
         when UIPROF { g_uiprof.ms_render += time.duration_milliseconds(time.tick_since(tf)) }
+        if lay != nil {
+            if !first_content_reported {
+                fmt.eprintfln("[diag] first-content %.0fms", time.duration_milliseconds(time.tick_since(navigation_start)))
+                first_content_reported = true
+            }
+            if !s.tabs[0].loading && !load_reported {
+                fmt.eprintfln("[diag] load-complete %.0fms", time.duration_milliseconds(time.tick_since(navigation_start)))
+                load_reported = true
+            }
+        }
         // estabilizou = layout pronto e nenhuma imagem baixando NEM esperando backoff
         // de retry (images_pending inclui as .Loading em espera de Retry-After) por ~45 frames
         if lay != nil && g_img_active == 0 && !images_pending() && !s.tabs[0].loading {
@@ -1175,18 +1189,23 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
             resp := net.fetch(page_url)
             if !resp.ok { fmt.eprintfln("headless: fetch falhou %s (%s)", page_url, resp.err); return false }
             dom = htmlp.parse_render(resp.body)
-            page_vm = load_page_scripts(dom, page_url) // roda <script>; retém handlers
+            resources := page_resources_start(dom, page_url)
+            page_vm = load_page_scripts(dom, page_url, resources) // roda <script>; retém handlers
             // Navegação pedida pela página DURANTE a carga (desafio de JS do reddit:
             // <form> enviado no DOMContentLoaded; redirect por location.replace).
             // Teto de 5, como o headless_follow_js_nav. O DOM/vm antigos ficam para
             // trás (processo de uma execução só; o vm é liberado, o DOM vaza).
             nav, _, has_nav := jspkg.vm_take_nav_request(page_vm)
-            if !has_nav || hop >= 5 do break
+            if !has_nav || hop >= 5 {
+                css_text = collect_page_css(dom, page_url, resources)
+                page_resources_free(resources)
+                break
+            }
+            page_resources_free(resources)
             fmt.eprintfln("[headless] navegação pedida pela página → %s", nav)
             page_url = strings.clone(nav)
             jspkg.vm_free(page_vm)
         }
-        css_text = collect_page_css(dom, page_url) // <style> + <link> externos
         base_url = page_url
     } else {
         data, rerr := os.read_entire_file_from_path(html_path, context.allocator)
@@ -1534,8 +1553,10 @@ headless_dumplayout :: proc(in_path: string, out_path: string, width: i32 = 800,
         resp := net.fetch(in_path)
         if !resp.ok { fmt.eprintfln("dumplayout: fetch falhou %s (%s)", in_path, resp.err); return false }
         dom = htmlp.parse_render(resp.body)
-        page_vm = load_page_scripts(dom, in_path) // <script> externos+inline em 2 fases
-        css_text = collect_page_css(dom, in_path)  // <style> + <link> externos
+        resources := page_resources_start(dom, in_path)
+        defer page_resources_free(resources)
+        page_vm = load_page_scripts(dom, in_path, resources) // <script> externos+inline em 2 fases
+        css_text = collect_page_css(dom, in_path, resources)  // <style> + <link> externos
         base_url = in_path
     } else {
         data, rerr := os.read_entire_file_from_path(in_path, context.allocator)

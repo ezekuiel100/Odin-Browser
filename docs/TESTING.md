@@ -182,3 +182,22 @@ fonte com SyntaxError (mensagens no formato do V8). Em teste (`odin test`), um
 SyntaxError em JS que o teste julgava válido entra em pânico
 (`check_parse_recoveries`); com `-define:PARSEFAIL_LOG=true` ele só registra
 `[PARSEFAIL]`, para listar todos os casos numa rodada só.
+
+## Carregamento paralelo e primeira pintura
+
+`python tools/check-page-loading.py --browser .\browser.exe` abre um servidor
+local com respostas atrasadas e verifica downloads simultâneos, ordem de
+execução dos scripts, uma única transferência por URL de CSS e pintura antes
+do fim do JavaScript. Não depende de sites externos. `--baseline <exe-antigo>`
+também mede o executável anterior; logs e tempos ficam em
+`_local/reports/page-loading/`. Os tempos incluem inicialização do processo;
+`first_content_ms` e `load_complete_ms` começam na navegação.
+
+Os testes normais de `src/ui` cobrem a transferência da prévia, seu DOM
+independente, imports reutilizados, navegações substituídas e abas fechadas.
+Para exercitar também a pintura pelo caminho da interface, rode em um processo
+separado (o atlas real interfere com as fontes sintéticas de outros testes):
+
+```powershell
+& C:\Odin\dist\odin.exe test src/ui -define:ODIN_TEST_THREADS=1 -define:ODIN_TEST_TRACK_MEMORY=false -define:PAGE_PREVIEW_INTEGRATION_TEST=true -define:ODIN_TEST_NAMES=page_preview_paints_in_real_ui_while_script_is_busy
+```

@@ -12,6 +12,19 @@ URL ──► src/net ──► src/html ──► src/dom ──► src/css ─
                                     src/js  ◄── interpretador tree-walking + bindings de DOM
 ```
 
+O carregamento antecipa até seis downloads de scripts e folhas de estilo em
+paralelo (`src/ui/page_resources.odin`). O cache dura uma navegação, reutiliza
+URLs repetidas e também atende imports de CSS descobertos depois. A execução
+dos scripts continua na ordem definida por `script_exec_order`; a expansão do
+CSS preserva a posição de cada ocorrência na cascata.
+
+Quando há conteúdo HTML antes do JavaScript, o worker publica primeiro uma
+cópia independente do DOM com CSS e layout, sem executar scripts nessa cópia.
+A UI pode pintá-la enquanto o DOM principal recebe as mutações dos scripts.
+Depois troca a prévia pela página final. Shells vazios de SPA pulam a prévia.
+Cada navegação tem uma geração: resultados antigos não substituem uma
+navegação mais recente, nem reaparecem em abas fechadas.
+
 ## Pacotes
 
 | Pacote | O que faz |

@@ -13,11 +13,12 @@ CSS_Import_State :: struct {
     count: ^int,
     load: CSS_Import_Load,
     expansions: int,
+    resources: ^Page_Resources,
 }
 
-css_import_state :: proc(count: ^int, load := css_import_download) -> CSS_Import_State {
+css_import_state :: proc(count: ^int, load := css_import_download, resources: ^Page_Resources = nil) -> CSS_Import_State {
     return {cache = make(map[string]CSS_Import_Cache, context.temp_allocator),
-            active = make(map[string]bool, context.temp_allocator), count = count, load = load}
+            active = make(map[string]bool, context.temp_allocator), count = count, load = load, resources = resources}
 }
 
 @(private = "file")
@@ -32,7 +33,17 @@ css_import_body :: proc(st: ^CSS_Import_State, url: string) -> (string, bool) {
     if v, found := st.cache[url]; found do return v.body, v.ok
     if !url_buscavel(url) || st.count^ >= MAX_SHEETS do return "", false
     st.count^ += 1
-    body, ok := st.load(url)
+    body: string
+    ok: bool
+    if st.resources != nil {
+        r := page_resource_fetch(st.resources, url)
+        ok = r.ok
+        if ok do body = strings.clone(r.body, context.temp_allocator)
+        delete(r.body)
+        if !r.ok && r.err != "" do delete(r.err)
+    } else {
+        body, ok = st.load(url)
+    }
     st.cache[url] = {body, ok}
     return body, ok
 }
