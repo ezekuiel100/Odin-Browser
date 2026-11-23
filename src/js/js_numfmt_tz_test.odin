@@ -45,6 +45,18 @@ end_tz :: proc() { tz_override_thread = {} }
 // ── números ──
 
 @(test)
+test_number_to_string_radix_and_non_finite_values :: proc(t: ^testing.T) {
+    expect_str(t, `[Infinity.toString(2), (-Infinity).toString(36),
+        NaN.toString(16), (-0).toString(2), new Number(255).toString({valueOf() { return 16.9; }})].join()`,
+        "Infinity,-Infinity,NaN,0,ff")
+    expect_str(t, `
+        function errorName(f) { try { f(); } catch (e) { return e.name; } }
+        [errorName(() => Infinity.toString(1)), errorName(() => NaN.toString(Infinity)),
+         errorName(() => Number.prototype.toString.call("2")), errorName(() => (2).toString(null))].join();
+    `, "RangeError,RangeError,TypeError,RangeError")
+}
+
+@(test)
 test_to_fixed_empate_para_cima :: proc(t: ^testing.T) {
     expect_str(t, `[(2.5).toFixed(0), (0.5).toFixed(0), (-2.5).toFixed(0), (1.25).toFixed(1)].join()`, "3,1,-3,1.3")
     // não é empate: o double de 1.005 é 1.00499999999999989…

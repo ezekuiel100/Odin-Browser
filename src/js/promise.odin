@@ -188,35 +188,62 @@ mk_combinator :: proc(vm: ^Interp, kind: string) -> ^Function {
     return f
 }
 
-// Callback por-entrada com contexto {st, i} em bound.
+// NewPromiseCapability: the constructor supplies the callbacks that settle its result.
 @(private = "file")
-mk_input_cb :: proc(vm: ^Interp, native: proc(^Interp, Value, []Value) -> Value, st: ^Object, i: int) -> ^Function {
-    f := new_function(vm)
-    f.native = native
-    ctx := new_object(vm)
-    ctx.props["st"] = st
-    ctx.props["i"]  = f64(i)
-    f.bound = ctx
-    return f
-}
-
-// Motor comum: monta o estado, liga os callbacks e trata o caso vazio.
-@(private = "file")
-run_combinator :: proc(vm: ^Interp, args: []Value, kind: string) -> Value {
-    agg := promise_new(vm)
-    run_combinator_inputs(vm, agg, arg(args, 0), kind)
-    if vm.throwing {
-        exc := vm.thrown
-        vm.throwing = false; vm.thrown = nil
-        promise_settle(vm, agg, PROMISE_REJECTED, exc)
+combinator_executor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
+    st := vm.native_bound.(^Object)
+    if st.props["resolve"] != nil || st.props["reject"] != nil {
+        throw_type_error(vm, "Promise capability executor already called")
+        return nil
     }
-    return agg
+    st.props["resolve"] = arg(args, 0)
+    st.props["reject"] = arg(args, 1)
+    return nil
 }
 
-// Consume the iterator incrementally: resolving one input can run getters that
-// affect its next step. The sentinel keeps an empty input on the same path.
 @(private = "file")
-run_combinator_inputs :: proc(vm: ^Interp, agg: ^Object, input: Value, kind: string) {
+run_combinator :: proc(vm: ^Interp, ctor, input: Value, kind: string) -> Value {
+    if !is_constructor_like(vm, ctor) {
+        throw_type_error(vm, "Promise combinator receiver is not a constructor")
+        return nil
+    }
+    st := new_object(vm)
+    executor := promise_callback(vm, combinator_executor, 2, st)
+    result: Value
+    if fn, ok := ctor.(^Function); ok {
+        result = construct_object(vm, fn, []Value{executor})
+    } else {
+        result = proxy_construct(vm, proxy_state(ctor), []Value{executor}, nil)
+    }
+    if vm.throwing do return nil
+    resolve, resolve_ok := st.props["resolve"].(^Function)
+    reject, reject_ok := st.props["reject"].(^Function)
+    if !resolve_ok || !reject_ok {
+        throw_type_error(vm, "Promise constructor must supply resolve and reject functions")
+        return nil
+    }
+
+    st.props["kind"] = kind
+    st.props["results"] = new_array(vm)
+    st.props["remaining"] = f64(1)
+    resolve_value := get_member(vm, ctor, "resolve")
+    if !vm.throwing {
+        if resolve_input, ok := resolve_value.(^Function); ok {
+            run_combinator_inputs(vm, ctor, input, st, resolve_input, resolve, reject, kind)
+        } else {
+            throw_type_error(vm, "Promise.resolve is not a function")
+        }
+    }
+    if vm.throwing do promise_reject_exception(vm, reject)
+    if vm.throwing do return nil
+    return result
+}
+
+// Resolve and then can run user code before the next iterator step. Only
+// errors after a successful step require IteratorClose.
+@(private = "file")
+run_combinator_inputs :: proc(vm: ^Interp, ctor, input: Value, st: ^Object,
+    resolve_input, resolve, reject: ^Function, kind: string) {
     if is_nullish(input) { throw_type_error(vm, "Promise combinator requires an iterable"); return }
     method := get_member(vm, input, vm.sym_iterator_key)
     if vm.throwing do return
@@ -230,12 +257,7 @@ run_combinator_inputs :: proc(vm: ^Interp, agg: ^Object, input: Value, kind: str
     next, next_ok := next_value.(^Function)
     if !next_ok { throw_type_error(vm, "Iterator next is not callable"); return }
 
-    results := new_array(vm)
-    st := new_object(vm)
-    st.props["agg"] = agg
-    st.props["kind"] = kind
-    st.props["results"] = results
-    st.props["remaining"] = f64(1)
+    results := st.props["results"].(^Array)
     for i := 0; ; i += 1 {
         if step_guard(vm) do return
         result := call_function(vm, next, iter, nil)
@@ -244,17 +266,31 @@ run_combinator_inputs :: proc(vm: ^Interp, agg: ^Object, input: Value, kind: str
         done := get_member(vm, result, "done")
         if vm.throwing do return
         if truthy(done) {
-            combinator_finish(vm, st)
+            if kind != "race" do combinator_finish(vm, st)
             return
         }
         value := get_member(vm, result, "value")
         if vm.throwing do return
-        append(&results.items, nil)
-        st.props["remaining"] = as_number(st.props["remaining"]) + 1
-        p := promise_for_await(vm, value)
-        onf := mk_input_cb(vm, combinator_on_fulfill, st, i)
-        onr := mk_input_cb(vm, combinator_on_reject, st, i)
-        promise_then_impl(vm, p, onf, onr)
+
+        next_promise := call_function(vm, resolve_input, ctor, []Value{value})
+        if !vm.throwing {
+            onf, onr := resolve, reject
+            if kind != "race" {
+                append(&results.items, nil)
+                st.props["remaining"] = as_number(st.props["remaining"]) + 1
+                ctx := new_object(vm)
+                ctx.props["st"] = st
+                ctx.props["i"] = f64(i)
+                // allSettled shares its per-element guard across both callbacks.
+                if kind != "any" do onf = promise_callback(vm, combinator_on_fulfill, 1, ctx)
+                if kind != "all" do onr = promise_callback(vm, combinator_on_reject, 1, ctx)
+            }
+            promise_invoke_then(vm, next_promise, []Value{onf, onr})
+        }
+        if vm.throwing {
+            iterator_close_completion(vm, iter)
+            return
+        }
     }
 }
 
@@ -276,23 +312,20 @@ combinator_finish :: proc(vm: ^Interp, st: ^Object) {
     rem := as_number(st.props["remaining"]) - 1
     st.props["remaining"] = rem
     if rem > 0 do return
-    agg := st.props["agg"].(^Object)
     results := st.props["results"].(^Array)
-    switch st.props["kind"].(string) {
-    case "all", "allSettled":
-        promise_settle(vm, agg, PROMISE_FULFILLED, results)
-    case "any":
-        promise_settle(vm, agg, PROMISE_REJECTED, aggregate_error(vm, results))
+    if st.props["kind"] == "any" {
+        call_function(vm, st.props["reject"].(^Function), nil, []Value{aggregate_error(vm, results)})
+    } else {
+        call_function(vm, st.props["resolve"].(^Function), nil, []Value{results})
     }
 }
 
 @(private = "file")
 combinator_ctx :: proc(vm: ^Interp) -> (st: ^Object, i: int, ok: bool) {
-    ctx, cok := vm.native_bound.(^Object)
-    if !cok do return nil, 0, false
-    st, _ = ctx.props["st"].(^Object)
-    i = int(as_number(ctx.props["i"]))
-    return st, i, st != nil
+    ctx := vm.native_bound.(^Object)
+    if truthy(ctx.props["called"]) do return nil, 0, false
+    ctx.props["called"] = true
+    return ctx.props["st"].(^Object), int(as_number(ctx.props["i"])), true
 }
 
 @(private = "file")
@@ -300,17 +333,14 @@ combinator_on_fulfill :: proc(vm: ^Interp, this: Value, args: []Value) -> Value 
     st, i, ok := combinator_ctx(vm)
     if !ok do return nil
     val := arg(args, 0)
-    agg := st.props["agg"].(^Object)
     results := st.props["results"].(^Array)
     switch st.props["kind"].(string) {
-    case "race", "any":
-        promise_settle(vm, agg, PROMISE_FULFILLED, val) // 1º a cumprir vence (idempotente)
     case "all":
         if i < len(results.items) do results.items[i] = val
         combinator_finish(vm, st)
     case "allSettled":
         o := new_object(vm)
-        o.props["status"] = "fulfilled"
+        oput(o, "status", "fulfilled")
         o.props["value"]  = val
         if i < len(results.items) do results.items[i] = o
         combinator_finish(vm, st)
@@ -323,18 +353,15 @@ combinator_on_reject :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
     st, i, ok := combinator_ctx(vm)
     if !ok do return nil
     val := arg(args, 0)
-    agg := st.props["agg"].(^Object)
     results := st.props["results"].(^Array)
     switch st.props["kind"].(string) {
-    case "race", "all":
-        promise_settle(vm, agg, PROMISE_REJECTED, val) // 1º a rejeitar decide
     case "any":
         if i < len(results.items) do results.items[i] = val // guarda o erro
         combinator_finish(vm, st) // ao zerar → AggregateError
     case "allSettled":
         o := new_object(vm)
-        o.props["status"] = "rejected"
-        o.props["reason"] = val
+        oput(o, "status", "rejected")
+        oput(o, "reason", val)
         if i < len(results.items) do results.items[i] = o
         combinator_finish(vm, st)
     }
@@ -343,19 +370,19 @@ combinator_on_reject :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 promise_all :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return run_combinator(vm, args, "all")
+    return run_combinator(vm, this, arg(args, 0), "all")
 }
 @(private = "file")
 promise_all_settled :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return run_combinator(vm, args, "allSettled")
+    return run_combinator(vm, this, arg(args, 0), "allSettled")
 }
 @(private = "file")
 promise_race :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return run_combinator(vm, args, "race")
+    return run_combinator(vm, this, arg(args, 0), "race")
 }
 @(private = "file")
 promise_any :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
-    return run_combinator(vm, args, "any")
+    return run_combinator(vm, this, arg(args, 0), "any")
 }
 
 // Cria uma promise pendente com os métodos then/catch.
@@ -543,18 +570,18 @@ native_promise_finally :: proc(vm: ^Interp, this: Value, args: []Value) -> Value
     on_finally := arg(args, 0)
     then_args: []Value
     if cb, cok := on_finally.(^Function); cok {
-        onf := finally_fn(vm, finally_on_fulfilled, 1, cb)
-        onr := finally_fn(vm, finally_on_rejected, 1, cb)
+        onf := promise_callback(vm, finally_on_fulfilled, 1, cb)
+        onr := promise_callback(vm, finally_on_rejected, 1, cb)
         then_args = []Value{onf, onr}
     } else {
         then_args = []Value{on_finally, on_finally} // não chamável: passa adiante como está
     }
-    return finally_invoke_then(vm, this, then_args)
+    return promise_invoke_then(vm, this, then_args)
 }
 
 // Função anônima e não construtora, como as que a spec cria com CreateBuiltinFunction.
 @(private = "file")
-finally_fn :: proc(vm: ^Interp, native: Native_Fn, length: int, bound: Value) -> ^Function {
+promise_callback :: proc(vm: ^Interp, native: Native_Fn, length: int, bound: Value) -> ^Function {
     f := new_function(vm)
     f.native = native
     f.native_length = length
@@ -565,7 +592,7 @@ finally_fn :: proc(vm: ^Interp, native: Native_Fn, length: int, bound: Value) ->
 
 // Invoke(target, "then", args).
 @(private = "file")
-finally_invoke_then :: proc(vm: ^Interp, target: Value, args: []Value) -> Value {
+promise_invoke_then :: proc(vm: ^Interp, target: Value, args: []Value) -> Value {
     then_v := get_member(vm, target, "then")
     if vm.throwing do return nil
     then_fn, ok := then_v.(^Function)
@@ -597,8 +624,8 @@ finally_wait :: proc(vm: ^Interp, value: Value, rejected: bool) -> Value {
     hold := new_object(vm)
     hold.props["value"] = value
     hold.props["rejected"] = rejected
-    thunk := finally_fn(vm, finally_resume, 0, hold)
-    return finally_invoke_then(vm, cleanup, []Value{thunk})
+    thunk := promise_callback(vm, finally_resume, 0, hold)
+    return promise_invoke_then(vm, cleanup, []Value{thunk})
 }
 
 // valueThunk (devolve o valor original) ou thrower (relança o motivo original).
@@ -623,7 +650,17 @@ native_promise_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
         vm.throwing = true
         return nil
     }
-    p := promise_new(vm)
+    p, derived := this.(^Object)
+    if vm.native_new && derived {
+        if p.promise != nil {
+            vm.thrown = mk_error(vm, "ReferenceError", "Super constructor may only be called once")
+            vm.throwing = true
+            return nil
+        }
+        p.promise = new(Promise_Data)
+    } else {
+        p = promise_new(vm)
+    }
 
     resolve_fn, reject_fn := promise_resolving_functions(vm, p)
 

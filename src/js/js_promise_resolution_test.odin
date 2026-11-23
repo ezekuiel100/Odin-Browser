@@ -192,6 +192,59 @@ test_promise_combinator_resolves_during_iteration :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_promise_combinators_close_after_then_getter_throws :: proc(t: ^testing.T) {
+    ok, _ := run_settled(`
+        var error = {}, closes = 0, rejected = 0, calls = 0;
+        var item = Promise.resolve(1);
+        Object.defineProperty(item, "then", {get() { throw error; }});
+        for (var method of [Promise.all, Promise.allSettled, Promise.race, Promise.any]) {
+            var source = {[Symbol.iterator]() {
+                var advanced = false;
+                return {
+                    next() {
+                        calls++;
+                        var done = advanced;
+                        advanced = true;
+                        return {done: done, value: item};
+                    },
+                    return() { closes++; throw "close error"; }
+                };
+            }};
+            method.call(Promise, source).catch(function(reason) { if (reason === error) rejected++; });
+        }
+    `, `closes === 4 && rejected === 4 && calls === 4`).(bool)
+    testing.expect(t, ok, "close on a then getter error and preserve the original reason")
+}
+
+@(test)
+test_promise_combinator_custom_resolve_and_subclass :: proc(t: ^testing.T) {
+    ok, _ := run_settled(`
+        var trace = "", result, error = {}, rejected;
+        class Custom extends Promise {
+            static resolve(value) {
+                if (this !== Custom) throw "wrong receiver";
+                trace += value;
+                if (value === "bad") throw error;
+                return { then(onFulfill, onReject) {
+                    onReject("first");
+                    onFulfill("second");
+                    onReject("third");
+                } };
+            }
+        }
+        var aggregate = Custom.allSettled([1, 2]);
+        aggregate.then(function(values) { result = JSON.stringify(values); });
+        var source = {[Symbol.iterator]() { return {
+            next() { return {done: trace.endsWith("bad"), value: "bad"}; },
+            return() { trace += "!"; return {}; }
+        }; }};
+        Custom.any(source).catch(function(reason) { rejected = reason; });
+    `, `aggregate instanceof Custom && rejected === error && trace === "12bad!" &&
+         result === '[{"status":"rejected","reason":"first"},{"status":"rejected","reason":"first"}]'`).(bool)
+    testing.expect(t, ok, "honor the receiver's resolve and settle each allSettled element once")
+}
+
+@(test)
 test_promise_resolve_preserves_identity_and_reads_constructor :: proc(t: ^testing.T) {
     ok, _ := run_settled(`
         var p = Promise.resolve(1);

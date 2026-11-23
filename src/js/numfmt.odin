@@ -172,7 +172,6 @@ write_exp_suffix :: proc(sb: ^strings.Builder, e: int) {
 
 // ── os três métodos ──────────────────────────────────────────────────────────
 
-@(private = "file")
 this_number_value :: proc(vm: ^Interp, this: Value, method: string) -> (f64, bool) {
     if x, ok := this.(f64); ok do return x, true
     if p, ok := wrapper_value(this); ok {
@@ -183,7 +182,6 @@ this_number_value :: proc(vm: ^Interp, this: Value, method: string) -> (f64, boo
 }
 
 // ToIntegerOrInfinity (NaN → 0; ±Infinity preservado em `inf`).
-@(private = "file")
 to_int_or_inf :: proc(vm: ^Interp, v: Value) -> (i: int, inf: int) {
     x := to_number(vm, v)
     if x != x do return 0, 0
@@ -195,14 +193,12 @@ to_int_or_inf :: proc(vm: ^Interp, v: Value) -> (i: int, inf: int) {
     return int(x), 0
 }
 
-@(private = "file")
 range_error :: proc(vm: ^Interp, msg: string) -> Value {
     vm.thrown = mk_error(vm, "RangeError", msg)
     vm.throwing = true
     return nil
 }
 
-@(private = "file")
 is_finite_num :: proc(x: f64) -> bool { return x == x && abs(x) != math.inf_f64(1) }
 
 @(private = "file")

@@ -2621,17 +2621,25 @@ global_string_ctor :: proc(vm: ^Interp, this: Value, args: []Value) -> Value {
 
 @(private = "file")
 num_to_string :: proc(vm: ^Interp, this: Value, a: []Value) -> Value {
-    x, ok := this.(f64); if !ok do return own_str(vm, "NaN")
+    x, ok := this_number_value(vm, this, "toString")
+    if !ok do return nil
+
     radix := 10
-    if len(a) >= 1 && a[0] != nil do radix = as_int(a[0])
-    if radix == 10 || radix < 2 || radix > 36 {
+    if arg(a, 0) != nil {
+        integer, inf := to_int_or_inf(vm, a[0])
+        if vm.throwing do return nil
+        if inf != 0 || integer < 2 || integer > 36 {
+            return range_error(vm, "toString() radix argument must be between 2 and 36")
+        }
+        radix = integer
+    }
+    if radix == 10 || !is_finite_num(x) {
         sb: strings.Builder
         strings.builder_init(&sb)
         defer strings.builder_destroy(&sb)
         to_text(&sb, x) // mesma formatação do resto do motor
         return own_str(vm, strings.to_string(sb))
     }
-    if x != x do return own_str(vm, "NaN")
     digits_tbl := "0123456789abcdefghijklmnopqrstuvwxyz"
     sb: strings.Builder
     strings.builder_init(&sb)

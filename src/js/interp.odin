@@ -3524,8 +3524,7 @@ put_target_ref :: proc(vm: ^Interp, ref: Target_Ref, val: Value, env: ^Env, stri
 // exceção em voo (default/alvo que lançou), e aí a exceção ORIGINAL prevalece sobre
 // qualquer erro do return(). Sem exceção em voo, erro do return() propaga e um
 // resultado que não é objeto vira TypeError.
-@(private = "file")
-pattern_iter_close :: proc(vm: ^Interp, iter: Value) {
+iterator_close_completion :: proc(vm: ^Interp, iter: Value) {
     if vm.gen_hard_kill do return
     saved_throw, saved_exc := vm.throwing, vm.thrown
     saved_ret, saved_val := vm.returning, vm.ret_val
@@ -3618,7 +3617,7 @@ bind_pattern :: proc(vm: ^Interp, pat: ^Node, val: Value, env: ^Env, declare := 
             } // não-iterável: cai no acesso por índice (array-like com .length)
         }
     }
-    defer if by_protocol && !iter_done do pattern_iter_close(vm, iter)
+    defer if by_protocol && !iter_done do iterator_close_completion(vm, iter)
     for el, i in pat.body {
         if vm.throwing do break
         if el.bval { // rest: recolhe o restante
