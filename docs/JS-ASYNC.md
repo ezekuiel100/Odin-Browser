@@ -1,8 +1,10 @@
 # Execução assíncrona de JavaScript
 
-Funções `async` e geradores `async function*` usam a máquina de corrotinas de
-`src/js/generator.odin`. Cada corpo mantém sua pilha em uma thread, com troca
-de controle por semáforos: somente uma thread executa JavaScript por vez.
+Funções `async` e geradores `async function*` usam os frames de continuação de
+`src/js/continuation.odin`, dirigidos por `src/js/generator.odin`. Cada retomada
+executa na thread do chamador e devolve o controle ao suspender, sem conservar
+uma thread ou pilha nativa. Valores temporários, escopos e conclusões pendentes
+ficam nos frames e podem ser rastreados pelo coletor de lixo.
 
 Programas com `await` ou `for await` de topo também usam essa máquina, mantendo
 o ambiente global ou de módulo original. `vm_exec` e `vm_run` devolvem uma
@@ -52,13 +54,17 @@ de avaliar o lado direito ou escrever no binding.
 
 ## Limites atuais
 
-- Não há espera bloqueante nem timeout artificial para `await`. Uma Promise
-  nunca resolvida mantém sua execução suspensa até o descarte da VM.
+- Não há espera bloqueante nem timeout artificial para `await`. Uma execução
+  que aguarda uma Promise nunca resolvida permanece suspensa enquanto estiver
+  alcançável; execuções inalcançáveis podem ser coletadas.
 - A engine continua tolerando `await` no topo de scripts clássicos como extensão.
   Isso não equivale a implementar todas as regras de sintaxe e ligação
   de módulos do ECMAScript, como resolução de ambiguidades de `export *`.
-- Cada corrotina suspensa conserva uma thread e uma pilha nativas. Não há
-  paralelismo de JavaScript; muitos corpos pendentes ainda consomem recursos.
+- Corrotinas pendentes consomem memória para seus frames e valores vivos.
+  O coletor pode executar nos pontos seguros do host mesmo com essas
+  corrotinas suspensas, e descarta as inalcançáveis sem executar JavaScript.
+- Trechos síncronos continuam usando o avaliador recursivo. Esta etapa não
+  implementa bytecode nem elimina a reserva de stack do build.
 - O event loop do hospedeiro continua responsável por avançar timers e rede e
   executar checkpoints. Suspender não faz uma Promise pendente resolver sozinha.
 
@@ -74,6 +80,9 @@ rejeições e retomada por scripts posteriores sem timeout.
 `default`, identidade de funções, reexports vivos e acesso durante `await`.
 `src/js/js_m201_test.odin` cobre a FIFO compartilhada de MutationObserver,
 entregas recursivas e desconexão durante a notificação.
+`src/js/js_continuation_test.odin` cobre coleta durante suspensão, referências
+e valores intermediários, conclusões de `finally`, descarte e 3.000 funções
+pendentes. Medições e reprodução estão em [JS-CONTINUATIONS.md](JS-CONTINUATIONS.md).
 
 ```powershell
 & C:\Odin\dist\odin.exe test src/js -define:ODIN_TEST_THREADS=1

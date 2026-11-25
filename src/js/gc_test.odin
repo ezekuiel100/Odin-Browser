@@ -46,11 +46,11 @@ gc_weak_ephemerons_and_explicit_roots :: proc(t: ^testing.T) {
 }
 
 @(test)
-gc_defers_with_suspended_native_stack :: proc(t: ^testing.T) {
+gc_collects_with_suspended_execution_frames :: proc(t: ^testing.T) {
     vm := vm_create()
     defer vm_free(vm)
     vm_run(vm, `var g=(function*(){var x={answer:42}; yield 1; return x.answer;})(); g.next();`)
-    testing.expect(t, !vm_collect(vm))
+    testing.expect(t, vm_collect(vm))
     testing.expect_value(t, as_number(vm_run(vm, `g.next().value`)), f64(42))
     testing.expect(t, vm_collect(vm))
 }

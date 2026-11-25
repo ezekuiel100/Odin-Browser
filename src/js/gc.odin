@@ -1,8 +1,8 @@
 package js
 
 // Stop-the-world collection at host safepoints only. Native temporaries are not
-// traced. A suspended generator owns a native stack, so collection is deferred
-// until those stacks finish. Strings, source/AST storage and symbols stay VM-owned.
+// traced, but suspended executions expose all their roots through heap frames.
+// Strings, source/AST storage and symbols stay VM-owned.
 GC_Ref :: union {^Object, ^Array, ^Function, ^Env, ^Array_Buffer, ^Collection, ^Regex, ^BigInt, ^Symbol, ^Module, ^Generator}
 GC_State :: struct {
     seen: map[rawptr]bool,
@@ -153,7 +153,22 @@ gc_drain :: proc(gp: ^GC_State) {
                 gc_push(&g, v.promise)
             }
             gc_push(&g, x.async_promise)
-            gc_push(&g, x.thrown_out)
+            gc_push(&g, x.result)
+            gc_push(&g, x.reference.obj)
+            gc_push(&g, x.reference.key)
+            for f in x.frames {
+                gc_push(&g, f.env)
+                gc_push(&g, f.scope)
+                for v in f.values do gc_push(&g, v)
+                for v in f.items do gc_push(&g, v)
+                gc_push(&g, f.signal.thrown)
+                gc_push(&g, f.signal.returned)
+                gc_push(&g, f.ref.obj)
+                gc_push(&g, f.ref.key)
+                gc_push(&g, f.ident.wobj)
+                gc_push(&g, f.ident.holder)
+                gc_push(&g, f.ident.root)
+            }
         }
     }
     gp^ = g
@@ -164,9 +179,6 @@ gc_drain :: proc(gp: ^GC_State) {
 vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
     if vm == nil || vm.call_depth != 0 || vm.pump_depth != 0 ||
        vm.mo_task_depth != 0 || vm.draining || vm.current_gen != nil { return false }
-    for gen in vm.all_generators {
-        if gen.started && !gen.done do return false
-    }
     g: GC_State
     g.seen = make(map[rawptr]bool)
     defer delete(g.seen)
@@ -322,9 +334,8 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
         gc_push(&g, v.next)
         gc_push(&g, v.val)
     }
-    for v in vm.all_generators {
-        gc_push(&g, v)
-    }
+    // all_generators is an allocation index, not a root. Iterator objects and
+    // Promise reaction holders retain live continuations through Object.gen.
     gc_push(&g, vm.current_gen)
     gc_push(&g, vm.gen_next_fn)
     gc_push(&g, vm.gen_return_fn)
@@ -354,6 +365,18 @@ vm_collect :: proc(vm: ^Interp, roots: []Value = nil) -> bool {
         if !g.seen[rawptr(c)] || (c.kind != .Weak_Map && c.kind != .Weak_Set) do continue
         gc_prune_weak(c, &g)
     }
+    live_generators := 0
+    for gen in vm.all_generators {
+        if g.seen[rawptr(gen)] {
+            vm.all_generators[live_generators] = gen
+            live_generators += 1
+        } else {
+            exec_dispose(gen)
+            delete(gen.requests)
+            free(gen)
+        }
+    }
+    resize(&vm.all_generators, live_generators)
     live_all_envs := 0
     for e in vm.all_envs {
         if g.seen[rawptr(e)] { vm.all_envs[live_all_envs] = e; live_all_envs += 1; continue }

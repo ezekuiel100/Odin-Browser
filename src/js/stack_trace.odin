@@ -17,8 +17,8 @@ import "core:strings"
 //   • call_function (função de usuário) empilha um Stack_Frame LOCAL (na pilha
 //     nativa) encadeado por `parent` em `vm.frame`: guarda a função e ONDE, no
 //     código do chamador, a chamada aconteceu. A saída restaura tudo por `defer`.
-//   • generator/async: o corpo roda numa thread própria e fica suspenso entre
-//     retomadas — gen_resume troca `vm.frame/cur_pos/cur_script` (ver lá).
+//   • generator/async: os frames de continuação guardam o estado suspenso;
+//     gen_resume troca `vm.frame/cur_pos/cur_script` durante cada retomada.
 //
 // Formato: o do V8 ("    at nome (url:linha:coluna)"), que é o que os parsers de
 // pilha esperam. Desvios conscientes: sem frames de NATIVAS ("at Array.map

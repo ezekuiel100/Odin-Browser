@@ -361,7 +361,7 @@ completion_value :: #force_inline proc(v: Value) -> Value {
 // só substitui o acumulado se não for vazio. Declaração de classe é vazia, mas o
 // eval dela devolve a classe (o `export default class` precisa do valor), então
 // é tratada aqui, no único contexto em que ela aparece como statement.
-@(private = "file")
+@(private = "package")
 update_empty :: #force_inline proc(acc: Value, s: ^Node, r: Value) -> Value {
     if is_empty_completion(r) || (s.kind == .Class && s.decl) do return acc
     return r
@@ -378,7 +378,7 @@ with_object :: #force_inline proc(e: ^Env) -> Value {
 
 // Escopo de função mais próximo (onde `var` binda — var é function-scoped, não
 // block-scoped). Sobe pela cadeia até um is_fn_scope; cai no global se não achar.
-@(private = "file")
+@(private = "package")
 fn_scope_env :: proc(env: ^Env) -> ^Env {
     cur := env
     for cur != nil {
@@ -391,6 +391,7 @@ fn_scope_env :: proc(env: ^Env) -> ^Env {
 // Estado de execução: escopo global + memória de runtime a liberar no fim +
 // o sinal de `return`.
 Interp :: struct {
+    exec_suspend_cache: map[^Node]bool, // syntax classification for continuations
     gc_threshold: int, // adaptive host-safepoint collection threshold
     global:         ^Env,
     all_envs:       [dynamic]^Env,
@@ -637,9 +638,8 @@ Interp :: struct {
     rejected_log:   [dynamic]string,
     rejected_total: int,
     // ── generators (generator.odin) ──
-    all_generators: [dynamic]^Generator,  // generators criados (threads a limpar no destroy)
-    current_gen:    ^Generator,            // generator cuja thread está rodando AGORA (p/ eval de yield)
-    gen_hard_kill:  bool,                  // vm_destroy: desenrola o corpo do generator sem rodar mais JS
+    all_generators: [dynamic]^Generator,  // allocation index; reachability comes from iterator objects and jobs
+    current_gen:    ^Generator,            // execution currently driven by the continuation trampoline
     gen_next_fn:    ^Function,             // métodos compartilhados do generator: next/return/throw
     gen_return_fn:  ^Function,
     gen_throw_fn:   ^Function,
@@ -781,7 +781,7 @@ TIME_CHECK_MASK :: u64(0xFFFF)
 // break dentro de um loop/switch rotulado `my_label`: consome se for sem-label ou
 // destinado a este; se for p/ um label EXTERNO, deixa `breaking` setado (propaga).
 // De qualquer forma o chamador sai do loop.
-@(private = "file")
+@(private = "package")
 loop_take_break :: proc(vm: ^Interp, my_label: string) {
     if vm.break_label == "" || vm.break_label == my_label {
         vm.breaking = false
@@ -791,7 +791,7 @@ loop_take_break :: proc(vm: ^Interp, my_label: string) {
 
 // continue: devolve true se ESTE loop deve continuar (sem-label ou bate no label);
 // false se o continue mira um loop EXTERNO (o loop atual sai mantendo o sinal).
-@(private = "file")
+@(private = "package")
 loop_take_continue :: proc(vm: ^Interp, my_label: string) -> bool {
     if vm.continue_label == "" || vm.continue_label == my_label {
         vm.continuing = false
@@ -860,8 +860,7 @@ ENV_POOL_VAR_MAX :: 64
 // Registra que um ^Env acabou de ficar alcançável por algo que sobrevive à
 // chamada em curso. Chamado nos ÚNICOS pontos que guardam um ^Env em algum lugar:
 // a closure de uma função (3 sítios), o escopo de um módulo, um alias de import
-// com live binding, e a retomada de um generator (cuja thread mantém vivos os
-// escopos do corpo suspenso entre um next() e o seguinte).
+// com live binding, e os frames de uma execução que pode suspender.
 //
 // É deliberadamente CONSERVADOR: basta um escape em qualquer ponto da chamada
 // para ela inteira desistir de reciclar. Errar para o lado do vazamento é
@@ -905,7 +904,7 @@ recycle_envs :: proc(vm: ^Interp, mark: int) {
 
 // Cópia dos bindings do escopo de um `for (let ...)` p/ a próxima iteração
 // (CreatePerIterationEnvironment da spec). O parent é o escopo EXTERNO ao for.
-@(private = "file")
+@(private = "package")
 clone_loop_bindings :: proc(vm: ^Interp, src: ^Env, parent: ^Env) -> ^Env {
     e := new_env(vm, parent)
     for k, v in src.vars do e.vars[k] = v
@@ -914,7 +913,7 @@ clone_loop_bindings :: proc(vm: ^Interp, src: ^Env, parent: ^Env) -> ^Env {
 
 // O subtree contém alguma função/arrow/classe (= pode criar closure)?
 // Usado pelo .For p/ só pagar o binding por-iteração quando é observável.
-@(private = "file")
+@(private = "package")
 subtree_has_func :: proc(n: ^Node) -> bool {
     if n == nil do return false
     if n.kind == .Func || n.kind == .Class do return true
@@ -950,7 +949,7 @@ hoist_functions :: proc(vm: ^Interp, stmts: []^Node, env: ^Env) {
 
 // Uma declaração de função já içada por hoist_functions — o loop de execução a
 // pula para não recriar a mesma função ao alcançar a linha.
-@(private = "file")
+@(private = "package")
 is_hoisted_func :: proc(s: ^Node) -> bool {
     n := s
     for n.kind == .Labeled do n = n.left
@@ -958,7 +957,7 @@ is_hoisted_func :: proc(s: ^Node) -> bool {
 }
 
 // Copy the current block binding only when execution reaches the declaration.
-@(private = "file")
+@(private = "package")
 execute_hoisted_func :: proc(vm: ^Interp, s: ^Node, env: ^Env) {
     n := s
     for n.kind == .Labeled do n = n.left
@@ -1265,9 +1264,9 @@ new_function :: proc(vm: ^Interp) -> ^Function {
 }
 
 vm_destroy :: proc(vm: ^Interp) {
-    // encerra threads de generators suspensos ANTES de liberar envs/objetos (o
-    // desenrolar das threads ainda percorre frames que referenciam esses envs).
+    // Release saved execution state before destroying the VM heap.
     cleanup_generators(vm)
+    delete(vm.exec_suspend_cache)
     mo_free(vm) // antes do dom_cleanup: nada mais deve enfileirar record
     io_free(vm) // idem: nenhum observador de interseção sobrevive ao vm
     mq_free(vm) // idem p/ os MediaQueryList com ouvinte
@@ -2362,7 +2361,7 @@ is_date_object :: proc(vm: ^Interp, v: Value) -> bool {
 
 // Aplica um operador binário a dois valores. Reusado por Binary, pelos
 // compostos (+=, -=, ...) e por ++/--.
-@(private = "file")
+@(private = "package")
 binop :: proc(vm: ^Interp, op: Token_Kind, l, r: Value) -> Value {
     // BigInt: se algum operando é BigInt, semântica própria (mistura com Number em
     // aritmética lança; ===/== e relacionais tratam mistura). Exceto que instanceof/
@@ -3331,7 +3330,7 @@ set_index :: proc(vm: ^Interp, obj: Value, key: Value, val: Value) -> bool {
 
 // Lê/escreve um alvo cuja base/chave JÁ foram avaliadas (obj/key) — o .Assign
 // resolve a referência uma vez e reusa aqui (ordem da spec, sem reavaliação).
-@(private = "file")
+@(private = "package")
 ref_read :: proc(vm: ^Interp, t: ^Node, env: ^Env, obj: Value, key: Value) -> Value {
     #partial switch t.kind {
     case .Ident:
@@ -3347,7 +3346,7 @@ ref_read :: proc(vm: ^Interp, t: ^Node, env: ^Env, obj: Value, key: Value) -> Va
 
 // `strict`: o nó de escrita é de código strict — rejeição vira TypeError e nome
 // não declarado, ReferenceError.
-@(private = "file")
+@(private = "package")
 ref_write :: proc(vm: ^Interp, t: ^Node, env: ^Env, obj: Value, key: Value, val: Value, strict := false) {
     #partial switch t.kind {
     case .Ident:
@@ -3479,7 +3478,7 @@ eval_args :: proc(vm: ^Interp, nodes: [dynamic]^Node, env: ^Env) -> [dynamic]Val
 // Um passo do iterador de um padrão de array (IteratorStepValue, spec 7.4.8): devolve
 // o próximo valor, ou undefined com `done^ = true` quando o iterador terminou. Erro
 // em next()/done/value também marca done — a spec NÃO fecha um iterador que falhou.
-@(private = "file")
+@(private = "package")
 pattern_iter_step :: proc(vm: ^Interp, iter: Value, next_fn: ^Function, done: ^bool) -> Value {
     if done^ do return nil
     if next_fn == nil || step_guard(vm) { done^ = true; return nil }
@@ -3515,7 +3514,7 @@ value_kind_name :: proc(v: Value) -> string {
 // Alvo de destructuring-EXPRESSÃO (`[o.x, a[k]] = v`) com o objeto e a chave JÁ
 // avaliados: a spec avalia o alvo ANTES de ler o valor — `[ {}[f()] ] = it` chama
 // f() antes do next(), e se f() lança o iterador ainda é fechado.
-@(private = "file")
+@(private = "package")
 Target_Ref :: struct {
     node: ^Node,
     obj:  Value,
@@ -3535,7 +3534,7 @@ eval_target_ref :: proc(vm: ^Interp, t: ^Node, env: ^Env) -> (ref: Target_Ref) {
     return
 }
 
-@(private = "file")
+@(private = "package")
 put_target_ref :: proc(vm: ^Interp, ref: Target_Ref, val: Value, env: ^Env, strict := false) {
     #partial switch ref.node.kind {
     case .Ident:
@@ -3553,7 +3552,6 @@ put_target_ref :: proc(vm: ^Interp, ref: Target_Ref, val: Value, env: ^Env, stri
 // qualquer erro do return(). Sem exceção em voo, erro do return() propaga e um
 // resultado que não é objeto vira TypeError.
 iterator_close_completion :: proc(vm: ^Interp, iter: Value) {
-    if vm.gen_hard_kill do return
     saved_throw, saved_exc := vm.throwing, vm.thrown
     saved_ret, saved_val := vm.returning, vm.ret_val
     saved_break, saved_continue := vm.breaking, vm.continuing
@@ -3571,7 +3569,6 @@ iterator_close_completion :: proc(vm: ^Interp, iter: Value) {
             throw_type_error(vm, "iterator.return is not a function")
         }
     }
-    if vm.gen_hard_kill do return
     if saved_throw {
         vm.throwing = true; vm.thrown = saved_exc
     }
@@ -3803,28 +3800,6 @@ iterator_close :: proc(vm: ^Interp, iter: Value) {
     }
 }
 
-// Fecha um iterador assíncrono preservando a conclusão abrupta do corpo.
-async_iterator_close :: proc(vm: ^Interp, iter: Value) {
-    saved_throw, saved_exc := vm.throwing, vm.thrown
-    saved_ret, saved_val := vm.returning, vm.ret_val
-    saved_break, saved_continue := vm.breaking, vm.continuing
-    vm.throwing = false; vm.thrown = nil
-    vm.returning = false; vm.ret_val = nil
-    vm.breaking = false; vm.continuing = false
-    ret := get_member(vm, iter, "return")
-    if fn, ok := ret.(^Function); ok && !vm.throwing {
-        result := call_function(vm, fn, iter, nil)
-        if !vm.throwing do await_value(vm, result)
-    }
-    if vm.gen_hard_kill do return
-    if saved_throw {
-        vm.throwing = true; vm.thrown = saved_exc
-    }
-    if !vm.throwing {
-        vm.returning = saved_ret; vm.ret_val = saved_val
-        vm.breaking = saved_break; vm.continuing = saved_continue
-    }
-}
 
 // for (x of it) / for (x in it).
 //
@@ -3848,7 +3823,7 @@ await_value :: proc(vm: ^Interp, v: Value) -> Value {
 // Resolve o iterador ASSÍNCRONO de `v`: Symbol.asyncIterator se existir; senão o
 // Symbol.iterator síncrono (for-await envolve iteráveis síncronos, awaitando cada
 // valor adiante). false ⇒ não é iterável por protocolo (cai no fallback nativo).
-@(private = "file")
+@(private = "package")
 get_async_iterator :: proc(vm: ^Interp, v: Value) -> (Value, bool) {
     if _, ok := v.(^Object); ok {
         m := get_member(vm, v, vm.sym_async_iterator_key)
@@ -3863,7 +3838,7 @@ get_async_iterator :: proc(vm: ^Interp, v: Value) -> (Value, bool) {
 
 // Materializa os VALORES de um iterável nativo síncrono (array/Collection/string)
 // — o fallback do for-await quando não há iterador por protocolo.
-@(private = "file")
+@(private = "package")
 collect_sync_values :: proc(vm: ^Interp, it: Value, out: ^[dynamic]Value) {
     #partial switch o in it {
     case ^Array:
@@ -3889,78 +3864,6 @@ collect_sync_values :: proc(vm: ^Interp, it: Value, out: ^[dynamic]Value) {
     }
 }
 
-// for-await awaits next() results for async iterators. Sync iterators use
-// AsyncFromSyncIterator, which awaits each value before returning the result.
-@(private = "file")
-eval_for_await :: proc(vm: ^Interp, n: ^Node, env: ^Env, it: Value, my_label: string) -> Value {
-    cv: Value = nil // valor de conclusão do laço (atualizado pelo for_of_run_body)
-    iter: Value
-    by_protocol, is_async := false, false
-    if !is_primitive(it) {
-        method := get_member(vm, it, vm.sym_async_iterator_key)
-        if vm.throwing do return cv
-        if method != nil && method != (JS_Null{}) {
-            fn, ok := method.(^Function)
-            if !ok { throw_type_error(vm, "Symbol.asyncIterator is not callable"); return cv }
-            iter = call_function(vm, fn, it, nil)
-            if vm.throwing do return cv
-            by_protocol, is_async = true, true
-        }
-    }
-    if !by_protocol do iter, by_protocol = get_iterator(vm, it)
-    if vm.throwing do return cv
-    if by_protocol {
-        next_fn := iterator_next_fn(iter)
-        if next_fn == nil { throw_type_error(vm, "Iterator next is not callable"); return cv }
-        for {
-            if step_guard(vm) do break
-            r := call_function(vm, next_fn, iter, nil)
-            if vm.throwing do return cv
-            if is_async do r = await_value(vm, r)
-            if vm.throwing do return cv
-            if is_primitive(r) { throw_type_error(vm, "Iterator result is not an object"); return cv }
-            done := truthy(get_member(vm, r, "done"))
-            if vm.throwing do return cv
-            value: Value
-            // AsyncFromSyncIterator unwraps the value, including the done step.
-            // A real async iterator already returns its result through Await.
-            if !is_async || !done do value = get_member(vm, r, "value")
-            if vm.throwing do return cv
-            if !is_async do value = await_value(vm, value)
-            if vm.throwing do return cv
-            if done do break
-            if for_of_run_body(vm, n, env, value, my_label, &cv) {
-                async_iterator_close(vm, iter)
-                break
-            }
-        }
-        return cv
-    }
-    // Native arrays advance lazily, so mutations made while suspended are seen.
-    if array, ok := it.(^Array); ok {
-        for i := 0; ; i += 1 {
-            if step_guard(vm) do return cv
-            done := i >= len(array.items)
-            value: Value
-            if !done do value = get_index(vm, array, f64(i))
-            if vm.throwing do return cv
-            value = await_value(vm, value)
-            if vm.throwing || done do return cv
-            if for_of_run_body(vm, n, env, value, my_label, &cv) do return cv
-        }
-    }
-    values: [dynamic]Value
-    defer delete(values)
-    collect_sync_values(vm, it, &values)
-    for v in values {
-        av := await_value(vm, v)
-        if vm.throwing do return cv
-        if for_of_run_body(vm, n, env, av, my_label, &cv) do return cv
-    }
-    // Even an empty iterator suspends on its final next() result.
-    await_value(vm, nil)
-    return cv
-}
 
 @(private = "file")
 eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
@@ -3971,7 +3874,7 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 
     // for await (x of it): drena um iterável ASSÍNCRONO (ou síncrono, awaitando
     // cada valor). Cada passo suspende a corrotina até assentar.
-    if n.is_generator do return eval_for_await(vm, n, env, it, my_label)
+    if n.is_generator { throw_type_error(vm, "Suspension requires an execution frame"); return nil }
 
     // caminho LAZY: for-of sobre iterável por protocolo
     if n.bval {
@@ -4054,7 +3957,7 @@ eval_for_of :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 }
 
 // True se o padrão de objeto lista `key` como uma chave-fonte (p/ excluir do rest).
-@(private = "file")
+@(private = "package")
 pattern_has_key :: proc(pat: ^Node, key: string) -> bool {
     for el in pat.body {
         if !el.bval && el.str == key do return true
@@ -4067,13 +3970,14 @@ pattern_has_key :: proc(pat: ^Node, key: string) -> bool {
 eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     when JSPROF { g_prof.por_no[n.kind] += 1; g_prof.evals += 1 }
     // exceção em voo: nada mais é avaliado até um try/catch (ou o topo) tratá-la.
-    // gen_hard_kill: um generator sendo terminado no vm_destroy — não roda mais JS.
-    if vm.throwing || vm.gen_hard_kill do return nil
+    if vm.throwing do return nil
     if n.pos != 0 do vm.cur_pos = n.pos // statement/chamada: posição p/ Error.stack
     // fronteira de cadeia opcional: um nó que não é Member/Index/Call encerra
     // qualquer curto-circuito de `?.` em andamento (o valor já foi consumido).
     if n.kind != .Member && n.kind != .Index && n.kind != .Call do vm.opt_short = false
     switch n.kind {
+    case .Captured:
+        return (cast(^Value)n.left)^
     case .Num:
         return n.num
     case .BigIntLit:
@@ -4696,7 +4600,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         // conclusão: a do try (ou a do catch, se capturou); um finally ABRUPTO a
         // substitui. Vazio vira undefined (spec: UpdateEmpty(C, undefined)).
         tr := eval(vm, n.left, env) // bloco try
-        if vm.throwing && n.right != nil && !vm.gen_hard_kill {
+        if vm.throwing && n.right != nil {
             vm.throwing = false // capturada
             exc := vm.thrown
             vm.thrown = nil
@@ -4705,7 +4609,7 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
             if n.callee != nil do bind_pattern(vm, n.callee, exc, cenv) // catch ({ message })
             tr = eval(vm, n.right, cenv) // bloco catch (vê o parâmetro)
         }
-        if n.third != nil && !vm.gen_hard_kill {
+        if n.third != nil {
             // finally roda SEMPRE, mesmo com sinal pendente (throw sem catch,
             // return, break...). Estaciona o sinal, roda, e restaura — a menos
             // que o próprio finally gere um sinal novo (que então prevalece).
@@ -4887,20 +4791,8 @@ eval :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         return nil
 
     case .Yield:
-        // roda na THREAD do generator (só é alcançado dentro de um corpo de generator).
-        if n.bval do return eval_yield_star(vm, n, env) // yield* delega a outro iterável
-        val: Value = nil
-        if n.left != nil {
-            val = eval(vm, n.left, env)
-            if vm.throwing do return nil
-        }
-        // async generator: AsyncGeneratorYield faz Await(value) antes de emitir —
-        // `yield promise` suspende até resolver, antes de emitir o yield.
-        if vm.current_gen != nil && vm.current_gen.is_async {
-            val = await_value(vm, val)
-            if vm.throwing || vm.returning do return nil
-        }
-        return generator_yield(vm, val)
+        throw_type_error(vm, "Suspension requires an execution frame")
+        return nil
 
     case .Spread:
         // nunca avaliado direto: eval_args/.ObjectLit expandem o ...spread
@@ -4968,7 +4860,7 @@ build_method :: proc(vm: ^Interp, m: ^Node, env: ^Env, super_fn: ^Function, supe
 // Método de literal de objeto (`{ m(){} }`, nó marcado pelo parser) ganha o objeto
 // como home object — é o que dá sentido a `super.x` nele. `{ k: function(){} }` e
 // arrows NÃO ganham (spec: só MethodDefinition tem [[HomeObject]]).
-@(private = "file")
+@(private = "package")
 set_home_object :: proc(v: Value, node: ^Node, o: ^Object) {
     if node == nil || node.kind != .Func || !node.is_method do return
     if fn, ok := v.(^Function); ok do fn.home_obj = o
@@ -5007,13 +4899,14 @@ class_member_key :: proc(vm: ^Interp, m: ^Node, env: ^Env) -> string {
 // eval de `class`: monta a função-construtora + o objeto prototype (que segura
 // os métodos de instância). Herança = prototype.proto aponta p/ o prototype da
 // superclasse; `new` liga this.proto a este prototype (ver .New).
-@(private = "file")
-eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
+@(private = "package")
+eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env, resolved_keys: []string = nil, heritage: Value = nil, has_heritage := false) -> Value {
     super_fn: ^Function
     super_proto: ^Object
     extends_null := false
     if n.callee != nil {
-        hv := eval(vm, n.callee, env)
+        hv := heritage
+        if !has_heritage do hv = eval(vm, n.callee, env)
         if vm.throwing do return nil
         #partial switch sv in hv {
         case ^Function:
@@ -5083,7 +4976,9 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     ctor.class_keys = make([]string, len(n.body))
     for m, i in n.body {
         if m.kind != .Func && m.kind != .ClassField do continue
-        key := class_member_key(vm, m, env)
+        key: string
+        if resolved_keys != nil do key = resolved_keys[i]
+        else do key = class_member_key(vm, m, env)
         if vm.throwing do return nil
         ctor.class_keys[i] = key
         if m.kind != .Func || m.name == "constructor" do continue
@@ -5156,7 +5051,7 @@ eval_class :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 //   super(args)         -> chama a construtora da superclasse com o `this` atual
 //   super.metodo(args)  -> chama metodo herdado, mas com o `this` atual
 // __superctor__/__superproto__ são ligados no escopo por call_function.
-@(private = "file")
+@(private = "package")
 try_eval_super_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> (result: Value, handled: bool) {
     c := n.callee
     this_val, _ := env_get(env, "this")
@@ -5205,7 +5100,7 @@ try_eval_super_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> (result: Value,
 // Leitura de `super.prop` (fora de chamada): procura na cadeia do prototype da
 // superclasse; um GETTER herdado roda com this = o objeto ATUAL (spec), por
 // isso não dá p/ reusar o get_member (que passaria o próprio proto como this).
-@(private = "file")
+@(private = "package")
 eval_super_member :: proc(vm: ^Interp, name: string, env: ^Env) -> Value {
     sp, _ := env_get(env, "__superproto__")
     this_val, _ := env_get(env, "this")
@@ -5613,9 +5508,31 @@ eval_call :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     return res
 }
 
+@(private = "package")
+template_object :: proc(vm: ^Interp, tpl: ^Node) -> ^Array {
+    // tpl.params traz os N chunks COZIDOS seguidos dos N CRUS (ver Node.params).
+    nchunks := len(tpl.body) + 1
+    if nchunks > len(tpl.params) do nchunks = len(tpl.params)
+    strs := new_array(vm)
+    for i in 0 ..< nchunks do append(&strs.items, own_str(vm, tpl.params[i]))
+    // strings.raw: array PRÓPRIO, sem escapes decodificados. Era um ALIAS do array
+    // cozido, e por isso String.raw`a\nb` devolvia a quebra de linha de verdade em
+    // vez de "a\nb" — justamente o único motivo de String.raw existir.
+    raws := new_array(vm)
+    if len(tpl.params) >= nchunks * 2 {
+        for i in 0 ..< nchunks do append(&raws.items, own_str(vm, tpl.params[nchunks + i]))
+    } else {
+        // defensivo (parse com recuperação): entrega os cozidos em vez de um array
+        // de tamanho diferente — o lit-html valida `strings.raw.length`.
+        for it in strs.items do append(&raws.items, it)
+    }
+    array_put(strs, "raw", raws)
+    return strs
+}
+
 // tag`a${x}b` (nó .Tagged: callee=tag, left=.Template). Resolve `this` de tag
 // que é membro (styled.div`...`) igual ao eval_call.
-@(private = "file")
+@(private = "package")
 eval_tagged :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     this_val: Value = nil
     fn_val: Value = nil
@@ -5651,23 +5568,7 @@ eval_tagged :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
         return nil
     }
     tpl := n.left
-    // tpl.params traz os N chunks COZIDOS seguidos dos N CRUS (ver Node.params).
-    nchunks := len(tpl.body) + 1
-    if nchunks > len(tpl.params) do nchunks = len(tpl.params)
-    strs := new_array(vm)
-    for i in 0 ..< nchunks do append(&strs.items, own_str(vm, tpl.params[i]))
-    // strings.raw: array PRÓPRIO, sem escapes decodificados. Era um ALIAS do array
-    // cozido, e por isso String.raw`a\nb` devolvia a quebra de linha de verdade em
-    // vez de "a\nb" — justamente o único motivo de String.raw existir.
-    raws := new_array(vm)
-    if len(tpl.params) >= nchunks * 2 {
-        for i in 0 ..< nchunks do append(&raws.items, own_str(vm, tpl.params[nchunks + i]))
-    } else {
-        // defensivo (parse com recuperação): entrega os cozidos em vez de um array
-        // de tamanho diferente — o lit-html valida `strings.raw.length`.
-        for it in strs.items do append(&raws.items, it)
-    }
-    array_put(strs, "raw", raws)
+    strs := template_object(vm, tpl)
     args: [dynamic]Value
     defer delete(args)
     append(&args, strs)
@@ -5679,222 +5580,7 @@ eval_tagged :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
     return call_function(vm, fn, this_val, args[:])
 }
 
-// Roda o corpo de um generator (na thread do generator; chamado por gen_thread_proc
-// em generator.odin). Mesmo setup de call_function via setup_call_scope; os sinais
-// pendentes ao terminar (return/throw/fim) são traduzidos pela thread.
-run_generator_body :: proc(vm: ^Interp, g: ^Generator) {
-    if g.program != nil {
-        result := eval(vm, g.program, g.program_env)
-        if !vm.throwing && !vm.gen_hard_kill {
-            vm.returning = true
-            vm.ret_val = result
-        }
-        return
-    }
-    fn := g.fn
-    scope := setup_call_scope(vm, fn, g.this, g.args)
-    if fn.body != nil {
-        hoist_functions(vm, fn.body.body[:], scope)
-        hoist_vars_body(fn.body.body[:], scope) // var aninhados em blocos/switch/if/try
-        for s in fn.body.body {
-            if is_hoisted_func(s) do continue
-            eval(vm, s, scope)
-            if vm.returning || vm.throwing || vm.gen_hard_kill do break
-        }
-    }
-}
 
-// yield* it: delega a `it`, repassando cada valor via yield; devolve o valor final
-// de retorno do iterador (undefined p/ iteráveis nativos). Em async generator,
-// delega a um iterável ASSÍNCRONO (Symbol.asyncIterator), awaitando cada passo.
-// SIMPLIFICAÇÃO: não encaminha next(v)/throw/return ao delegado. Cobre `yield*
-// gen()`, `yield* arr`, `yield* asyncGen()`.
-eval_yield_star :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
-    operand := eval(vm, n.left, env)
-    if vm.throwing do return nil
-
-    // async generator: `yield* asyncIter` delega a um iterável ASSÍNCRONO (ou
-    // síncrono envolvido), awaitando cada passo e repassando via yield. Como o
-    // caminho síncrono (M155), ENCAMINHA throw()/return()/next(v) ao delegado —
-    // mas aqui cada método devolve uma Promise, então awaita o resultado.
-    if vm.current_gen != nil && vm.current_gen.is_async {
-        if it, ok := get_async_iterator(vm, operand); ok {
-            next_fn := iterator_next_fn(it)
-            if next_fn != nil {
-                mode := 0            // 0=next, 1=throw, 2=return
-                sent: Value = nil
-                for {
-                    if step_guard(vm) do break
-                    r: Value
-                    switch mode {
-                    case 1:
-                        throw_fn := iterator_method_fn(it, "throw")
-                        if throw_fn == nil {
-                            if ret_fn := iterator_method_fn(it, "return"); ret_fn != nil {
-                                rr := call_function(vm, ret_fn, it, nil)
-                                if !vm.throwing do await_value(vm, rr) // IteratorClose
-                            }
-                            vm.throwing = false; vm.thrown = nil // não mascara o TypeError
-                            throw_type_error(vm, "The iterator does not provide a 'throw' method")
-                            return nil
-                        }
-                        r = call_function(vm, throw_fn, it, []Value{sent})
-                    case 2:
-                        ret_fn := iterator_method_fn(it, "return")
-                        if ret_fn == nil {
-                            vm.returning = true; vm.ret_val = sent
-                            return sent
-                        }
-                        r = call_function(vm, ret_fn, it, []Value{sent})
-                    case:
-                        r = call_function(vm, next_fn, it, []Value{sent})
-                    }
-                    if vm.throwing do return nil
-                    r = await_value(vm, r) // método de async iterator devolve Promise
-                    if vm.throwing do return nil
-                    ro, rok := r.(^Object)
-                    if !rok do break
-                    if truthy(ro.props["done"]) {
-                        if mode == 2 {
-                            vm.returning = true; vm.ret_val = ro.props["value"]
-                        }
-                        return ro.props["value"] // valor de retorno do delegado
-                    }
-                    val := await_value(vm, ro.props["value"])
-                    if vm.throwing do return nil
-                    sent = generator_yield(vm, val)
-                    mode = 0
-                    if vm.gen_hard_kill do return nil
-                    if vm.throwing {
-                        mode = 1; sent = vm.thrown
-                        vm.throwing = false; vm.thrown = nil
-                    } else if vm.returning {
-                        mode = 2; sent = vm.ret_val
-                        vm.returning = false; vm.ret_val = nil
-                    }
-                }
-                return nil
-            }
-        }
-        // fallback: iterável nativo síncrono (array/Collection/string) — awaita cada elemento
-        vals: [dynamic]Value
-        defer delete(vals)
-        collect_sync_values(vm, operand, &vals)
-        for v in vals {
-            av := await_value(vm, v)
-            if vm.throwing do return nil
-            generator_yield(vm, av)
-            if vm.throwing || vm.returning || vm.gen_hard_kill do return nil
-        }
-        return nil
-    }
-
-    // iterável por protocolo (outro generator, iterador custom): dirige o delegado
-    // ENCAMINHANDO next(v)/throw(e)/return(v) — não só next(). É o que a spec manda
-    // (YieldExpression delegate, §14.4.5.5) e o que o regenerator-runtime usa p/
-    // propagar erro pela máquina de estado async: sem isto, `outer.throw(e)` sobre
-    // um outer suspenso num `yield* inner()` ESCAPAVA o try/catch do inner (era o
-    // cluster `(lançou undefined)` do airbnb).
-    if it, ok := get_iterator(vm, operand); ok {
-        next_fn := iterator_next_fn(it)
-        if next_fn == nil do return nil
-        mode := 0            // 0=next, 1=throw, 2=return — como o outer foi retomado
-        sent: Value = nil    // valor que veio de next(v)/throw(e)/return(v)
-        for {
-            if step_guard(vm) do break
-            r: Value
-            switch mode {
-            case 1:
-                // outer.throw(e): encaminha a it.throw(e). Sem throw no delegado, a
-                // spec manda fechar (it.return) e lançar TypeError.
-                throw_fn := iterator_method_fn(it, "throw")
-                if throw_fn == nil {
-                    if ret_fn := iterator_method_fn(it, "return"); ret_fn != nil {
-                        call_function(vm, ret_fn, it, nil) // IteratorClose (resultado ignorado)
-                    }
-                    throw_type_error(vm, "The iterator does not provide a 'throw' method")
-                    return nil
-                }
-                r = call_function(vm, throw_fn, it, []Value{sent})
-            case 2:
-                // outer.return(v): encaminha a it.return(v). Sem return no delegado,
-                // yield* completa e o RETURN segue subindo com v.
-                ret_fn := iterator_method_fn(it, "return")
-                if ret_fn == nil {
-                    vm.returning = true; vm.ret_val = sent
-                    return sent
-                }
-                r = call_function(vm, ret_fn, it, []Value{sent})
-            case:
-                r = call_function(vm, next_fn, it, []Value{sent})
-            }
-            if vm.throwing do return nil
-            ro, rok := r.(^Object)
-            if !rok do break
-            if truthy(ro.props["done"]) {
-                // delegado concluiu. Se veio de um return encaminhado, o RETURN do
-                // outer prossegue com o value do delegado; senão é o valor de yield*.
-                if mode == 2 {
-                    vm.returning = true; vm.ret_val = ro.props["value"]
-                }
-                return ro.props["value"]
-            }
-            // não-done: repassa o value ao consumidor e captura a PRÓXIMA intenção
-            sent = generator_yield(vm, ro.props["value"])
-            mode = 0
-            if vm.gen_hard_kill do return nil
-            if vm.throwing {
-                mode = 1; sent = vm.thrown
-                vm.throwing = false; vm.thrown = nil
-            } else if vm.returning {
-                mode = 2; sent = vm.ret_val
-                vm.returning = false; vm.ret_val = nil
-            }
-        }
-        return nil
-    }
-    // iteráveis nativos: array / string (code points) / Collection
-    #partial switch s in operand {
-    case ^Array:
-        snapshot := make([]Value, len(s.items)) // snapshot: o corpo pode mutar durante o yield
-        defer delete(snapshot)
-        copy(snapshot, s.items[:])
-        for v in snapshot {
-            generator_yield(vm, v)
-            if vm.throwing || vm.returning || vm.gen_hard_kill do return nil
-        }
-    case string:
-        starts: [dynamic]int
-        defer delete(starts)
-        js_code_point_offsets(s, &starts)
-        for k := 0; k + 1 < len(starts); k += 1 {
-            generator_yield(vm, own_str(vm, s[starts[k]:starts[k + 1]]))
-            if vm.throwing || vm.returning || vm.gen_hard_kill do return nil
-        }
-    case ^Collection:
-        // snapshot como no ^Array acima: o consumidor pode fazer set.add() com o
-        // generator suspenso → append realoca s.entries e o for leria memória liberada
-        snap := make([]Coll_Entry, len(s.entries))
-        defer delete(snap)
-        copy(snap, s.entries[:])
-        if s.kind == .Set || s.kind == .Weak_Set {
-            for e in snap {
-                if e.dead do continue
-                generator_yield(vm, e.key)
-                if vm.throwing || vm.returning || vm.gen_hard_kill do return nil
-            }
-        } else {
-            for e in snap {
-                if e.dead do continue
-                pair := new_array(vm)
-                append(&pair.items, e.key); append(&pair.items, e.val)
-                generator_yield(vm, pair)
-                if vm.throwing || vm.returning || vm.gen_hard_kill do return nil
-            }
-        }
-    }
-    return nil
-}
 
 // Monta o escopo de uma chamada de função definida pelo usuário: escopo filho do
 // CLOSURE (não do chamador), com `this`, elos de super, params (defaults/padrões),
@@ -6018,7 +5704,7 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
     if fn.proxy != nil do return proxy_apply(vm, fn.proxy, this, args)
     when JSPROF { g_prof.chamadas += 1; if fn.native != nil do g_prof.chamadas_nat += 1 }
     // async function (não-generator): roda como CORROTINA — cada await suspende.
-    // O corpo é iniciado por run_generator_body; toda chamada JS, inclusive
+    // O corpo é iniciado por gen_resume; toda chamada JS, inclusive
     // recursiva à mesma função, precisa criar sua própria corrotina/Promise.
     if fn.is_async && !fn.is_generator && fn.native == nil {
         return async_call(vm, fn, this, args)
@@ -6081,7 +5767,7 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
         return ret
     }
     // generator (function*): chamar NÃO roda o corpo — devolve um objeto generator
-    // cujo .next() dirige o corpo numa thread própria em ping-pong (generator.odin).
+    // cujo .next() dirige os frames salvos pelo trampoline (generator.odin).
     if fn.is_generator {
         return make_generator(vm, fn, this, args)
     }

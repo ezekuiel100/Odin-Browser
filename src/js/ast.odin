@@ -10,6 +10,7 @@ package js
 // (ver Node.strict) sem crescer o nó.
 Node_Kind :: enum u8 {
     // ── expressões ──────────────────────────────
+    Captured, // internal transient operand (left = ^Value), never part of parsed AST
     Num,      // literal numérico          -> num
     BigIntLit,// literal BigInt (123n)     -> str (dígitos, sem o 'n'; pode ter 0x/0b/0o)
     Str,      // literal de string         -> str

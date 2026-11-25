@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "baselineCommit": "3c76987",
+  "suiteRevision": "2a1ade303f72d3de80565c921d685222405c32ce",
+  "suiteManifestSha256": "ab6939acba86e91ebd96b8644d706e701348e3ddf4f6370b384ddb64fedba752",
+  "selection": {
+    "areas": [
+      "language",
+      "built-ins",
+      "annexB"
+    ],
+    "perDirectory": 10,
+    "order": "sha256(path)",
+    "featureExclusions": [],
+    "continuations": {
+      "features": [
+        "generators",
+        "async-functions",
+        "async-iteration",
+        "top-level-await"
+      ],
+      "includeModuleGoal": true,
+      "pathIncludesAny": [
+        "async",
+        "generator"
+      ]
+    }
+  },
+  "manifest": "manifest-continuations-20261124.json",
+  "files": 1092,
+  "variants": 1871,
+  "unitTests": 2329,
+  "projectTests": 3767,
+  "newRegressionTests": 18,
+  "transitions": {
+    "FAIL->PASS": 40
+  },
+  "groups": {
+    "focused": {
+      "variants": 1523,
+      "before": {
+        "PASS": 1054,
+        "FAIL": 424,
+        "ERROR": 0,
+        "SKIP": 45
+      },
+      "after": {
+        "PASS": 1094,
+        "FAIL": 384,
+        "ERROR": 0,
+        "SKIP": 45
+      }
+    },
+    "async": {
+      "variants": 1144,
+      "before": {
+        "PASS": 673,
+        "FAIL": 437,
+        "ERROR": 2,
+        "SKIP": 32
+      },
+      "after": {
+        "PASS": 709,
+        "FAIL": 401,
+        "ERROR": 2,
+        "SKIP": 32
+      }
+    },
+    "generator": {
+      "variants": 445,
+      "before": {
+        "PASS": 304,
+        "FAIL": 137,
+        "ERROR": 0,
+        "SKIP": 4
+      },
+      "after": {
+        "PASS": 314,
+        "FAIL": 127,
+        "ERROR": 0,
+        "SKIP": 4
+      }
+    }
+  },
+  "measurements": {
+    "before": {
+      "file": "continuations-before-20261124.json.gz",
+      "browserSha256": "793d1f5e1cfd1ced35a97ae0ad7ec93d14c6f35154f2934f16e7fe51e094aed9",
+      "counts": {
+        "PASS": 1169,
+        "FAIL": 647,
+        "SKIP": 53,
+        "ERROR": 2
+      }
+    },
+    "after": {
+      "file": "continuations-20261124.json.gz",
+      "browserSha256": "cdf0f9dbd7416697a5f482bc2d992741aa518c62c455f6f79cadb27931ec0be2",
+      "counts": {
+        "PASS": 1209,
+        "FAIL": 607,
+        "SKIP": 53,
+        "ERROR": 2
+      }
+    }
+  }
+}

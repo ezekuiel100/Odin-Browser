@@ -1,7 +1,7 @@
 package js
 
-// Generators (function* / yield / yield*) — cada generator roda o corpo numa
-// thread própria em ping-pong (generator.odin). Cobre next()/return()/throw(),
+// Generators (function* / yield / yield*) — suspensão com
+// frames explícitos de continuação (generator.odin). Cobre next()/return()/throw(),
 // for-of, spread, delegação yield*, métodos generator e valores enviados.
 // Rodar: odin test src/js
 
@@ -242,7 +242,7 @@ test_gen_infinite_abandoned :: proc(t: ^testing.T) {
 
 @(test)
 test_gen_nested :: proc(t: ^testing.T) {
-    // um generator que dirige outro manualmente (next aninhado em thread aninhada)
+    // um generator que dirige outro manualmente (retomadas aninhadas)
     testing.expect_value(t, run(`
         function* inner(){ yield 'a'; yield 'b'; }
         function* outer(){

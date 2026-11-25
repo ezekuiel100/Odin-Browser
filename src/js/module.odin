@@ -243,7 +243,7 @@ module_ns_get :: proc(vm: ^Interp, o: ^Object, name: string) -> (Value, bool) {
 
 // Local (no escopo do exportador) por trás de um nome exportado — "" se o export
 // não é adiado (ex.: `export default`), caso em que o import copia o valor.
-@(private = "file")
+@(private = "package")
 module_local_of :: proc(m: ^Module, exported: string) -> string {
     if m == nil do return ""
     for d in m.deferred do if d.exported == exported do return d.local
@@ -467,7 +467,7 @@ module_wait_dependency :: proc(vm: ^Interp, dep: ^Module) -> bool {
         if ancestor == dep do return true
     }
     await_value(vm, dep.evaluation)
-    return !vm.throwing && !vm.gen_hard_kill
+    return !vm.throwing
 }
 
 // Start every static dependency before waiting on any one of them. Otherwise
