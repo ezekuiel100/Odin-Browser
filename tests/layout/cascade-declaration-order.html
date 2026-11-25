@@ -1,0 +1,27 @@
+<!doctype html>
+<style>
+html, body { margin: 0; padding: 0 }
+.stage { position: relative; width: 400px; height: 180px }
+.box { position: absolute; left: 0; width: 120px; height: 12px; box-sizing: border-box }
+.pad-child { display: block; width: 10px; height: 2px }
+#padding-last { top: 0; padding-left: 30px; padding: 4px }
+#physical-last { top: 20px; margin-inline-start: 28px; margin-left: 9px }
+#logical-last { top: 40px; margin-left: 9px; margin-inline-start: 28px }
+#nested { top: 60px; width: 70px; & { width: 90px } width: 110px }
+#media { top: 80px; width: 70px; @media (min-width: 1px) { width: 90px } width: 110px }
+#alias-last { top: 100px; box-sizing: border-box; -webkit-box-sizing: content-box; padding: 4px }
+#flex { top: 120px; display: flex; gap: 0 }
+#flex .one { flex-grow: 8; flex: 1 1 10px }
+#flex .two { flex: 1 1 10px }
+#all { margin-left: 30px; all: initial; display: block; position: absolute; left: 0; top: 160px; width: 50px; height: 12px }
+</style>
+<div class="stage">
+  <div class="box" id="padding-last"><b class="pad-child"></b></div>
+  <div class="box" id="physical-last"></div>
+  <div class="box" id="logical-last"></div>
+  <div class="box" id="nested"></div>
+  <div class="box" id="media"></div>
+  <div class="box" id="alias-last"></div>
+  <div class="box" id="flex"><i class="one"></i><i class="two"></i></div>
+  <div class="box" id="all"></div>
+</div>

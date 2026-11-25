@@ -39,12 +39,11 @@ test_alias_prefix_nao_sequestra_conhecidas :: proc(t: ^testing.T) {
 
 @(test)
 test_alias_ordem_de_cascata :: proc(t: ^testing.T) {
-    // Na MESMA regra não há ordem por-declaração (o `wins` guarda a ordem da
-    // REGRA) → empate resolvido a favor do PADRÃO, nas duas ordens de fonte.
+    // Na mesma regra, padrão e alias mantêm suas posições de origem.
     c := test_compute_one("div{-webkit-box-sizing:border-box;box-sizing:content-box}")
-    testing.expect(t, c.box_sizing == .Content, "padrão deveria vencer o prefixado no empate")
+    testing.expect(t, c.box_sizing == .Content, "padrão escrito depois deveria vencer")
     c2 := test_compute_one("div{box-sizing:content-box;-webkit-box-sizing:border-box}")
-    testing.expect(t, c2.box_sizing == .Content, "empate na mesma regra é sempre do padrão")
+    testing.expect(t, c2.box_sizing == .Border, "prefixado escrito depois deveria vencer")
 
     // Entre REGRAS diferentes a ordem de fonte decide normalmente, nos 2 sentidos.
     c3 := test_compute_one("div{-webkit-box-sizing:border-box} div{box-sizing:content-box}")

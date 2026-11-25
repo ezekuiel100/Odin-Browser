@@ -3,7 +3,16 @@ package ui
 import csspkg "../css"
 
 // Prioridade de autor sem aritmética de pesos nem carry entre colunas.
-// A ordem de fonte fica no Win, pois aliases têm política própria de empate.
+// Source order is separate from origin/layer/specificity and includes both the
+// rule and the declaration's position. Aliases keep this original position.
+Cascade_Order :: struct { rule, declaration: int }
+
+cascade_order_compare :: proc(a, b: Cascade_Order) -> int {
+    if a.rule != b.rule do return a.rule > b.rule ? 1 : -1
+    if a.declaration != b.declaration do return a.declaration > b.declaration ? 1 : -1
+    return 0
+}
+
 Cascade_Priority :: struct {
     important: bool,
     inline: bool,

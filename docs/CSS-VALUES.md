@@ -34,13 +34,28 @@ Os testes em `src/ui/css_value_families_test.odin` cobrem consultas CSS/JS, desc
 
 Comentários e escapes de nomes agora passam pela mesma normalização em declarações, consultas e validação CSSOM. Strings preservam comentários literais e aspas escapadas; comentários entre números e unidades não podem formar um token novo. Escapes de pontuação permanecem escapados para não virarem delimitadores. Isso ainda não substitui um tokenizer CSS completo.
 
-A cobertura adicional inclui font-weight, line-height, letter-spacing, word-spacing, text-overflow e backface-visibility. CSSOM usa o parser compartilhado ao ler declarações e atribuir cssText; setProperty valida valores e prioridade, getPropertyPriority expõe important e removeProperty retorna o valor removido. A serialização de cssText ainda não preserva a ordem original das declarações.
+A cobertura adicional inclui font-weight, line-height, letter-spacing, word-spacing, text-overflow e backface-visibility. CSSOM usa o parser compartilhado ao ler declarações e atribuir cssText; setProperty valida valores e prioridade, getPropertyPriority expõe important e removeProperty retorna o valor removido. A serialização mantém a ordem das declarações válidas vencedoras, inclusive depois de alterações por setters.
 
-A cobertura ainda não é uma implementação completa das gramáticas CSS. As famílias não enumeradas conservam seus parsers e o juiz de efeito legado para duplicatas; valores desconhecidos nessas famílias ainda podem gerar falsos positivos. Funções matemáticas e cores delegam aos parsers existentes e conservam suas aproximações. CSSStyleDeclaration ainda tem limitações de serialização e ordem; a tokenização de comentários e escapes permanece parcial, conforme descrito acima. A etapa de validação e consultas está descrita em [CSS-SELECTORS.md](CSS-SELECTORS.md). O pacote JS isolado, sem UI, mantém seu fallback sintático.
+A cobertura ainda não é uma implementação completa das gramáticas CSS. As famílias não enumeradas conservam seus parsers e o juiz de efeito legado para duplicatas; valores desconhecidos nessas famílias ainda podem gerar falsos positivos. Funções matemáticas e cores delegam aos parsers existentes e conservam suas aproximações. CSSStyleDeclaration ainda não representa todas as expansões e serializações de shorthand da especificação. A etapa de validação e consultas está descrita em [CSS-SELECTORS.md](CSS-SELECTORS.md). O pacote JS isolado, sem UI, mantém seu fallback sintático.
+
+## Ordem de declarações e nesting — 25/11/2026
+
+`parse_decls` pode devolver as posições das declarações válidas vencedoras junto com o mapa de valores. Duplicatas rejeitadas e declarações normais que perdem para uma anterior `!important` não alteram a posição do vencedor. As strings desse índice pertencem ao mapa; a regra libera apenas a lista de posições, além do mapa e suas strings.
+
+A cascata compara a posição da regra e depois a posição da declaração. Aliases, propriedades lógicas e componentes de borda mantêm essa origem ao competir com propriedades físicas e shorthands. A competição também abrange as famílias de shorthand existentes, incluindo font, flex, columns, place-*, fundos, animações e transições. `all` descarta declarações de prioridade inferior antes da expansão, respeitando suas exclusões.
+
+Declarações intercaladas com regras ou condições aninhadas geram trechos separados, na ordem do fonte e com os mesmos seletores/condições/camadas do pai. Trechos diretos mantêm a especificidade individual dos seletores-pai. Referências estáticas explícitas ou implícitas ao pai nas regras aninhadas agrupam listas e seletores complexos com a semântica de `:is()`. Pais com estados dinâmicos mantêm a expansão e o roteamento anteriores: a especificidade máxima de listas e o agrupamento de pais complexos nesses casos continuam limitados pelo matching funcional de estados. Ampersands em strings ou identificadores escapados permanecem literais.
+
+Esta etapa não completa a expansão de todos os shorthands: permanecem os limites anteriores de componentes omitidos, substituição de variáveis na resolução atômica de bordas, herança de palavras-chave CSS-wide e rollback entre shorthand/longhand com `revert-layer`. As consultas de container e os estados dinâmicos continuam com a cobertura anterior.
+
+Regressões: `src/css/declaration_order_test.odin`, `src/ui/declaration_order_test.odin`, `src/js/js_declaration_order_test.odin` e `tests/layout/cascade-declaration-order.html`.
+
+Validação: `test.ps1` passou nos oito pacotes (3.791 testes: 190 CSS, 1.134 UI, 2.342 JS, 81 HTML, 6 rede, 20 Brotli, 10 WOFF2 e 8 varfont). Os quatro testes novos do parser também passaram com `ODIN_TEST_FAIL_ON_BAD_MEMORY=true`. O build otimizado passou nos 27 goldens de layout e nas 111 verificações principais de pintura, incluindo as suítes auxiliares do portão. WPT selecionado `css-cascade`, comparado por nome com o `browser.exe` anterior: 6 PASS / 6 FAIL / 0 ERROR nos dois executáveis, sem transições. O diff de `all-prop-001` caiu de 6.655 para 981 pixels, ainda acima do orçamento de 480. O WPT completo não foi repetido.
 
 ## Referências e testes
 
 - [CSS Conditional Rules: definição de suporte](https://www.w3.org/TR/css-conditional-3/#support-definition)
 - [CSS Syntax: declarações](https://www.w3.org/TR/css-syntax-3/#consume-declaration)
+- [CSS Nesting: declarações intercaladas](https://www.w3.org/TR/css-nesting-1/#nested-declarations-rule)
 - src/ui/css_values_test.odin: tabelas positivas/negativas, cascata, variáveis, CSSOM e concordância das consultas.
 - Suítes completas de UI/CSS/JS e layout-golden.ps1.

@@ -1,0 +1,15 @@
+<anon# .> block x=0 y=0 w=800 h=180
+  <html# .> block x=0 y=0 w=800 h=180
+    <body# .> block x=0 y=0 w=800 h=180
+      <div# .stage> block x=0 y=0 w=400 h=180 REL
+        <div#padding-last .box> block x=0 y=0 w=120 h=12 ABS
+          <b# .pad-child> inline x=4 y=4 w=10 h=2
+        <div#physical-last .box> inline x=9 y=20 w=120 h=12 ABS
+        <div#logical-last .box> inline x=28 y=40 w=120 h=12 ABS
+        <div#nested .box> inline x=0 y=60 w=110 h=12 ABS
+        <div#media .box> inline x=0 y=80 w=110 h=12 ABS
+        <div#alias-last .box> inline x=0 y=100 w=128 h=20 ABS
+        <div#flex .box> flex x=0 y=120 w=120 h=12 ABS dir=Row gap=0
+          <i# .one> inline x=0 y=120 w=60 h=12
+          <i# .two> inline x=60 y=120 w=60 h=12
+        <div#all .box> inline x=0 y=160 w=50 h=12 ABS

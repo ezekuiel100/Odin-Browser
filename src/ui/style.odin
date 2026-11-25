@@ -3130,7 +3130,7 @@ when CASCADEPROBE {
 }
 
 collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates: []int, viewport_w: f32, want: csspkg.Pseudo_Kind = .None, state: csspkg.Element_State = .None, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil, inherited_dir: Directionality = .Ltr, inherited_vars: map[string]string = nil, inherited_mode: Writing_Mode = .Horizontal) -> map[string]string {
-    Win :: struct { spec: Cascade_Priority, order: int, val: string }
+    Win :: struct { spec: Cascade_Priority, order: Cascade_Order, val: string }
     wins := make(map[string]Win, context.temp_allocator)
     // Não reduzir antes do rollback: precisamos inclusive dos perdedores da camada.
     originals := make(map[string][dynamic]Win, context.temp_allocator)
@@ -3176,10 +3176,10 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
     filter := pass_ok && masks != nil
 
     // Importância > inline > layer > tupla de especificidade; ordem separada.
-    consider :: proc(wins: ^map[string]Win, prop: string, spec: Cascade_Priority, order: int, val: string) {
+    consider :: proc(wins: ^map[string]Win, prop: string, spec: Cascade_Priority, order: Cascade_Order, val: string) {
         if w, ok := wins[prop]; ok {
             if cascade_priority_compare(spec, w.spec) < 0 do return
-            if spec == w.spec && order < w.order do return
+            if spec == w.spec && cascade_order_compare(order, w.order) < 0 do return
         }
         wins[prop] = Win{spec, order, val}
     }
@@ -3251,23 +3251,33 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             }
         }
         if !matched do continue
-        for prop, val in rule.decls {
+        decl_order := rule.decl_order
+        if len(decl_order) == 0 && len(rule.decls) > 0 {
+            // Programmatically constructed rules may have no source metadata.
+            decl_order = make([]csspkg.Decl_Position, len(rule.decls), context.temp_allocator)
+            di := 0
+            for prop in rule.decls { decl_order[di] = {name = prop}; di += 1 }
+        }
+        for d in decl_order {
+            prop, val := d.name, rule.decls[d.name]
             // display:none só de seletor exato — evita esconder conteúdo por engano
             if prop == "display" && !exact do continue
             v, imp := csspkg.split_important(val)
             prio := Cascade_Priority{important = imp, layer = rule.layer_rank, specificity = best}
-            retain(&originals, prop, Win{prio, rule.order, v})
+            retain(&originals, prop, Win{prio, Cascade_Order{rule.order, d.index}, v})
         }
     }
 
     when STYLEPROF { style_prof_sub(0, sp_c); sp_c = style_prof_now() }
     // style="" inline: vence layers dentro da mesma importância (só no próprio elemento)
     if style, ok := n.attrs["style"]; ok && want == .None && state == .None {
-        inline := csspkg.parse_decls(style, context.temp_allocator)
-        for prop, val in inline {
+        decl_order: []csspkg.Decl_Position
+        inline := csspkg.parse_decls(style, context.temp_allocator, &decl_order)
+        for d in decl_order {
+            prop, val := d.name, inline[d.name]
             v, imp := csspkg.split_important(val)
             prio := Cascade_Priority{important = imp, inline = true, layer = csspkg.LAYER_UNLAYERED}
-            retain(&originals, prop, Win{prio, 1 << 30, v})
+            retain(&originals, prop, Win{prio, Cascade_Order{1 << 30, d.index}, v})
         }
     }
 
@@ -3295,7 +3305,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
                     best = i
                 } else {
                     cmp := cascade_priority_compare(w.spec, list[best].spec)
-                    if cmp > 0 || (cmp == 0 && w.order >= list[best].order) do best = i
+                    if cmp > 0 || (cmp == 0 && cascade_order_compare(w.order, list[best].order) >= 0) do best = i
                 }
             }
             if best < 0 do break
@@ -3327,9 +3337,21 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         if casc_alvo {
             for prop, w in wins {
                 if CASCADE_PROP != "" && !strings.contains(prop, CASCADE_PROP) do continue
-                fmt.eprintfln("[casc]   >>> VENCEU %-16s = %-20s prio=%v ordem=%d", prop, w.val, w.spec, w.order)
+                fmt.eprintfln("[casc]   >>> VENCEU %-16s = %-20s prio=%v ordem=%v", prop, w.val, w.spec, w.order)
             }
         }
+    }
+
+    // all competes at its own source position before aliases and shorthands
+    // are expanded. Custom properties, direction and unicode-bidi are excluded.
+    if all, ok := wins["all"]; ok {
+        lost := make([dynamic]string, context.temp_allocator)
+        for prop, w in wins {
+            if prop == "all" || prop == "direction" || prop == "unicode-bidi" || strings.has_prefix(prop, "--") do continue
+            cmp := cascade_priority_compare(all.spec, w.spec)
+            if cmp > 0 || (cmp == 0 && cascade_order_compare(all.order, w.order) > 0) do append(&lost, prop)
+        }
+        for prop in lost do delete_key(&wins, prop)
     }
 
     when STYLEPROF { style_prof_sub(2, sp_c); sp_c = style_prof_now() }
@@ -3340,14 +3362,12 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
     // -webkit-line-clamp têm tratamento PRÓPRIO em apply_decls; aliasá-los
     // p/ mask-image/line-clamp quebraria a semântica).
     {
-        // O alias perde o EMPATE (mesma regra → mesma spec/ordem, e o `wins` não
-        // guarda ordem por-declaração): `{-webkit-box-sizing:X; box-sizing:Y}`
-        // resolve p/ Y, que é o que o autor quer (o prefixado é o fallback).
-        // Entre REGRAS diferentes a ordem de fonte decide normalmente.
-        alias :: proc(wins: ^map[string]Win, prop: string, spec: Cascade_Priority, order: int, val: string) {
+        // Standard and prefixed spellings compete at their original source
+        // positions, including when they appear in the same declaration block.
+        alias :: proc(wins: ^map[string]Win, prop: string, spec: Cascade_Priority, order: Cascade_Order, val: string) {
             if w, ok := wins[prop]; ok {
                 if cascade_priority_compare(spec, w.spec) < 0 do return
-                if spec == w.spec && order <= w.order do return
+                if spec == w.spec && cascade_order_compare(order, w.order) <= 0 do return
             }
             wins[prop] = Win{spec, order, val}
         }
@@ -3480,7 +3500,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             sv := has_s ? ws.val : "auto"
             ev := has_e ? we.val : "auto"
             spec, order := ws.spec, ws.order
-            if !has_s || (has_e && (cascade_priority_compare(we.spec, spec) > 0 || (we.spec == spec && we.order > order))) {
+            if !has_s || (has_e && (cascade_priority_compare(we.spec, spec) > 0 || (we.spec == spec && cascade_order_compare(we.order, order) > 0))) {
                 spec, order = we.spec, we.order
             }
             alias(&wins, m.short, spec, order, strings.concatenate({sv, " / ", ev}, context.temp_allocator))
@@ -3700,20 +3720,11 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             for l, li in LADOS {
             for s in SUBS {
                 chave := strings.concatenate({"border-", l, "-", s}, context.temp_allocator)
-                best  := Win{order = -1}
-                // ⚠️⚠️ EMPATE: `>=` na ordem, não `>`. Declarações do MESMO bloco —
-                // e todo o `style=""` inline é um bloco só — chegam com spec E
-                // ordem IGUAIS, porque o `wins` não guarda ordem por-declaração.
-                // Com `>` estrito vencia o PRIMEIRO consultado, e como consulto do
-                // mais genérico ao mais específico isso fazia `border:10px solid`
-                // ganhar de `border-top:none` escrito ao lado — o oposto do certo.
-                // Com `>=`, o empate vai para o ÚLTIMO consultado, e a sequência de
-                // consulta abaixo (border → border-<lado> → border-<sub> → átomo) é
-                // exatamente a ordem em que o apply_border_props já os aplicava.
-                // Pego pelo WPT auto-fill-auto-size-001-print, onde a caixa passou
-                // de 0 para 20px de altura por causa da borda que devia ser `none`.
+                best  := Win{order = Cascade_Order{rule = -1}}
+                // The original declaration position decides overlapping border
+                // shorthands, independently of the order we inspect the atoms.
                 melhor :: proc(best: ^Win, w: Win, val: string) {
-                    if best.order < 0 || cascade_priority_compare(w.spec, best.spec) > 0 || (w.spec == best.spec && w.order >= best.order) {
+                    if best.order.rule < 0 || cascade_priority_compare(w.spec, best.spec) > 0 || (w.spec == best.spec && cascade_order_compare(w.order, best.order) >= 0) {
                         best^ = Win{w.spec, w.order, val}
                     }
                 }
@@ -3727,7 +3738,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
                     if v, k := item4(w.val, li); k do melhor(&best, w, v)
                 }
                 if w, ok := wins[chave]; ok do melhor(&best, w, w.val)
-                if best.order >= 0 do append(&atomos, Atomo{chave, best})
+                if best.order.rule >= 0 do append(&atomos, Atomo{chave, best})
             }
             }
             // Preserva a prioridade real do vencedor; o pairwise pula a família
@@ -3755,15 +3766,9 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
     // ⚠️ CADA par aqui exige que, em apply_decls, o SHORTHAND rode ANTES dos seus
     // longhands: é essa ordem que resolve o caminho inverso (longhand vence →
     // guardamos os dois, e o longhand sobrescreve o seu pedaço). A ordem foi
-    // conferida uma a uma no fonte — e NÃO é uniforme: `flex` roda DEPOIS de
-    // flex-grow/shrink/basis, `place-items` depois de align-items, `list-style`
-    // depois de list-style-type. Esses TRÊS estão fora da tabela de propósito;
-    // incluí-los sem antes mover o bloco de aplicação trocaria um erro por outro.
-    //
-    // ⚠️ Pares ANCESTRAL→DESCENDENTE só. `border-top` × `border-width` são IRMÃOS
-    // que se sobrepõem no border-top-width, e a ordem fixa não sabe desempatá-los
-    // nos dois sentidos — resolver isso exigiria expandir tudo em longhand, que é
-    // outra rodada. Documentado no teste m241_irmaos_sobrepostos_seguem_abertos.
+    // `place-*` also checks the presence of a winning explicit longhand before
+    // applying its component. Overlapping border siblings are resolved above
+    // at the atomic level instead of by deleting whole shorthands.
     {
         Sh :: struct { sh: string, longhands: []string }
         LADOS  :: [4]string{"top", "right", "bottom", "left"}
@@ -3773,6 +3778,21 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             {"inset",   {"top", "right", "bottom", "left"}},
             {"gap",      {"row-gap", "column-gap"}},
             {"mask", {"mask-image", "mask-size", "mask-position", "mask-repeat", "mask-mode", "mask-origin", "mask-clip"}},
+            {"flex", {"flex-grow", "flex-shrink", "flex-basis"}},
+            {"columns", {"column-count", "column-width"}},
+            {"list-style", {"list-style-type", "list-style-position", "list-style-image"}},
+            {"place-items", {"align-items", "justify-items"}},
+            {"place-content", {"align-content", "justify-content"}},
+            {"place-self", {"align-self", "justify-self"}},
+            {"transition", {"transition-property", "transition-duration", "transition-timing-function", "transition-delay"}},
+            {"animation", {"animation-name", "animation-duration", "animation-delay", "animation-timing-function",
+                           "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state"}},
+            {"border-image", {"border-image-source", "border-image-slice", "border-image-width", "border-image-outset", "border-image-repeat"}},
+            {"grid", {"grid-template", "grid-template-columns", "grid-template-rows", "grid-template-areas", "grid-auto-flow", "grid-auto-rows", "grid-auto-columns"}},
+            {"grid-template", {"grid-template-columns", "grid-template-rows", "grid-template-areas"}},
+            {"grid-area", {"grid-row", "grid-column"}},
+            {"scroll-margin", {"scroll-margin-top", "scroll-margin-right", "scroll-margin-bottom", "scroll-margin-left"}},
+            {"scroll-padding", {"scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left"}},
             {"overflow", {"overflow-x", "overflow-y"}},
             {"outline",  {"outline-width", "outline-style", "outline-color"}},
             {"text-decoration", {"text-decoration-line", "text-decoration-style",
@@ -3791,8 +3811,10 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             {"border-style", {"border-top-style", "border-right-style", "border-bottom-style", "border-left-style"}},
             {"border-color", {"border-top-color", "border-right-color", "border-bottom-color", "border-left-color"}},
             // já existiam
-            {"background", {"background-color", "background-image"}},
-            {"font",       {"font-style", "font-weight"}},
+            {"background", {"background-color", "background-image", "background-size", "background-position",
+                            "background-position-x", "background-position-y", "background-repeat", "background-origin", "background-clip", "background-attachment"}},
+            {"background-position", {"background-position-x", "background-position-y"}},
+            {"font", {"font-style", "font-weight", "font-size", "line-height", "font-family", "font-kerning"}},
         }
         // border-top/right/bottom/left → os 3 longhands daquele lado
         por_lado := make([dynamic]Sh, 0, 4, context.temp_allocator)
@@ -3812,10 +3834,10 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
                 l, ok2 := wins[lh]
                 if !ok2 do continue
                 // vence quem tem prioridade maior; empate desempata por ordem de fonte
-                if cascade_priority_compare(w.spec, l.spec) > 0 || (w.spec == l.spec && w.order > l.order) {
+                if cascade_priority_compare(w.spec, l.spec) > 0 || (w.spec == l.spec && cascade_order_compare(w.order, l.order) > 0) {
                     when CASCADEPROBE {
                         if probe {
-                            fmt.eprintfln("[casc]   xxx APAGOU %-22s = %-20s (prio=%v ordem=%d) — perdeu p/ %s = %s (prio=%v ordem=%d)",
+                            fmt.eprintfln("[casc]   xxx APAGOU %-22s = %-20s (prio=%v ordem=%v) — perdeu p/ %s = %s (prio=%v ordem=%v)",
                                 lh, l.val, l.spec, l.order, p.sh, w.val, w.spec, w.order)
                         }
                     }
@@ -3828,7 +3850,10 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         // átomo vencedor de um IRMÃO). O `border-radius` não entra nessa família:
         // é árvore de dois níveis, sem irmãos, e segue no pairwise.
         eh_borda :: proc(sh: string) -> bool {
-            return sh == "border" || strings.has_prefix(sh, "border-") && sh != "border-radius"
+            switch sh {
+            case "border", "border-top", "border-right", "border-bottom", "border-left", "border-width", "border-style", "border-color": return true
+            }
+            return false
         }
         for p in pares {
             if borda_por_atomo && eh_borda(p.sh) do continue
@@ -4023,10 +4048,8 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     // forem aplicados, ambos ANTES do bloco de métricas de caixa (margin/padding/
     // width/height/min-*), que é quem usa `lh` na prática.
     g_cur_lh_px = comp.font_size * (comp.line_height > 0 ? comp.line_height : 1.3)
-    // `all`: atalho que atinge TODAS as propriedades (menos direction/unicode-bidi
-    // e as custom). Aplicado ANTES das demais declarações — é o uso real
-    // (`.x { all: unset; color: red }`); a precedência exata por ordem-de-fonte
-    // exigiria ordem POR DECLARAÇÃO, que o `wins` da cascata não guarda.
+    // collect_decls already removed declarations that lose to all. Apply its
+    // reset first, then the declarations that won by priority/source position.
     //   • initial → tudo ao valor inicial (inclusive o que se herda)
     //   • unset   → herdadas herdam, o resto vai ao inicial. `comp` JÁ chega assim
     //               (cópia do pai + reset das não-herdadas) → no-op correto.
@@ -4038,8 +4061,10 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
             // ponteiros de pseudo são ALOCADOS e liberados por free_styles —
             // preservá-los, senão `all:initial` vaza memória.
             bf, af, fl := comp.before, comp.after, comp.first_letter
+            direction, bidi := comp.direction, comp.unicode_bidi
             comp^ = computed_initial()
             comp.before, comp.after, comp.first_letter = bf, af, fl
+            comp.direction, comp.unicode_bidi = direction, bidi
         }
         // O azul e o sublinhado de LINK não vivem em `comp`: o layout os aplica
         // depois, quando o autor "não definiu" color/text-decoration
@@ -4092,9 +4117,6 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
             comp.caret_color = c; comp.has_caret = true
         }
     }
-    if v, ok := decls["background-image"]; ok {
-        apply_bg_layers(comp, resolve_var(v, vars), false)
-    }
     if v, ok := decls["background"]; ok {
         rv := resolve_var(v, vars)
         // o shorthand carrega background-attachment junto (`background: url(x) fixed`)
@@ -4109,10 +4131,8 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         // claro que o UA dá ao `<button>` sobrevivia: a nav ficava com uma faixa
         // clara atrás dos itens. Vale igual p/ `background: none` e
         // `background: url(x)`.
-        // ⚠️ Só quando NÃO há `background-color` explícito no mesmo conjunto: o nosso
-        // `decls` é PLANO e não guarda a ordem relativa entre shorthand e longhand,
-        // então na dúvida o longhand vence (é o caso comum — `background: url(x)`
-        // numa regra e `background-color` em outra, mais específica).
+        // A winning explicit longhand is applied below. collect_decls already
+        // removed longhands that lost to this shorthand by priority/source order.
         if !found_color {
             if _, tem_longhand := decls["background-color"]; !tem_longhand {
                 comp.bg = 0
@@ -4120,10 +4140,10 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
             }
         }
     }
-    // `background-color` roda DEPOIS do shorthand (era antes) — é a mesma
-    // convenção "na dúvida o longhand vence" que o bloco acima já declara. Com a
-    // ordem antiga, `.a{background:#f00}` + `.i{background-color:transparent}`
-    // acabava vermelho: o longhand limpava e o shorthand repintava.
+    if v, ok := decls["background-image"]; ok {
+        apply_bg_layers(comp, resolve_var(v, vars), false)
+    }
+    // Surviving longhands apply after the shorthand to override their component.
     if v, ok := decls["background-color"]; ok {
         rv := resolve_var(v, vars)
         // `transparent` é AUSÊNCIA de fundo, e tem de APAGAR o que já estava lá —
@@ -5076,9 +5096,6 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     }
     // list-style-type e o shorthand list-style (varre os tokens buscando o tipo;
     // 'none' vence — cobre `list-style: none` que zera o marcador).
-    if v, ok := decls["list-style-type"]; ok {
-        if ls, k := parse_list_style_type(strings.trim_space(v)); k do comp.list_style = ls
-    }
     if v, ok := decls["list-style"]; ok {
         lo := strings.to_lower(resolve_var(v, vars), context.temp_allocator)
         if strings.contains(lo, "none") {
@@ -5088,6 +5105,9 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
                 if ls, k := parse_list_style_type(tok); k { comp.list_style = ls; break }
             }
         }
+    }
+    if v, ok := decls["list-style-type"]; ok {
+        if ls, k := parse_list_style_type(strings.trim_space(v)); k do comp.list_style = ls
     }
     apply_border_radius(comp, decls, vars, comp.font_size, vw, vh)
     if v, ok := decls["text-align"]; ok {
@@ -5464,13 +5484,6 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     if v, ok := decls["row-gap"]; ok    do set_gap_row(comp, resolve_var(v, vars), fs, vw, vh)
     if v, ok := decls["column-gap"]; ok do set_gap_col(comp, resolve_var(v, vars), fs, vw, vh)
     // ── multi-coluna ──
-    if v, ok := decls["column-count"]; ok {
-        s := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
-        if n, k := strconv.parse_int(s); k && n > 0 do comp.col_count = n // 'auto' fica 0
-    }
-    if v, ok := decls["column-width"]; ok {
-        if px, pct, k := parse_len(resolve_var(v, vars), fs, vw, vh); k && !pct && px > 0 do comp.col_width = px
-    }
     if v, ok := decls["columns"]; ok {
         // shorthand: <count> e/ou <width> em qualquer ordem ('auto' ignorado)
         for tok in strings.fields(resolve_var(v, vars), context.temp_allocator) {
@@ -5479,6 +5492,15 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
             if n, k := strconv.parse_int(lo); k && n > 0 { comp.col_count = n; continue }
             if px, pct, k := parse_len(tok, fs, vw, vh); k && !pct && px > 0 do comp.col_width = px
         }
+    }
+    if v, ok := decls["column-count"]; ok {
+        s := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
+        comp.col_count = 0
+        if n, k := strconv.parse_int(s); k && n > 0 do comp.col_count = n
+    }
+    if v, ok := decls["column-width"]; ok {
+        comp.col_width = 0
+        if px, pct, k := parse_len(resolve_var(v, vars), fs, vw, vh); k && !pct && px > 0 do comp.col_width = px
     }
     // fragmentação: break-before/after (+ aliases page-break-*). Só tratamos 'avoid'
     // (impede quebra de coluna entre este bloco e o vizinho); force/always ignorado.
@@ -5606,6 +5628,9 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
         comp.grid_row_start_auto, comp.grid_row_end_auto = grid_line_autos(rv)
     }
 
+    if v, ok := decls["flex"]; ok {
+        parse_flex_shorthand(comp, resolve_var(v, vars), fs, vw, vh)
+    }
     if v, ok := decls["flex-grow"]; ok {
         if f, k := strconv.parse_f64(strings.trim_space(v)); k do comp.flex_grow = f32(f)
     }
@@ -5617,9 +5642,6 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     }
     if v, ok := decls["order"]; ok {
         if o, k := strconv.parse_int(strings.trim_space(v)); k do comp.order = o
-    }
-    if v, ok := decls["flex"]; ok {
-        parse_flex_shorthand(comp, resolve_var(v, vars), fs, vw, vh)
     }
 
     // Coletor de props não implementadas (para debug/inventário)

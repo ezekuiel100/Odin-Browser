@@ -52,7 +52,7 @@ Não implementa um algoritmo completo de quebra Unicode (UAX #14) ou segmentaç�
 
 Esta primeira rodada cobria a direção horizontal e a formatação de parágrafos. O suporte seguinte está em [WRITING-MODES.md](WRITING-MODES.md). Naquela rodada, não implementava `writing-mode:vertical-rl/vertical-lr`, `text-orientation`, bidi completo (UAX #9), isolamento/override de `unicode-bidi`, shaping complexo ou reordenação visual de runs RTL. O comportamento descrito acima era de alinhamento; a rodada seguinte acrescenta ordem visual e passa a reconhecer vertical-rl/vertical-lr como suportados.
 
-`tab-size` nesta implementação aceita inteiros não negativos; comprimentos e números fracionários continuam fora da gramática suportada. Espaçamento de palavras por span e recuos em contextos complexos com floats, múltiplos blocos anônimos ou transbordamento continuam com limitações do modelo de itens. A cascata ainda não preserva a ordem individual de declarações diferentes dentro da mesma regra: conflitos entre lados físicos e lógicos com a mesma prioridade nessa situação permanecem uma limitação anterior.
+`tab-size` nesta implementação aceita inteiros não negativos; comprimentos e números fracionários continuam fora da gramática suportada. Espaçamento de palavras por span e recuos em contextos complexos com floats, múltiplos blocos anônimos ou transbordamento continuam com limitações do modelo de itens. A limitação de ordem entre propriedades físicas e lógicas foi corrigida na etapa de [ordem de declarações e nesting](CSS-VALUES.md#ordem-de-declarações-e-nesting--25112026).
 
 Referências: [CSS Text 3](https://www.w3.org/TR/css-text-3/) e [CSS Logical Properties 1](https://www.w3.org/TR/css-logical-1/).
 

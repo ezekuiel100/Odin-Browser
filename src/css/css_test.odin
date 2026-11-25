@@ -1010,7 +1010,7 @@ test_nesting_combinador_e_lista :: proc(t: ^testing.T) {
     defer free_rules(&rules)
     r, ok := find_rule(rules[:], "color", "red")
     testing.expect(t, ok, "regra aninhada emitida")
-    testing.expect(t, len(r.selectors) == 2, "lista do pai expande (a > .x, b > .x)")
+    testing.expect(t, len(r.selectors) == 1, "lista do pai permanece agrupada como :is(a,b) > .x")
     testing.expect(t, len(r.selectors[0].combs) == 1 && r.selectors[0].combs[0] == .Child,
         "> .x vira combinador filho")
 }
@@ -1213,7 +1213,14 @@ test_nesting_profundo :: proc(t: ^testing.T) {
     defer free_rules(&rules)
     r, ok := find_rule(rules[:], "color", "red")
     testing.expect(t, ok, "aninhamento de 3 níveis")
-    testing.expect(t, len(r.selectors[0].parts) == 3, ".a .b .c = três compostos")
+    sel := r.selectors[0]
+    testing.expect(t, len(sel.parts) == 2, "pai complexo permanece agrupado: :is(.a .b) .c")
+    testing.expect_value(t, sel.specificity, [3]int{0, 3, 0})
+    if len(sel.parts) == 2 {
+        testing.expect_value(t, len(sel.parts[0].ors), 1)
+        if len(sel.parts[0].ors) == 1 do testing.expect_value(t, len(sel.parts[0].ors[0].parts), 2)
+        testing.expect_value(t, sel.parts[1].classes[0], "c")
+    }
 }
 
 @(test)

@@ -15,7 +15,7 @@ package css
 // conta o argumento tenha o motor sabido avaliá-lo ou não, e a aproximação só
 // vale para QUEM CASA. Ver `nots_spec`. E CSS nesting
 // (regras aninhadas com &, combinadores relativos e @media aninhado — os
-// seletores são expandidos textualmente em parse_rule_body).
+// seletores são combinados por tokens, agrupando listas e pais complexos).
 //
 // @import é resolvido ANTES do parse (append_css_with_imports na coleta de
 // CSS baixa e inlina as folhas); statements remanescentes são pulados aqui.
@@ -26,6 +26,7 @@ import "core:strings"
 import "core:strconv"
 import "core:math"
 import "core:mem"
+import "core:slice"
 
 // Combinador entre dois compostos da cadeia. Adjacent = '+' (irmão anterior
 // imediato), Sibling = '~' (qualquer irmão anterior).
@@ -150,9 +151,14 @@ LAYER_UNLAYERED :: 0x3fff_ffff // acima dos ranks densos, sem multiplicação de
 // Aproxima initial-value: só vale onde ninguém declarou.
 LAYER_REGISTERED :: -1
 
+// Names borrow the corresponding key in decls; only the slice itself is owned.
+// index is the source position of the winning valid declaration of that name.
+Decl_Position :: struct { name: string, index: int }
+
 Rule :: struct {
     selectors: [dynamic]Selector,
     decls:     map[string]string, // propriedade -> valor
+    decl_order: []Decl_Position,
     order:     int,               // ordem de origem (desempate)
     layer_rank: int,              // LAYER_UNLAYERED ou rank hierárquico final (normal maior vence)
     // condição @media (px). min/max < 0 = sem limite; excluded = não aplicar.
@@ -408,16 +414,14 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
 
 // Corpo de uma regra: declarações planas + regras aninhadas (CSS nesting) +
 // @media aninhado. Consome até o '}' que fecha o corpo (ou o fim do texto) e
-// devolve o índice seguinte. Emite a regra do próprio seletor (se houver
-// declarações) com a ordem reservada ANTES das aninhadas — na cascata, as
-// declarações do pai vêm antes das regras aninhadas, como na spec.
+// devolve o índice seguinte. Cada trecho de declarações é emitido na posição
+// em que aparece, inclusive os trechos depois de regras/condições aninhadas.
 @(private)
 parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Keyframe_Set, order: ^int, media: Media, layer_rank: int, layers: ^Layer_Registry, cq := Container_Q{}) -> int {
     n := len(src)
     i := start
     decls_sb := strings.builder_make(context.temp_allocator)
-    my_order := order^
-    order^ += 1
+    emitted := false
 
     for i < n {
         for i < n && is_space(src[i]) do i += 1
@@ -425,6 +429,11 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
         if src[i] == '}' { i += 1; break }
 
         if src[i] == '@' {
+            if strings.builder_len(decls_sb) > 0 || !emitted {
+                emit_style_rule(sel_text, strings.to_string(decls_sb), rules, order, media, layer_rank, cq)
+                strings.builder_reset(&decls_sb)
+                emitted = true
+            }
             kw_start := i + 1
             j := kw_start
             for j < n && !is_space(src[j]) && src[j] != '{' && src[j] != ';' && src[j] != '(' do j += 1
@@ -518,6 +527,11 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
         kind: u8 = i < n ? src[i] : 0
 
         if kind == '{' {
+            if strings.builder_len(decls_sb) > 0 || !emitted {
+                emit_style_rule(sel_text, strings.to_string(decls_sb), rules, order, media, layer_rank, cq)
+                strings.builder_reset(&decls_sb)
+                emitted = true
+            }
             nested_sel := strings.trim_space(src[seg_start:i])
             i += 1
             combined := combine_nested_selector(sel_text, nested_sel)
@@ -533,12 +547,26 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
         // '}' fica para o topo do loop fechar o corpo
     }
 
-    // emite mesmo com corpo vazio (a{}) — consumidores contam as regras
+    if strings.builder_len(decls_sb) > 0 || !emitted {
+        emit_style_rule(sel_text, strings.to_string(decls_sb), rules, order, media, layer_rank, cq)
+    }
+    return i
+}
+
+@(private)
+emit_style_rule :: proc(sel_text, decl_text: string, rules: ^[dynamic]Rule, order: ^int, media: Media, layer_rank: int, cq: Container_Q) {
+    // Keep empty rules as well: consumers count them and invalid selectors must
+    // never give their declarations to a later valid nested selector.
+    my_order := order^
+    order^ += 1
     sels := parse_selector_list(sel_text)
     if len(sels) > 0 {
+        decl_order: []Decl_Position
+        decls := parse_decls(decl_text, context.allocator, &decl_order)
         append(rules, Rule{
             selectors      = sels,
-            decls          = parse_decls(strings.to_string(decls_sb), context.allocator),
+            decls          = decls,
+            decl_order     = decl_order,
             order          = my_order,
             layer_rank     = layer_rank,
             media_min      = media.min,
@@ -555,7 +583,6 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
     } else {
         delete(sels)
     }
-    return i
 }
 
 // `@property --nome { … initial-value: V }` vira a regra SINTÉTICA `:root{--nome:V}`
@@ -592,12 +619,16 @@ register_property :: proc(name: string, body: string, rules: ^[dynamic]Rule, ord
     sels := parse_selector_list(":root")
     if len(sels) == 0 do return
     decls := make(map[string]string)
-    decls[strings.clone(name)] = strings.clone(strings.trim_space(init))
+    prop_name := strings.clone(name)
+    decls[prop_name] = strings.clone(strings.trim_space(init))
+    decl_order := make([]Decl_Position, 1)
+    decl_order[0] = {name = prop_name, index = 0}
     my_order := order^
     order^ += 1
     append(rules, Rule{
         selectors      = sels,
         decls          = decls,
+        decl_order     = decl_order,
         order          = my_order,
         layer_rank     = LAYER_REGISTERED,
         media_min      = media.min,
@@ -614,33 +645,65 @@ register_property :: proc(name: string, body: string, rules: ^[dynamic]Rule, ord
     })
 }
 
-// Combina o seletor pai com o de uma regra aninhada (produto cartesiano das
-// listas). '&' é substituído textualmente pelo seletor pai; sem '&', o
-// aninhado é relativo ao pai como descendente ("pai aninhado" — cobre também
-// "> .x", que vira "pai > .x"). Resultado em temp_allocator (mesma vida do
-// texto-fonte das regras).
+// & has :is() semantics: parent lists contribute their maximum specificity,
+// and complex parents must remain grouped when & occurs after a combinator.
+// A single simple compound can be inlined without changing those semantics.
+// Strings and escaped ampersands are never nesting selectors.
 @(private)
 combine_nested_selector :: proc(parent, nested: string) -> string {
+    if !selectors_valid(parent) do return parent // invalid outer lists cannot be rescued by forgiving :is()
+    ps := strings.trim_space(parent)
+    simple := false
+    has_states := false
+    parents := split_selector_list_top(parent)
+    for pp in parents {
+        sel, ok := parse_complex(strings.trim_space(pp))
+        if ok {
+            if len(parents) == 1 do simple = len(sel.parts) == 1 && sel.parts[0].pseudo == .None
+            for p in sel.parts do if p.state != .None || p.is_unresolved do has_states = true
+            free_selector(&sel)
+        }
+    }
+    variants := parents
+    if !has_states {
+        if !simple do ps = strings.concatenate({":is(", ps, ")"}, context.temp_allocator)
+        variants = make([]string, 1, context.temp_allocator)
+        variants[0] = ps
+    }
+    // Functional state matching is still limited in the selector engine.
+    // Retain its existing expansion/state routing for dynamic parents instead
+    // of hiding :hover/:focus inside an unresolved :is() group.
     sb := strings.builder_make(context.temp_allocator)
     first := true
     for np in split_selector_list_top(nested) {
         ns := strings.trim_space(np)
         if ns == "" do continue
-        for pp in split_selector_list_top(parent) {
-            ps := strings.trim_space(pp)
+        for variant in variants {
+            ps := strings.trim_space(variant)
             if ps == "" do continue
             if !first do strings.write_string(&sb, ", ")
             first = false
-            if strings.contains(ns, "&") {
-                for ci in 0 ..< len(ns) {
-                    if ns[ci] == '&' do strings.write_string(&sb, ps)
-                    else             do strings.write_byte(&sb, ns[ci])
+            body := strings.builder_make(context.temp_allocator)
+            lexer := Tokenizer{source = ns}
+            replaced := false
+            brackets := 0
+            for {
+                t := next_token(&lexer)
+                if t.kind == .EOF do break
+                if t.kind == .Delim {
+                    if t.delim == '[' do brackets += 1
+                    if t.delim == ']' do brackets -= 1
                 }
-            } else {
+                if t.kind == .Delim && t.delim == '&' && brackets == 0 {
+                    strings.write_string(&body, ps)
+                    replaced = true
+                } else { strings.write_string(&body, ns[t.start:t.end]) }
+            }
+            if !replaced {
                 strings.write_string(&sb, ps)
                 strings.write_byte(&sb, ' ')
-                strings.write_string(&sb, ns)
             }
+            strings.write_string(&sb, strings.to_string(body))
         }
     }
     return strings.to_string(sb)
@@ -1900,17 +1963,30 @@ compound_spec :: proc(c: Compound) -> int {
 
 // Parseia um bloco de declarações ("color:red; font-weight:bold").
 // Também serve para o atributo style="" inline.
-parse_decls :: proc(raw_text: string, allocator := context.allocator) -> map[string]string {
+parse_decls :: proc(raw_text: string, allocator := context.allocator, source_order: ^[]Decl_Position = nil) -> map[string]string {
     text := declaration_text(raw_text)
     decls := make(map[string]string, allocator)
+    positions: map[string]int
+    if source_order != nil do positions = make(map[string]int, context.temp_allocator)
     start := 0
+    index := 0
     for start < len(text) {
         end := declaration_end(text[start:])
         if end < 0 do break
-        add_decl(&decls, text[start:start+end], allocator)
+        if name := add_decl(&decls, text[start:start+end], allocator); name != "" && source_order != nil do positions[name] = index
         start += end + 1
+        index += 1
     }
-    add_decl(&decls, text[start:], allocator)
+    if name := add_decl(&decls, text[start:], allocator); name != "" && source_order != nil do positions[name] = index
+    if source_order != nil {
+        source_order^ = make([]Decl_Position, len(decls), allocator)
+        i := 0
+        for name in decls {
+            source_order^[i] = Decl_Position{name, positions[name]}
+            i += 1
+        }
+        slice.sort_by(source_order^, proc(a, b: Decl_Position) -> bool { return a.index < b.index })
+    }
     return decls
 }
 
@@ -1923,21 +1999,18 @@ top_level_colon :: proc(s: string) -> int {
 }
 
 @(private)
-add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocator) {
+add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocator) -> string {
     colon := top_level_colon(part)
-    if colon < 0 do return
+    if colon < 0 do return ""
     raw_prop := strings.trim_space(part[:colon])
     // custom properties (--name) são case-sensitive; demais vão pra lower
-    prop: string
-    if strings.has_prefix(raw_prop, "--") {
-        prop = strings.clone(raw_prop, allocator)
-    } else {
-        prop = strings.to_lower(raw_prop, allocator)
-    }
+    name := raw_prop
+    if !strings.has_prefix(name, "--") do name = strings.to_lower(name, context.temp_allocator)
+    prop := strings.clone(name, allocator)
     val := strings.clone(strings.trim_space(part[colon + 1:]), allocator)
     if prop == "" || val == "" {
         delete(prop, allocator); delete(val, allocator)
-        return
+        return ""
     }
     // Declaração inválida é IGNORADA (mantém o valor anterior, conforme a
     // cascata do CSS). Validamos o caso comum: um background/-image que invoca
@@ -1949,7 +2022,7 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
            strings.contains(lo, "conic-gradient(") {
             if _, gok := parse_gradient(val); !gok {
                 delete(prop, allocator); delete(val, allocator)
-                return
+                return ""
             }
         }
     }
@@ -1957,7 +2030,7 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
         body, _ := split_important(val)
         if !g_value_valid(prop, body) {
             delete(prop, allocator); delete(val, allocator)
-            return
+            return ""
         }
     }
     if old, ok := decls[prop]; ok {
@@ -1965,7 +2038,7 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
         _, new_important := split_important(val)
         if old_important && !new_important {
             delete(prop, allocator); delete(val, allocator)
-            return
+            return ""
         }
         // CADEIA DE FALLBACK (`width: 100px; width: -webkit-fill-available`): o
         // autor escreve a mesma propriedade DUAS vezes justamente porque o
@@ -1984,15 +2057,16 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
             old_body, _ := split_important(old)
             if !g_value_usable(prop, old_body, body) {
                 delete(prop, allocator); delete(val, allocator)
-                return
+                return ""
             }
         }
         delete(old, allocator)
-        delete(prop, allocator) // já existe a chave; descarta a nova cópia
         decls[prop] = val
+        delete(prop, allocator) // existing map key owns the name, not this copy
     } else {
         decls[prop] = val
     }
+    return name
 }
 
 // Juiz OPCIONAL de "este valor faz alguma coisa neste motor?", instalado pelo
@@ -3402,6 +3476,7 @@ free_rules :: proc(rules: ^[dynamic]Rule) {
         delete(r.selectors)
         for k, v in r.decls { delete(k); delete(v) }
         delete(r.decls)
+        delete(r.decl_order)
         delete(r.cq_name)
     }
     delete(rules^)

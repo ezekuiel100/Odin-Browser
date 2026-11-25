@@ -997,8 +997,7 @@ test_prop_logical_radii :: proc(t: ^testing.T) {
     testing.expect(t, near(c.border_radius[3], 12), "end-start → bottom-left 12")
     testing.expect(t, near(c.border_radius[2], 16), "end-end → bottom-right 16")
     // precedência por CASCATA: o físico numa regra de spec MAIOR vence o lógico.
-    // (na MESMA regra o lógico sobrepõe — não guardamos ordem por-declaração; é a
-    // limitação conhecida do mapeamento lógico→físico, igual às demais props lógicas)
+    // Na mesma regra, a posição individual da declaração desempata.
     c2 := test_compute_one("div { border-start-start-radius: 4px } .x { border-top-left-radius: 99px }", "div", "x")
     testing.expect(t, near(c2.border_radius[0], 99), "border-top-left-radius de spec maior vence")
 }

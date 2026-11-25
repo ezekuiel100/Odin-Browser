@@ -3751,25 +3751,15 @@ inline_style_set :: proc(vm: ^Interp, node: ^dom.Node, prop: string, val: string
     strings.builder_init(&sb)
     defer strings.builder_destroy(&sb)
     replaced := false
-    rest := csspkg.declaration_text(node.attrs["style"])
-    for len(rest) > 0 {
-        decl: string
-        if semi := csspkg.declaration_end(rest); semi < 0 {
-            decl = rest; rest = ""
-        } else {
-            decl = rest[:semi]; rest = rest[semi + 1:]
-        }
-        colon := strings.index_byte(decl, ':')
-        if colon < 0 {
-            if len(strings.trim_space(decl)) == 0 do continue // ; extra
-            continue // declaração malformada: descarta
-        }
-        k := style_property_name(strings.trim_space(decl[:colon]))
+    decl_order: []csspkg.Decl_Position
+    decls := csspkg.parse_decls(node.attrs["style"], context.temp_allocator, &decl_order)
+    for d in decl_order {
+        k := d.name
         if k == prop {
             replaced = true
             if val != "" do append_decl(&sb, prop, val) // val=="" => remove (não reemite)
         } else {
-            append_decl(&sb, k, strings.trim_space(decl[colon + 1:]))
+            append_decl(&sb, k, decls[k])
         }
     }
     if !replaced && val != "" do append_decl(&sb, prop, val)
@@ -3798,9 +3788,10 @@ style_prop_set :: proc(vm: ^Interp, o: ^Object, name: string, val: Value) -> boo
     if name == "cssText" {
         b := strings.builder_make(context.temp_allocator)
         to_text(&b, val)
-        decls := csspkg.parse_decls(strings.to_string(b), context.temp_allocator)
+        decl_order: []csspkg.Decl_Position
+        decls := csspkg.parse_decls(strings.to_string(b), context.temp_allocator, &decl_order)
         out := strings.builder_make(context.temp_allocator)
-        for k, v in decls do append_decl(&out, k, v)
+        for d in decl_order do append_decl(&out, d.name, decls[d.name])
         set_attr_str(vm, node, "style", strings.to_string(out))
         return true
     }
