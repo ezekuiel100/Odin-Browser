@@ -107,7 +107,10 @@ python tools/test262-run.py --suite _local/test262-continuations --browser _loca
 O runner retorna 1 enquanto houver FAIL ou ERROR conhecidos. A comparação
 relevante para esta mudança é a lista de transições por nome e variante.
 
-A execução síncrona continua recursiva e ainda usa a pilha nativa. A reserva
-de stack e as guardas de recursão continuam necessárias. Esta entrega é a base
-de execução suspensa rastreável pelo GC; não é uma VM de bytecode nem um JIT,
-e não implementa todos os requisitos de conformidade de geradores e módulos.
+Na entrega de 24/11 a execução síncrona ainda era recursiva. A extensão de
+25/11 em `sync_execution.odin` passa chamadas entre funções JS para o mesmo
+trampoline, incluindo retornos, exceções, parâmetros padrão e `call`/`apply`/`bind`.
+Subárvores sem chamadas e reentradas por código nativo ainda usam o avaliador
+existente. A reserva de stack e suas guardas continuam necessárias. O GC mantém
+seus pontos seguros no host; isso não é uma VM de bytecode nem um JIT.
+Detalhes e medição da extensão: [JS-SYNC-EXECUTION.md](JS-SYNC-EXECUTION.md).

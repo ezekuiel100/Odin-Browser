@@ -63,8 +63,10 @@ de avaliar o lado direito ou escrever no binding.
 - Corrotinas pendentes consomem memória para seus frames e valores vivos.
   O coletor pode executar nos pontos seguros do host mesmo com essas
   corrotinas suspensas, e descarta as inalcançáveis sem executar JavaScript.
-- Trechos síncronos continuam usando o avaliador recursivo. Esta etapa não
-  implementa bytecode nem elimina a reserva de stack do build.
+- Chamadas síncronas entre funções JS também usam os frames explícitos, incluindo
+  parâmetros padrão, `call`/`apply` e funções ligadas por `bind`. Subárvores sem
+  chamadas continuam no avaliador existente; reentradas por nativas ainda podem
+  consumir stack. A reserva de stack e suas guardas continuam necessárias.
 - O event loop do hospedeiro continua responsável por avançar timers e rede e
   executar checkpoints. Suspender não faz uma Promise pendente resolver sozinha.
 

@@ -391,7 +391,10 @@ fn_scope_env :: proc(env: ^Env) -> ^Env {
 // Estado de execução: escopo global + memória de runtime a liberar no fim +
 // o sinal de `return`.
 Interp :: struct {
-    exec_suspend_cache: map[^Node]bool, // syntax classification for continuations
+    exec_suspend_cache: map[^Node]bool, // calls/suspension classification for continuations
+    sync_frames: [dynamic]Exec_Frame, // idle trampoline storage; detached during native reentry
+    sync_call_pool: ^Exec_Call,
+    sync_call_pool_count: int,
     gc_threshold: int, // adaptive host-safepoint collection threshold
     global:         ^Env,
     all_envs:       [dynamic]^Env,
@@ -653,13 +656,11 @@ Interp :: struct {
     symbol_proto:   ^Object,               // %SymbolPrototype% (= `Symbol.prototype`): toString/valueOf/[Symbol.toPrimitive]. Fonte ÚNICA — o get_member de ^Symbol lê daqui (M220).
 }
 
-// Teto de profundidade de recursão (frames de call_function empilhados). O
-// interpretador é tree-walking: cada chamada JS = frames nativos Odin, e a stack
-// nativa é finita. Sem este teto, recursão profunda (ou infinita) do JS de uma
-// página ESTOURA a stack e MATA o processo sem diálogo. Ao bater no teto,
-// lançamos RangeError (capturável) — mesma filosofia do STEP_LIMIT. O valor é
-// folgado p/ apps reais (o React do tradebig recursiona ~1500) mas fica BEM abaixo
-// da capacidade da stack nativa (com /STACK:256MB no build, ~20000 frames cabem).
+// Teto de chamadas lógicas, inclusive as guardadas nos frames do trampoline.
+// Impede recursão infinita de crescer o heap sem limite e lança RangeError
+// capturável. Chamadas entre funções JS não empilham frames nativos; callbacks
+// de built-ins, getters, proxies e eval ainda podem reentrar pela pilha nativa,
+// protegida separadamente por stack_guard.odin.
 CALL_DEPTH_LIMIT :: 10_000
 
 // Teto de iterações de laço por "tarefa" síncrona (script inicial, callback de
@@ -873,7 +874,7 @@ env_escaped :: proc(vm: ^Interp) {
 // chamada e os escopos de bloco/laço que nasceram dentro dela. Só é chamado
 // quando env_escapes não mudou durante a chamada, isto é, quando está provado
 // que nenhum ^Env do intervalo pode ser alcançado depois do retorno.
-@(private = "file")
+@(private = "package")
 recycle_envs :: proc(vm: ^Interp, mark: int) {
     for i := len(vm.all_envs) - 1; i >= mark; i -= 1 {
         e := vm.all_envs[i]
@@ -1267,6 +1268,12 @@ vm_destroy :: proc(vm: ^Interp) {
     // Release saved execution state before destroying the VM heap.
     cleanup_generators(vm)
     delete(vm.exec_suspend_cache)
+    delete(vm.sync_frames)
+    for vm.sync_call_pool != nil {
+        c := vm.sync_call_pool
+        vm.sync_call_pool = c.next
+        free(c)
+    }
     mo_free(vm) // antes do dom_cleanup: nada mais deve enfileirar record
     io_free(vm) // idem: nenhum observador de interseção sobrevive ao vm
     mq_free(vm) // idem p/ os MediaQueryList com ouvinte
@@ -4868,7 +4875,7 @@ set_home_object :: proc(v: Value, node: ^Node, o: ^Object) {
 
 // Initializes only this class's fields. Base fields run on constructor entry;
 // derived fields run immediately after that constructor's super() returns.
-@(private = "file")
+@(private = "package")
 init_instance_fields :: proc(vm: ^Interp, fn: ^Function, obj: ^Object) {
     if fn.class_node == nil do return
     fenv: ^Env
@@ -5586,7 +5593,7 @@ eval_tagged :: proc(vm: ^Interp, n: ^Node, env: ^Env) -> Value {
 // CLOSURE (não do chamador), com `this`, elos de super, params (defaults/padrões),
 // rest param e o objeto `arguments`. Compartilhado por call_function e pelo runner
 // de generator (generator.odin), que precisa exatamente do mesmo setup.
-setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value, new_target: Value = nil) -> ^Env {
+setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value, new_target: Value = nil, bind_parameters := true) -> ^Env {
     scope := new_env(vm, fn.closure)
     scope.is_fn_scope = true // fronteira p/ `var` (function-scoped)
     // new.target: só funções NÃO-arrow o vinculam; arrows herdam léxico (o lookup
@@ -5669,6 +5676,7 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
             env_escaped(vm)
         }
     }
+    if !bind_parameters do return scope
     for p, i in fn.params {
         av: Value = args[i] if i < len(args) else nil
         // default: aplica-se quando o arg é undefined (nil), avaliado no escopo
@@ -5702,13 +5710,14 @@ setup_call_scope :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value,
 call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) -> Value {
     if fn == nil do return nil
     if fn.proxy != nil do return proxy_apply(vm, fn.proxy, this, args)
-    when JSPROF { g_prof.chamadas += 1; if fn.native != nil do g_prof.chamadas_nat += 1 }
+    when JSPROF { if !exec_sync_function(fn) { g_prof.chamadas += 1; if fn.native != nil do g_prof.chamadas_nat += 1 } }
     // async function (não-generator): roda como CORROTINA — cada await suspende.
     // O corpo é iniciado por gen_resume; toda chamada JS, inclusive
     // recursiva à mesma função, precisa criar sua própria corrotina/Promise.
     if fn.is_async && !fn.is_generator && fn.native == nil {
         return async_call(vm, fn, this, args)
     }
+    if exec_sync_function(fn) do return exec_sync_call(vm, fn, this, args)
     // Guarda de recursão: converte um stack-overflow nativo (fatal, fecha o
     // navegador) em RangeError capturável. defer garante o decremento mesmo
     // no caminho de erro (o unwind passa por cada call_function empilhado).
@@ -5771,89 +5780,7 @@ call_function :: proc(vm: ^Interp, fn: ^Function, this: Value, args: []Value) ->
     if fn.is_generator {
         return make_generator(vm, fn, this, args)
     }
-    // pilha-sombra do Error.stack (stack_trace.odin): frame LOCAL encadeado; a saída
-    // (inclusive por exceção) devolve frame, posição e fonte do chamador.
-    frame := Stack_Frame{parent = vm.frame, fn = fn, call_pos = vm.cur_pos, call_script = vm.cur_script, is_new = nt_pending != nil}
-    vm.frame = &frame
-    vm.cur_script = fn.script
-    vm.cur_pos = 0
-    defer {
-        vm.frame = frame.parent
-        vm.cur_pos = frame.call_pos
-        vm.cur_script = frame.call_script
-    }
-    when #config(MEMBERPROBE, false) {
-        // nome + PARÂMETROS: em bundle minificado o nome sozinho ("r", "a") não
-        // identifica a função; a aridade e os nomes dos params sim (grepáveis).
-        append(&vm.probe_stack, fmt.tprintf("%s(%s)", fn.name, strings.join(fn.params[:], ",")))
-        defer pop(&vm.probe_stack)
-    }
-    // Reciclagem do escopo desta chamada. `env_mark` delimita tudo que nascer a
-    // partir daqui (o escopo da chamada mais os escopos de bloco/laço do corpo);
-    // `esc_mark` fotografa o contador de escapes. Se ao sair o contador não mudou,
-    // nada que nasceu aqui pode ser alcançado depois — devolve tudo ao pool.
-    // Sem isto cada chamada deixava ~1 KB para trás em definitivo (não há GC), o
-    // que fazia um bundle de SPA consumir gigabytes só de escopos mortos.
-    // Vale também no caminho de exceção: o valor lançado é um ^Object, não um Env.
-    env_mark := len(vm.all_envs)
-    esc_mark := vm.env_escapes
-    defer { if vm.env_escapes == esc_mark do recycle_envs(vm, env_mark) }
-    if fn.class_node != nil && fn.super_ctor == nil && !fn.super_null {
-        if obj, ok := this.(^Object); ok do init_instance_fields(vm, fn, obj)
-        if vm.throwing do return nil
-    }
-    scope := setup_call_scope(vm, fn, this, args, nt_pending)
-    // construtor default de classe derivada: encaminha os args ao super
-    if fn.auto_super && fn.super_null {
-        throw_type_error(vm, "Super constructor null of anonymous class is not a constructor")
-        return nil
-    }
-    if fn.auto_super && fn.super_ctor != nil {
-        super_construct(vm, fn.super_ctor, this, args, nt_pending)
-        if vm.throwing do return nil
-        if obj, ok := this.(^Object); ok do init_instance_fields(vm, fn, obj)
-        if vm.throwing do return nil
-    }
-    if fn.body != nil {
-        hoist_functions(vm, fn.body.body[:], scope) // declarações do corpo içadas
-        hoist_vars_body(fn.body.body[:], scope)     // var aninhados em blocos/switch/if/try
-        for s in fn.body.body {
-            if is_hoisted_func(s) do continue // já içada
-            eval(vm, s, scope)
-            if vm.returning || vm.throwing do break
-        }
-    }
-    ret: Value = nil
-    if vm.returning {
-        ret = vm.ret_val
-        vm.returning = false
-        vm.ret_val = nil
-    }
-    // break/continue não atravessam a fronteira de função (seria erro de
-    // sintaxe no JS real; aqui apenas os descartamos). `throwing` atravessa:
-    // é o chamador (try/catch ou o topo) que trata.
-    vm.breaking = false
-    vm.continuing = false
-    vm.break_label = ""
-    vm.continue_label = ""
-    vm.pending_label = ""
-
-    // async: o retorno vira Promise cumprida; um throw vira Promise REJEITADA
-    // (não propaga como exceção). Como o await é bloqueante, quando o corpo
-    // termina tudo já assentou — a promise devolvida nunca fica pendente.
-    if fn.is_async {
-        p := promise_new(vm)
-        if vm.throwing {
-            vm.throwing = false
-            thrown := vm.thrown
-            vm.thrown = nil
-            promise_settle(vm, p, PROMISE_REJECTED, thrown)
-        } else {
-            promise_resolve_with(vm, p, ret)
-        }
-        return p
-    }
-    return ret
+    return nil // ordinary JS functions enter the trampoline above
 }
 
 // Loga e limpa uma exceção que chegou ao topo sem catch. Chamado nos pontos de

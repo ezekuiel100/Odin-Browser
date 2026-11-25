@@ -3,8 +3,8 @@ package js
 import "core:strings"
 import "core:strconv"
 
-// Only syntax which can suspend needs a continuation. Ordinary subtrees still
-// use eval, so native built-ins and synchronous calls keep their existing path.
+// Calls and suspension points need a continuation. Call-free subtrees still
+// use eval; calls between ordinary JS functions share this trampoline.
 // A frame owns every operand and environment that survives await/yield. There
 // are no pointers into the native stack at a suspension point.
 Exec_Signal :: struct {
@@ -14,7 +14,8 @@ Exec_Signal :: struct {
 }
 
 Exec_Frame :: struct {
-    mode: enum { Eval, Reference, Pattern, Body },
+    mode: enum { Eval, Reference, Pattern, Body, Call },
+    call: ^Exec_Call,
     node: ^Node,
     env, scope: ^Env,
     state, index, cursor: int,
@@ -57,7 +58,7 @@ exec_needs_frame :: proc(vm: ^Interp, n: ^Node) -> bool {
     result := false
     #partial switch n.kind {
     case .Func: // Its body belongs to another invocation.
-    case .Await, .Yield, .ImportDecl: result = true
+    case .Await, .Yield, .ImportDecl, .Call, .New, .Tagged: result = true
     case .Class:
         result = exec_needs_frame(vm, n.callee)
         for m in n.body do result = exec_needs_frame(vm, m.left) || result
@@ -128,6 +129,7 @@ exec_run :: proc(vm: ^Interp, g: ^Generator) {
     g.suspended = false
     for len(g.frames) > 0 && !g.suspended {
         f := &g.frames[len(g.frames)-1]
+        if f.mode == .Call { exec_call_frame(vm, g, f); continue }
         n, env := f.node, f.env
         if n == nil { exec_pop(g, nil); continue }
         if f.mode == .Reference { exec_reference(vm, g, f); continue }
@@ -567,6 +569,13 @@ exec_assignment :: proc(vm: ^Interp, g: ^Generator, f: ^Exec_Frame) {
 // both as Values also keeps getters, proxies and receiver identity stable over await.
 exec_call :: proc(vm: ^Interp, g: ^Generator, f: ^Exec_Frame) {
     n, env := f.node, f.env
+    if f.state == 9 || f.state == 10 {
+        value := g.result
+        if f.state == 10 && is_primitive(value) do value = f.values[2]
+        vm.opt_short = false
+        exec_pop(g, value)
+        return
+    }
     c := n.callee
     if f.state == 0 {
         if n.kind != .New && (c.kind == .Member || c.kind == .Index) {
@@ -642,13 +651,29 @@ exec_call :: proc(vm: ^Interp, g: ^Generator, f: ^Exec_Frame) {
         copy := n^; copy.body = nodes
         value, _ = try_eval_super_call(vm, &copy, env)
     } else if n.kind == .New {
-        if callable do value = construct_object(vm, fn, f.items[:])
+        if callable && exec_sync_function(fn) && !fn.non_constructor && !fn.is_arrow {
+            obj := new_object(vm)
+            if proto, ok := get_member(vm, fn, "prototype").(^Object); ok do obj.proto = proto
+            if vm.throwing { exec_pop(g, nil); return }
+            f.values[2], f.state = obj, 10
+            vm.pending_new_target = fn
+            exec_enter_call(vm, g, fn, obj, f.items[:])
+            return
+        } else if callable do value = construct_object(vm, fn, f.items[:])
         else if p, ok := f.values[1].(^Object); ok && p.px_handler != nil { value = proxy_construct(vm, p, f.items[:]) }
         else { throw_type_error(vm, "Value is not a constructor") }
     } else if callable {
         if c.kind == .Ident && c.name == "eval" && fn == vm.eval_fn && n.kind == .Call {
             value = do_eval(vm, arg(f.items[:], 0), env, n.strict)
-        } else { value = call_function(vm, fn, f.values[0], f.items[:]) }
+        } else {
+            target, sync := exec_prepare_sync_call(vm, f, fn)
+            if sync {
+                f.state = 9
+                exec_enter_call(vm, g, target, f.values[0], f.items[:])
+                return
+            }
+            value = call_function(vm, fn, f.values[0], f.items[:])
+        }
     } else { throw_type_error(vm, "Value is not a function") }
     vm.opt_short = false
     exec_pop(g, value)

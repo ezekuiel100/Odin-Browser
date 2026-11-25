@@ -14,9 +14,10 @@ import "core:strings"
 //     padding do Node — a AST não cresce). O `eval` copia p/ `vm.cur_pos`.
 //   • cada fonte executado (script, módulo, eval/Function) vira um Script_Src; toda
 //     ^Function criada durante ele aponta p/ ele (`fn.script`, em new_function).
-//   • call_function (função de usuário) empilha um Stack_Frame LOCAL (na pilha
-//     nativa) encadeado por `parent` em `vm.frame`: guarda a função e ONDE, no
-//     código do chamador, a chamada aconteceu. A saída restaura tudo por `defer`.
+//   • chamadas síncronas empilham Stack_Frame em Exec_Call, com endereço estável
+//     no heap (sync_execution.odin). A saída restaura fonte/posição/chamador,
+//     inclusive ao desenrolar exceções; crescer o array de operandos não move
+//     os elos da pilha. Fronteiras nativas como eval ainda usam frames locais.
 //   • generator/async: os frames de continuação guardam o estado suspenso;
 //     gen_resume troca `vm.frame/cur_pos/cur_script` durante cada retomada.
 //

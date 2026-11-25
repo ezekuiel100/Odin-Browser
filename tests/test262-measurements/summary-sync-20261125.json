@@ -1,0 +1,417 @@
+{
+  "schema": 1,
+  "baselineCommit": "190cac74fc3884b930d83e1c03ca0084e69b2a4e",
+  "suiteRevision": "2a1ade303f72d3de80565c921d685222405c32ce",
+  "suiteManifestSha256": "6e20cdce7ed5ebb46a3d44c51d1100cdc1ec78fa32ab90f074788faed47d623c",
+  "selection": {
+    "areas": [
+      "language",
+      "built-ins",
+      "annexB"
+    ],
+    "perDirectory": 10,
+    "order": "sha256(path)",
+    "featureExclusions": []
+  },
+  "files": 10848,
+  "variants": 21056,
+  "timeoutSeconds": 5.0,
+  "jobs": 4,
+  "unitTests": 2340,
+  "projectTests": 3778,
+  "newRegressionTests": 11,
+  "newRegressionTestsFailOnBadMemory": true,
+  "checks": [
+    "odin check .",
+    "odin check src/js -no-entry-point -define:JSPROF=true -define:MEMBERPROBE=true"
+  ],
+  "measurements": {
+    "before": {
+      "file": "sync-before-20261125.json.gz",
+      "browserSha256": "474eaf523a95c46f59282a7132df5887e8f17fe01caae4d0f31582e263b28d8e",
+      "counts": {
+        "PASS": 12229,
+        "FAIL": 8445,
+        "ERROR": 42,
+        "SKIP": 340
+      }
+    },
+    "after": {
+      "file": "sync-20261125.json.gz",
+      "browserSha256": "fa7c4fbffac75dfa5d95937a365229abb3435a269fce04aa4107df8b3eda4e92",
+      "counts": {
+        "PASS": 12242,
+        "FAIL": 8432,
+        "ERROR": 42,
+        "SKIP": 340
+      }
+    }
+  },
+  "rawTransitions": {
+    "PASS->FAIL": 3,
+    "FAIL->PASS": 16
+  },
+  "transitionsExcludingKnownUnstable": {
+    "FAIL->PASS": 16
+  },
+  "changes": [
+    {
+      "name": "built-ins/Array/prototype/toLocaleString/name.js",
+      "variant": "normal",
+      "before": "PASS",
+      "after": "FAIL",
+      "knownUnstable": true,
+      "reason": "__262__ status=throw name=Test262Error phase=runtime source=3 rec=0 msg=name descriptor value should be toLocaleString; name value should be toLocaleString"
+    },
+    {
+      "name": "built-ins/Date/prototype/toUTCString/name.js",
+      "variant": "normal",
+      "before": "PASS",
+      "after": "FAIL",
+      "knownUnstable": true,
+      "reason": "__262__ status=throw name=Test262Error phase=runtime source=3 rec=0 msg=name descriptor value should be toUTCString; name value should be toUTCString"
+    },
+    {
+      "name": "built-ins/Object/prototype/toLocaleString/name.js",
+      "variant": "normal",
+      "before": "PASS",
+      "after": "FAIL",
+      "knownUnstable": true,
+      "reason": "__262__ status=throw name=Test262Error phase=runtime source=3 rec=0 msg=name descriptor value should be toLocaleString; name value should be toLocaleString"
+    },
+    {
+      "name": "language/expressions/call/11.2.3-3_4.js",
+      "variant": "normal",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/call/11.2.3-3_4.js",
+      "variant": "strict",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/call/11.2.3-3_6.js",
+      "variant": "normal",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/call/11.2.3-3_6.js",
+      "variant": "strict",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/new/ctorExpr-isCtor-after-args-eval-fn-wrapup.js",
+      "variant": "normal",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/new/ctorExpr-isCtor-after-args-eval-fn-wrapup.js",
+      "variant": "strict",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/new/ctorExpr-isCtor-after-args-eval.js",
+      "variant": "normal",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/new/ctorExpr-isCtor-after-args-eval.js",
+      "variant": "strict",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/prefix-decrement/S11.4.5_A6_T1.js",
+      "variant": "normal",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/prefix-decrement/S11.4.5_A6_T1.js",
+      "variant": "strict",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/prefix-increment/S11.4.4_A6_T1.js",
+      "variant": "normal",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/prefix-increment/S11.4.4_A6_T1.js",
+      "variant": "strict",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/prefix-increment/S11.4.4_A6_T2.js",
+      "variant": "normal",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/prefix-increment/S11.4.4_A6_T2.js",
+      "variant": "strict",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/super/prop-expr-uninitialized-this-putvalue-increment.js",
+      "variant": "normal",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    },
+    {
+      "name": "language/expressions/super/prop-expr-uninitialized-this-putvalue-increment.js",
+      "variant": "strict",
+      "before": "FAIL",
+      "after": "PASS",
+      "knownUnstable": false,
+      "reason": ""
+    }
+  ],
+  "rechecks": [
+    {
+      "name": "built-ins/Array/prototype/toLocaleString/name.js",
+      "variant": "normal",
+      "before": [
+        "FAIL",
+        "PASS",
+        "PASS",
+        "FAIL",
+        "FAIL",
+        "PASS"
+      ],
+      "after": [
+        "PASS",
+        "FAIL",
+        "FAIL",
+        "PASS",
+        "FAIL",
+        "PASS"
+      ],
+      "knownUnstable": true
+    },
+    {
+      "name": "built-ins/Array/prototype/toLocaleString/name.js",
+      "variant": "strict",
+      "before": [
+        "FAIL",
+        "PASS",
+        "PASS",
+        "FAIL",
+        "PASS",
+        "PASS"
+      ],
+      "after": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "FAIL",
+        "PASS",
+        "PASS"
+      ],
+      "knownUnstable": true
+    },
+    {
+      "name": "built-ins/Date/prototype/toLocaleString/name.js",
+      "variant": "normal",
+      "before": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "after": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "knownUnstable": false
+    },
+    {
+      "name": "built-ins/Date/prototype/toLocaleString/name.js",
+      "variant": "strict",
+      "before": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "after": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "knownUnstable": false
+    },
+    {
+      "name": "built-ins/Date/prototype/toUTCString/name.js",
+      "variant": "normal",
+      "before": [
+        "PASS",
+        "PASS",
+        "FAIL",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "after": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "FAIL",
+        "FAIL",
+        "PASS"
+      ],
+      "knownUnstable": true
+    },
+    {
+      "name": "built-ins/Date/prototype/toUTCString/name.js",
+      "variant": "strict",
+      "before": [
+        "PASS",
+        "FAIL",
+        "FAIL",
+        "FAIL",
+        "FAIL",
+        "FAIL"
+      ],
+      "after": [
+        "PASS",
+        "FAIL",
+        "FAIL",
+        "PASS",
+        "PASS",
+        "FAIL"
+      ],
+      "knownUnstable": true
+    },
+    {
+      "name": "built-ins/Object/prototype/toLocaleString/name.js",
+      "variant": "normal",
+      "before": [
+        "PASS",
+        "FAIL",
+        "PASS",
+        "FAIL",
+        "PASS",
+        "PASS"
+      ],
+      "after": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "FAIL"
+      ],
+      "knownUnstable": true
+    },
+    {
+      "name": "built-ins/Object/prototype/toLocaleString/name.js",
+      "variant": "strict",
+      "before": [
+        "PASS",
+        "FAIL",
+        "FAIL",
+        "FAIL",
+        "PASS",
+        "PASS"
+      ],
+      "after": [
+        "PASS",
+        "PASS",
+        "FAIL",
+        "PASS",
+        "PASS",
+        "FAIL"
+      ],
+      "knownUnstable": true
+    },
+    {
+      "name": "built-ins/TypedArray/prototype/copyWithin/coerced-values-start-detached.js",
+      "variant": "normal",
+      "before": [
+        "ERROR",
+        "ERROR",
+        "ERROR"
+      ],
+      "after": [
+        "ERROR",
+        "ERROR",
+        "PASS"
+      ],
+      "knownUnstable": true
+    },
+    {
+      "name": "built-ins/TypedArray/prototype/copyWithin/coerced-values-start-detached.js",
+      "variant": "strict",
+      "before": [
+        "ERROR",
+        "ERROR",
+        "ERROR"
+      ],
+      "after": [
+        "ERROR",
+        "ERROR",
+        "PASS"
+      ],
+      "knownUnstable": true
+    }
+  ],
+  "benchmark": "sync-benchmark-20261125.json",
+  "limits": [
+    "GC remains at host safepoints",
+    "Native reentry, eval and class initializers still require stack guards",
+    "Shallow-call microbenchmark has additional execution overhead"
+  ]
+}

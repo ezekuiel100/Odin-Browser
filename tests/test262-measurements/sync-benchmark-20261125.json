@@ -1,0 +1,544 @@
+{
+  "schema": 1,
+  "startedUtc": "2026-11-25T15:29:57.411542+00:00",
+  "baselineCommit": "190cac74fc3884b930d83e1c03ca0084e69b2a4e",
+  "optimization": "-o:speed",
+  "runsPerBuild": 7,
+  "benchmarkSourceSha256": "3e03040841f00be17aa6a86347ef4f0579c5fa8a4a2421383b5d4fb34c93b092",
+  "groups": {
+    "defaultStackRecursion": {
+      "before": {
+        "artifact": {
+          "path": "_local/builds/sync-bench-before.exe",
+          "sha256": "3bb1d26c34be4a082b9b3d5cd5a4cb99e000f50f25ecdfc63896e55333ff41b3",
+          "stackReserveBytes": 1048576
+        },
+        "runs": [
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": -1,
+            "error": "RangeError",
+            "samples": 1,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 0.569,
+            "callDepthAfter": 0,
+            "exitCode": 1
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": -1,
+            "error": "RangeError",
+            "samples": 1,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 1.005,
+            "callDepthAfter": 0,
+            "exitCode": 1
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": -1,
+            "error": "RangeError",
+            "samples": 1,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 0.559,
+            "callDepthAfter": 0,
+            "exitCode": 1
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": -1,
+            "error": "RangeError",
+            "samples": 1,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 0.674,
+            "callDepthAfter": 0,
+            "exitCode": 1
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": -1,
+            "error": "RangeError",
+            "samples": 1,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 0.53,
+            "callDepthAfter": 0,
+            "exitCode": 1
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": -1,
+            "error": "RangeError",
+            "samples": 1,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 0.736,
+            "callDepthAfter": 0,
+            "exitCode": 1
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": -1,
+            "error": "RangeError",
+            "samples": 1,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 0.686,
+            "callDepthAfter": 0,
+            "exitCode": 1
+          }
+        ],
+        "medianElapsedMs": 0.674,
+        "medianNativeStackGrowthBytes": 0
+      },
+      "after": {
+        "artifact": {
+          "path": "_local/builds/sync-bench-after.exe",
+          "sha256": "23a5299c31032640100ff6b055e8d27108b50f46d06873d20ef17c4e8553df6e",
+          "stackReserveBytes": 1048576
+        },
+        "runs": [
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 18.18,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 16.781,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 15.059,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 12.928,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 13.003,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 13.399,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 12.332,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          }
+        ],
+        "medianElapsedMs": 13.399,
+        "medianNativeStackGrowthBytes": 0
+      }
+    },
+    "largeStackRecursion": {
+      "before": {
+        "artifact": {
+          "path": "_local/builds/sync-bench-large-before.exe",
+          "sha256": "0a0b6a110a5b90ba19f77cec75887aa90791bb35fe7da83e4f6939e10a99d194",
+          "stackReserveBytes": 1073741824
+        },
+        "runs": [
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 57888000,
+            "elapsedMs": 38.18,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 57888000,
+            "elapsedMs": 34.362,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 57888000,
+            "elapsedMs": 31.823,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 57888000,
+            "elapsedMs": 30.611,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 57888000,
+            "elapsedMs": 30.453,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 57888000,
+            "elapsedMs": 31.904,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 57888000,
+            "elapsedMs": 34.238,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          }
+        ],
+        "medianElapsedMs": 31.904,
+        "medianNativeStackGrowthBytes": 57888000
+      },
+      "after": {
+        "artifact": {
+          "path": "_local/builds/sync-bench-large-after.exe",
+          "sha256": "517e450bfab5cfddfd8987edfbad1d40999a69d09aba79dea2395672b5be9366",
+          "stackReserveBytes": 1073741824
+        },
+        "runs": [
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 13.275,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 12.288,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 12.31,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 13.868,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 13.262,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 11.765,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "recursion",
+            "count": 3000,
+            "result": 3000,
+            "error": "",
+            "samples": 2,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 14.231,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          }
+        ],
+        "medianElapsedMs": 13.262,
+        "medianNativeStackGrowthBytes": 0
+      }
+    },
+    "shallowCalls": {
+      "before": {
+        "artifact": {
+          "path": "_local/builds/sync-bench-before.exe",
+          "sha256": "3bb1d26c34be4a082b9b3d5cd5a4cb99e000f50f25ecdfc63896e55333ff41b3",
+          "stackReserveBytes": 1048576
+        },
+        "runs": [
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 58.74,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 64.173,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 59.371,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 58.56,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 60.827,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 57.723,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 78.381,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          }
+        ],
+        "medianElapsedMs": 59.371,
+        "medianNativeStackGrowthBytes": 0
+      },
+      "after": {
+        "artifact": {
+          "path": "_local/builds/sync-bench-after.exe",
+          "sha256": "23a5299c31032640100ff6b055e8d27108b50f46d06873d20ef17c4e8553df6e",
+          "stackReserveBytes": 1048576
+        },
+        "runs": [
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 71.011,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 70.886,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 68.91,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 69.327,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 72.286,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 66.749,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          },
+          {
+            "scenario": "calls",
+            "count": 100000,
+            "result": 100000,
+            "error": "",
+            "samples": 0,
+            "nativeStackGrowthBytes": 0,
+            "elapsedMs": 68.658,
+            "callDepthAfter": 0,
+            "exitCode": 0
+          }
+        ],
+        "medianElapsedMs": 69.327,
+        "medianNativeStackGrowthBytes": 0
+      }
+    }
+  }
+}
