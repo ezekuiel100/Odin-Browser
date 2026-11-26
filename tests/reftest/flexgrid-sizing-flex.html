@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Flex inner shrink bases, auto margins and final cross sizes</title>
+<link rel="match" href="flexgrid-sizing-flex-ref.html">
+<style>
+body { margin:0; background:white }
+.stage { position:relative; width:200px; height:250px }
+.case { position:absolute; display:flex; left:0; width:200px }
+.green { background:green }
+.blue { background:blue }
+</style>
+<div class="stage">
+  <div class="case" style="top:0;height:20px">
+    <div class="green" style="flex:0 1 100px;min-width:0;padding:0 50px"></div>
+    <div class="blue" style="flex:0 1 100px;min-width:0"></div>
+  </div>
+  <div class="case" style="top:30px;width:20px;height:80px;flex-direction:column">
+    <div class="green" style="flex:0 1 40px;min-height:0;padding:20px 0"></div>
+    <div class="blue" style="flex:0 1 40px;min-height:0"></div>
+  </div>
+  <div class="case" style="left:40px;top:30px;width:160px;height:80px">
+    <div class="green" style="width:20px;height:20px;margin-top:auto"></div>
+    <div class="blue" style="width:20px;height:20px;margin-bottom:auto"></div>
+    <div class="green" style="width:20px;height:20px;margin:auto 0"></div>
+  </div>
+  <div class="case" style="top:120px;width:20px;height:80px;flex-direction:column;justify-content:center">
+    <div class="green" style="height:20px;flex:none"></div>
+    <div class="blue" style="height:20px;flex:none;margin-top:auto"></div>
+  </div>
+  <div class="case" style="left:40px;top:120px;width:20px;height:40px">
+    <div style="width:20px;overflow:hidden"><div class="green" style="height:80px"></div></div>
+  </div>
+  <div class="case" style="left:80px;top:120px;width:20px;height:80px">
+    <div style="display:flex;width:20px;align-items:center"><div class="blue" style="width:20px;height:20px"></div></div>
+  </div>
+  <div class="case" style="top:210px;height:20px">
+    <div class="green" style="flex:0 1 100px;min-width:0;padding:0 10%"></div>
+    <div class="blue" style="flex:0 1 100px;min-width:0"></div>
+  </div>
+</div>

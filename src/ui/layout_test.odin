@@ -1342,8 +1342,8 @@ test_grid_template_areas_basic :: proc(t: ^testing.T) {
 @(test)
 test_grid_areas_implicit_tracks :: proc(t: ^testing.T) {
     // grid-template-areas sem grid-template-columns: infere 2 colunas Auto.
-    // Colunas `auto` são dimensionadas pelo CONTEÚDO (não dividem igual — isso é
-    // 1fr), então cada coluna encolhe à largura do seu item.
+    // Auto começa no conteúdo e justify-content:normal divide a sobra igualmente
+    // entre as trilhas: 60+50 e 40+50. As widths explícitas dos itens não esticam.
     html := `<div style="display:grid;grid-template-areas:'a b';width:200px">
         <div id="a" style="grid-area:a;width:60px"></div>
         <div id="b" style="grid-area:b;width:40px"></div>
@@ -1354,7 +1354,7 @@ test_grid_areas_implicit_tracks :: proc(t: ^testing.T) {
     testing.expect(t, a != nil && b != nil, "achou a e b")
     testing.expect(t, abs(a.w - 60) < 0.5, "coluna auto = conteúdo (60)")
     testing.expect(t, abs(b.w - 40) < 0.5, "coluna auto = conteúdo (40)")
-    testing.expect(t, abs(b.x - a.x - 60) < 0.5, "b começa após a coluna a (+60)")
+    testing.expect(t, abs(b.x - a.x - 110) < 0.5, "b começa após a coluna auto esticada (+110)")
     testing.expect(t, abs(a.y - b.y) < 0.5, "mesma linha")
 }
 

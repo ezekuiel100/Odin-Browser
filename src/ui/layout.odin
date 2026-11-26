@@ -441,6 +441,7 @@ Box :: struct {
     align_items: Flex_Align,
     align_content: Flex_Just,  // distribuição das linhas (flex-wrap)
     ac_stretch: bool,          // align-content stretch → estica trilhas auto (grid)
+    jc_stretch: bool,
     justify_items: Flex_Align, // grid: alinhamento horizontal na célula
     align_self: Flex_Align, has_align_self: bool,
     justify_self: Flex_Align, has_justify_self: bool, // grid item
@@ -2616,6 +2617,7 @@ apply_box :: proc(b: ^Box, comp: Computed, base: string = "") {
     b.align_items = comp.align_items
     b.align_content = comp.align_content
     b.ac_stretch = comp.ac_stretch
+    b.jc_stretch = comp.jc_stretch
     b.justify_items = comp.justify_items
     b.align_self = comp.align_self; b.has_align_self = comp.has_align_self
     b.justify_self = comp.justify_self; b.has_justify_self = comp.has_justify_self
@@ -2706,12 +2708,26 @@ translate_subtree :: proc(b: ^Box, dx, dy: f32) {
 
 // A disposição interna deste box depende da ALTURA que ele recebe? Se sim, o flex
 // precisa RE-dispô-lo quando o esticar (não basta transladar): grid distribui
-// linhas fr, flex-column distribui flex-grow na altura, tabela idem. Já um
-// flex-row de linha única usa a altura do CONTEÚDO (não a imposta), e um bloco
-// comum só ganha espaço vazio embaixo — esses só transladam (barato, não recursa).
+// linhas fr, flex distribui espaço/alinha filhos, tabela idem. Blocos com filhos
+// percentuais e caixas de scroll também precisam atualizar a disposição interna.
 @(private = "file")
 height_sensitive :: proc(c: ^Box) -> bool {
-    return c.is_grid || c.is_table || (c.is_flex && c.flex_dir == .Column)
+    if c.is_grid || c.is_table || c.is_flex || c.kind == .Image || c.overflow_scroll || c.container_inline do return true
+    for child in c.children {
+        if child.pos == .Absolute || child.pos == .Fixed do continue
+        if child.has_height_pct || child.has_minh_pct || child.has_maxh_pct || child.inset_pct[0] || child.inset_pct[2] do return true
+    }
+    return false
+}
+
+// Percentage padding and margins use the containing block's inline size on
+// every side. Flex needs them resolved before it computes the outer bases.
+@(private="file")
+resolve_box_edges :: proc(b: ^Box, avail_w: f32) {
+    for i in 0 ..< 4 {
+        if b.padding_pct[i] do b.padding[i] = max(0, b.padding_frac[i]*avail_w+b.padding_off[i])
+        if b.margin_pct[i] do b.margin[i] = b.margin_frac[i]*avail_w+b.margin_off[i]
+    }
 }
 
 // cb_h = altura do containing block (content box do pai), passada pelo pai quando
@@ -2747,10 +2763,7 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
     // padding/margin em %: a base é a LARGURA do bloco contenedor (= avail_w) — pela
     // spec vale p/ os QUATRO lados, inclusive topo/base (é o truque `padding-top:56.25%`
     // p/ caixas de proporção fixa). Resolvido aqui, antes de qualquer leitura abaixo.
-    for i in 0 ..< 4 {
-        if b.padding_pct[i] do b.padding[i] = max(0, b.padding_frac[i] * avail_w + b.padding_off[i])
-        if b.margin_pct[i]  do b.margin[i]  = b.margin_frac[i] * avail_w + b.margin_off[i]
-    }
+    resolve_box_edges(b, avail_w)
     m := b.margin; p := b.padding
     bwt, bwr, bwb, bwl := b.border_w[0], b.border_w[1], b.border_w[2], b.border_w[3]
 
@@ -3951,12 +3964,17 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     bases   := make([]f32, n, context.temp_allocator)
     grows   := make([]f32, n, context.temp_allocator)
     shrinks := make([]f32, n, context.temp_allocator)
+    inner_bases := make([]f32, n, context.temp_allocator)
     mins    := make([]f32, n, context.temp_allocator)
     maxs    := make([]f32, n, context.temp_allocator)
     for child, i in kids {
+        resolve_box_edges(child, cw)
         resolve_child_minmax_h(child, avail_h) // min/max-height em % (eixo cruzado da row)
         bases[i], grows[i], shrinks[i] = flex_base_main(child, cw, avail_h)
+        extra := child.padding[3] + child.padding[1] + bw_x(child)
+        inner_bases[i] = bases[i] - extra
         mins[i], maxs[i] = box_min_max_axis(child, .Row, cw)
+        mins[i] = max(mins[i], extra) // only the hypothetical/target size floors its content box
         // TAMANHO MÍNIMO AUTOMÁTICO (CSS Flexbox §4.5) — metade INLINE do bloco que
         // o layout_flex_column já fazia no eixo de bloco. `min-width` inicial de um
         // item flex é `auto`, que resolve p/ o mínimo BASEADO EM CONTEÚDO, não 0:
@@ -3994,13 +4012,13 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         append(&lines, [2]int{0, n})
     }
 
-    if !b.flex_wrap do return flex_row_line(b, kids, 0, n, cw, gap, b.content_y, bases, grows, shrinks, mins, maxs, avail_h, avail_h)
+    if !b.flex_wrap do return flex_row_line(b, kids, 0, n, cw, gap, b.content_y, bases, grows, shrinks, inner_bases, mins, maxs, avail_h, avail_h)
 
     // A wrapping container remains multi-line even if only ONE line is collected.
     // Measure once; pure align-content positioning only translates subtrees.
     line_h := make([]f32, len(lines), context.temp_allocator)
     for ln, idx in lines {
-        line_h[idx] = flex_row_line(b, kids, ln[0], ln[1], cw, gap, b.content_y, bases, grows, shrinks, mins, maxs, -1, avail_h)
+        line_h[idx] = flex_row_line(b, kids, ln[0], ln[1], cw, gap, b.content_y, bases, grows, shrinks, inner_bases, mins, maxs, -1, avail_h)
     }
     total := b.row_gap * f32(len(lines) - 1)
     for h in line_h do total += h
@@ -4014,7 +4032,7 @@ layout_flex :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         h := line_h[idx] + extra
         py := b.flex_wrap_reverse ? cross_h - cy - h : cy
         if extra > 0 {
-            flex_row_line(b, kids, ln[0], ln[1], cw, gap, b.content_y + py, bases, grows, shrinks, mins, maxs, h, avail_h)
+            flex_row_line(b, kids, ln[0], ln[1], cw, gap, b.content_y + py, bases, grows, shrinks, inner_bases, mins, maxs, h, avail_h)
         } else {
             for i in ln[0] ..< ln[1] do translate_subtree(kids[i], 0, py)
         }
@@ -4064,7 +4082,7 @@ box_vertical_baseline :: proc(b: ^Box, last: bool = false) -> f32 {
 }
 
 @(private="file")
-flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, bases, grows, shrinks, mins, maxs: []f32, cross_h: f32 = -1, percent_h: f32 = -1) -> f32 {
+flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, bases, grows, shrinks, inner_bases, mins, maxs: []f32, cross_h: f32 = -1, percent_h: f32 = -1) -> f32 {
     cnt := e - s
     if cnt <= 0 do return 0
 
@@ -4072,7 +4090,7 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
     avail := cw - gap * f32(cnt - 1)
     for i in s ..< e { c := kids[i]; avail -= c.margin[3] + c.margin[1] }
     // resolve grow/shrink COM clamp de min/max por item (redistribui ao congelar)
-    finals := resolve_flex_lengths(bases[s:e], grows[s:e], shrinks[s:e], mins[s:e], maxs[s:e], avail) // índice local k = i - s
+    finals := resolve_flex_lengths(bases[s:e], grows[s:e], shrinks[s:e], mins[s:e], maxs[s:e], avail, inner_bases[s:e]) // índice local k = i - s
 
     // pass A: mede a altura de cada item já com a largura final
     line: f32 = 0
@@ -4088,7 +4106,13 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
             if c.box_sizing == .Content do fh += c.padding[0] + c.padding[2] + bw_y(c)
             fh = stretch_clamp(c, .Column, fh, percent_h)
         }
-        layout_box(c, b.content_x, cross_y, f, f, fh)
+        // With a definite line cross-size, stretch is already known. Layout
+        // nested flex containers at that final height once, avoiding 2^depth work.
+        if cross_h >= 0 && item_cross_align(b,c) == .Stretch && !c.has_height && !c.height_mc && !(c.has_height_pct && percent_h >= 0) && !c.margin_top_auto && !c.margin_bottom_auto {
+            mt, mb := node_margins(c)
+            fh = max(c.padding[0]+c.padding[2]+bw_y(c),stretch_clamp(c,.Column,max(0,cross_h-mt-mb),percent_h))
+        }
+        layout_box(c, b.content_x, cross_y, cw, f, fh)
         cmt, cmb := node_margins(c)
         oc := c.h + cmt + cmb
         if oc > line do line = oc
@@ -4096,6 +4120,7 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
     first_asc, first_desc, last_asc, last_desc: f32
     for i in s ..< e {
         c := kids[i]
+        if c.margin_top_auto || c.margin_bottom_auto do continue
         ai := item_cross_align(b, c)
         if ai != .Baseline && ai != .LastBaseline do continue
         mt, mb := node_margins(c)
@@ -4122,7 +4147,7 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
     for i in s ..< e { c := kids[i]; if c.margin_left_auto do n_autos += 1; if c.margin_right_auto do n_autos += 1 }
     soff, between: f32
     auto_share: f32 = 0
-    if n_autos > 0 {
+    if n_autos > 0 && jfree > 0 {
         auto_share = jfree / f32(n_autos)
         soff = 0; between = gap
     } else {
@@ -4133,8 +4158,8 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
     // pass B: posiciona. A pass A já dispôs cada item em (b.content_x, cross_y) na
     // largura final f; aqui só TRANSLADAMOS a subárvore até o x/y final em vez de
     // re-dispor (que dobraria o custo por nível → exponencial no flex aninhado do
-    // Facebook). O stretch cruzado só cresce a altura da caixa; conteúdo interno
-    // top-aligned fica igual (aproximação aceitável vs. congelar).
+    // Facebook). Containers sensíveis à altura refazem seu layout quando stretch
+    // muda a altura; os demais apenas atualizam a caixa e a posição.
     cx := b.content_x + soff
     for i in s ..< e {
         c := kids[i]; f := finals[i - s]
@@ -4149,29 +4174,22 @@ flex_row_line :: proc(b: ^Box, kids: []^Box, s, e: int, cw, gap, cross_y: f32, b
         yoff := flex_align(ai, line, oc)
         if ai == .Baseline do yoff = first_asc - box_baseline(c) - cmt
         if ai == .LastBaseline do yoff = line - last_desc - box_baseline(c, true) - cmt
+        cross_auto := c.margin_top_auto || c.margin_bottom_auto
+        if cross_auto do yoff = cross_auto_margin_offset(line-oc, c.margin_top_auto, c.margin_bottom_auto)
         // stretch só se aplica quando o cross-size (altura, numa row) é AUTO;
         // com altura definida OU intrínseca (min/max/fit-content) o stretch é
         // ignorado (o item fica no flex-start com sua altura própria).
         pct_resolved := c.has_height_pct && percent_h >= 0
-        fh: f32 = (ai == .Stretch && !c.has_height && !c.height_mc && !pct_resolved) ? line - cmt - cmb : -1
-        // min/max-height limitam o esticado — e o limite pode DIMINUIR a caixa
-        // (max-height menor que a linha), não só aumentá-la.
-        // ⚠️ `limitou` estreita a mudança de propósito: fora do caso em que o limite
-        // agiu, vale a regra ANTIGA de que o stretch só CRESCE a caixa. Um item mais
-        // alto que um container de altura definida continua transbordando como antes
-        // — encolhê-lo seria mais próximo da spec, mas é outra mudança e outro risco.
-        limitou := false
+        fh: f32 = (ai == .Stretch && !cross_auto && !c.has_height && !c.height_mc && !pct_resolved) ? max(0, line - cmt - cmb) : -1
         if fh >= 0 {
-            fh_cl := stretch_clamp(c, .Column, fh, 0)
-            limitou = fh_cl < fh - 0.5
-            fh = fh_cl
+            fh = max(c.padding[0]+c.padding[2]+bw_y(c), stretch_clamp(c, .Column, fh, 0))
         }
         px := b.flex_reverse ? b.content_x + cw - (cx-b.content_x) - f - c.margin[3] - c.margin[1] : cx
-        if fh >= 0 && (fh > c.h + 0.5 || limitou) && height_sensitive(c) {
-            layout_box(c, px, cross_y + yoff, f, f, fh) // grid/coluna: re-dispõe p/ redistribuir a altura
+        if fh >= 0 && abs(fh-c.h) > 0.001 && height_sensitive(c) {
+            layout_box(c, px, cross_y + yoff, cw, f, fh) // grid/coluna: re-dispõe p/ redistribuir a altura
         } else {
             translate_subtree(c, px - b.content_x, yoff)
-            if fh >= 0 && (fh > c.h || limitou) do c.h = fh // stretch cresce; o limite pode reduzir
+            if fh >= 0 do c.h = fh
         }
         cx += f + c.margin[3] + c.margin[1] + between
         if (b.flex_reverse ? c.margin_left_auto : c.margin_right_auto) do cx += auto_share
@@ -4196,11 +4214,13 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     bases   := make([]f32, n, context.temp_allocator)
     grows   := make([]f32, n, context.temp_allocator)
     shrinks := make([]f32, n, context.temp_allocator)
+    inner_bases := make([]f32, n, context.temp_allocator)
     mins    := make([]f32, n, context.temp_allocator)
     maxs    := make([]f32, n, context.temp_allocator)
 
     // pass A: mede a altura natural de cada item na largura cross
     for child, i in kids {
+        resolve_box_edges(child, cw)
         resolve_child_minmax_h(child, avail_h) // zero is also a definite height
         istr := flex_col_stretch_w(b, child) // align-self por item, e só p/ largura AUTO
         // Item com width PRÓPRIA (o único caso novo aqui) resolve a largura ELE
@@ -4210,7 +4230,8 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // (que antes acertava por acidente, esticando). Nunca coincide com `istr`:
         // com def_w o stretch não se aplica.
         propria := child.def_w || child.width_mc
-        cs := ((istr && !wrapping) || propria) ? cw : min(measure_intrinsic_w(child), cw)
+        inner_w := max(0,cw-child.margin[3]-child.margin[1])
+        cs := propria ? cw : ((istr && !wrapping) ? inner_w : min(measure_intrinsic_w(child), inner_w))
         // esticar preenche o container, mas o tamanho USADO é limitado por
         // min/max-width (css-align §4.2). Só no caminho FORÇADO: com width própria
         // quem clampa é o layout_box, que aí calcula a largura ele mesmo.
@@ -4221,7 +4242,7 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
             initial_h = max(0, pct_resolve(child.height_pct,child.height_pct_off,avail_h,child.height_bd))
             if child.box_sizing == .Content do initial_h += child.padding[0]+child.padding[2]+bw_y(child)
         }
-        layout_box(child, b.content_x, b.content_y, propria ? cw : cs, fw, initial_h)
+        layout_box(child, b.content_x, b.content_y, cw, fw, initial_h)
         if propria do cs = child.w // largura USADA (pós-%, pós-min/max) p/ a pass B
         cross[i] = cs
         grows[i] = child.flex_grow
@@ -4238,6 +4259,9 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
             bases[i] = child.h
         }
         mins[i], maxs[i] = box_min_max_axis(child, .Column, main_avail)
+        extra := child.padding[0] + child.padding[2] + bw_y(child)
+        inner_bases[i] = bases[i] - extra
+        mins[i] = max(mins[i], extra)
         // TAMANHO MÍNIMO AUTOMÁTICO (CSS Flexbox §4.5): o valor inicial de min-height
         // num flex item é `auto`, que resolve para o mínimo BASEADO EM CONTEÚDO — não
         // 0. Vira 0 só p/ SCROLL CONTAINER (hidden/auto/scroll). ⚠️ `overflow:clip` NÃO
@@ -4296,7 +4320,7 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     result: f32 = 0
     for ln, j in lines {
         px := b.flex_wrap_reverse ? cw - xoff - line_w[j] : xoff
-        result = max(result, flex_column_line(b, kids[ln[0]:ln[1]], cross[ln[0]:ln[1]], bases[ln[0]:ln[1]], grows[ln[0]:ln[1]], shrinks[ln[0]:ln[1]], mins[ln[0]:ln[1]], maxs[ln[0]:ln[1]], line_w[j], px, main_avail, avail_h >= 0, gap))
+        result = max(result, flex_column_line(b, kids[ln[0]:ln[1]], cross[ln[0]:ln[1]], bases[ln[0]:ln[1]], grows[ln[0]:ln[1]], shrinks[ln[0]:ln[1]], inner_bases[ln[0]:ln[1]], mins[ln[0]:ln[1]], maxs[ln[0]:ln[1]], line_w[j], px, main_avail, avail_h >= 0, gap))
         xoff += line_w[j] + cross_between
     }
     return result
@@ -4304,13 +4328,13 @@ layout_flex_column :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
 
 // Resolve each column independently, then align it in its cross-axis line.
 @(private="file")
-flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mins, maxs: []f32, cw, column_x, main_avail: f32, definite: bool, gap: f32) -> f32 {
+flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, inner_bases, mins, maxs: []f32, cw, column_x, main_avail: f32, definite: bool, gap: f32) -> f32 {
     n := len(kids)
     finals: []f32
     if definite {
         avail := main_avail - gap * f32(n - 1)
         for child in kids { cmt, cmb := node_margins(child); avail -= cmt + cmb }
-        finals = resolve_flex_lengths(bases, grows, shrinks, mins, maxs, avail)
+        finals = resolve_flex_lengths(bases, grows, shrinks, mins, maxs, avail, inner_bases)
     } else {
         // sem altura explícita. Mas se o container tem MIN-HEIGHT definida (px) e o
         // conteúdo base não a alcança, o excedente (min-height − base) é espaço livre
@@ -4331,7 +4355,7 @@ flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mi
         if min_main > base_used {
             avail := min_main - gap * f32(n - 1)
             for child in kids { cmt, cmb := node_margins(child); avail -= cmt + cmb }
-            finals = resolve_flex_lengths(bases, grows, shrinks, mins, maxs, avail)
+            finals = resolve_flex_lengths(bases, grows, shrinks, mins, maxs, avail, inner_bases)
         } else {
             // sem espaço a distribuir, só limita cada base a min/max
             finals = make([]f32, n, context.temp_allocator)
@@ -4346,6 +4370,13 @@ flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mi
     }
     jfree := definite ? main_avail - used : 0
     soff, between := flex_justify(b.justify, jfree, gap, n, b.justify_ovf == .Unsafe)
+    n_autos := 0
+    for child in kids { if child.margin_top_auto do n_autos += 1; if child.margin_bottom_auto do n_autos += 1 }
+    auto_share: f32
+    if n_autos > 0 && jfree > 0 {
+        auto_share = jfree / f32(n_autos)
+        soff = 0; between = gap
+    }
 
     // origem da margin-box. Como no flex-row: a pass A já dispôs cada item; aqui
     // TRANSLADAMOS até (x, cy) em vez de re-dispor (evita o custo exponencial do
@@ -4353,6 +4384,7 @@ flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mi
     // caixa; conteúdo interno fica top-aligned (aproximação vs. congelar).
     first_base, last_descent: f32
     for child in kids {
+        if child.margin_left_auto || child.margin_right_auto do continue
         ai := item_cross_align(b, child)
         if child.writing_mode == .Horizontal do continue
         if ai == .Baseline do first_base = max(first_base, box_vertical_baseline(child)+child.margin[3])
@@ -4360,6 +4392,7 @@ flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mi
     }
     cy := soff
     for child, i in kids {
+        if (b.flex_reverse ? child.margin_bottom_auto : child.margin_top_auto) do cy += auto_share
         cmt, cmb := node_margins(child)
         ai := item_cross_align(b, child) // align-self sobrescreve align-items
         ai = safe_align(ai, item_cross_safe(b, child), cw, cross[i] + child.margin[3] + child.margin[1])
@@ -4372,6 +4405,7 @@ flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mi
             xoff = cw-cross[i]-child.margin[3]-child.margin[1]
             if child.writing_mode != .Horizontal do xoff = cw-last_descent-box_vertical_baseline(child,true)-child.margin[3]
         }
+        if child.margin_left_auto || child.margin_right_auto do xoff = cross_auto_margin_offset(cw-cross[i]-child.margin[3]-child.margin[1], child.margin_left_auto, child.margin_right_auto)
         fw: f32 = cross[i] // largura já resolvida na pass A (stretch, % e min/max)
         if flex_col_stretch_w(b, child) {
             fw = stretch_clamp(child, .Row, max(0, cw-child.margin[3]-child.margin[1]), b.content_w)
@@ -4381,10 +4415,11 @@ flex_column_line :: proc(b: ^Box, kids: []^Box, cross, bases, grows, shrinks, mi
         if abs(fw - child.w) > 0.5 || (abs(finals[i] - child.h) > 0.5 && height_sensitive(child)) {
             layout_box(child, b.content_x + column_x + xoff, b.content_y + py, b.content_w, fw, finals[i])
         } else {
-            translate_subtree(child, column_x + xoff, py)
+            translate_subtree(child, b.content_x+column_x+xoff+child.margin[3]-child.x, b.content_y+py+cmt-child.y)
             child.h = finals[i] // tamanho principal (altura) resolvido pelo flex
         }
         cy += finals[i] + cmt + cmb + between
+        if (b.flex_reverse ? child.margin_top_auto : child.margin_bottom_auto) do cy += auto_share
     }
     return definite ? main_avail : used
 }
@@ -4485,6 +4520,7 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // como se fossem itens dele (css-grid-2 §9); sem subgrid é a lista crua.
         fi, fc, fs, fx := grid_flatten_cols(items[:], col_of, cspan_of, col_gap)
         widths = grid_col_widths(tracks, cw, col_gap, fi, fc, fs, fx)
+        grid_stretch_auto_tracks(tracks, widths, cw-col_gap*f32(nc-1), b.jc_stretch)
         // posições x das colunas — justify-content distribui a sobra horizontal
         xs = grid_track_positions(widths, col_gap, cw, b.justify, true, b.justify_ovf == .Unsafe)
     }
@@ -4555,6 +4591,7 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     for it, i in items {
         sw := grid_extent(xs, widths, col_of[i], cspan_of[i])
         sh := grid_extent(row_y, row_h, row_of[i], rspan_of[i])
+        resolve_box_edges(it, sw)
         cx := b.content_x + xs[col_of[i]]
         cy := b.content_y + row_y[row_of[i]]
         ji, ai := grid_item_align(b, it)
@@ -4567,16 +4604,18 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // da célula por cima da width própria.
         // ⚠️ def_w (width do CSS), NÃO has_width: controles (input/textarea) ganham
         // has_width sintético (20 cols default) mesmo com width:auto — e DEVEM esticar.
-        stretch_w := ji == .Stretch && !it.def_w && !it.width_mc
-        stretch_h := ai == .Stretch && !it.has_height && !it.has_height_pct && !it.height_mc
+        stretch_w := ji == .Stretch && !it.def_w && !it.width_mc && !it.margin_left_auto && !it.margin_right_auto
+        stretch_h := ai == .Stretch && !it.has_height && !it.has_height_pct && !it.height_mc && !it.margin_top_auto && !it.margin_bottom_auto
+        inner_w := max(0, sw-it.margin[3]-it.margin[1])
+        inner_h := max(0, sh-it.margin[0]-it.margin[2])
         // subgrid: SEMPRE esticado no eixo subgridado — alinhamento e width/height
         // do item são ignorados ali (css-grid-2 §9), e a área inteira (margens
         // inclusive) é dele. As trilhas vão junto, antes do layout_box.
         sub_w, sub_h := grid_is_sub(it, .Row), grid_is_sub(it, .Column)
         if sub_w || sub_h {
             grid_sub_impose(it, sub_w ? xs : nil, widths, col_of[i], cspan_of[i], sub_h ? row_y : nil, row_h, row_of[i], rspan_of[i], col_gap, row_gap)
-            sfw: f32 = sub_w ? max(0, sw - it.margin[3] - it.margin[1]) : ((it.def_w || it.width_mc) ? -1 : (stretch_w ? sw : min(measure_intrinsic_w(it), sw)))
-            sfh: f32 = sub_h ? max(0, sh - it.margin[0] - it.margin[2]) : (stretch_h ? sh : -1)
+            sfw: f32 = sub_w ? inner_w : ((it.def_w || it.width_mc) ? -1 : (stretch_w ? inner_w : min(measure_intrinsic_w(it), inner_w)))
+            sfh: f32 = sub_h ? inner_h : (stretch_h ? inner_h : -1)
             if !sub_w && sfw >= 0 do sfw = stretch_clamp(it, .Row, sfw, sw)
             if !sub_h && sfh >= 0 do sfh = stretch_clamp(it, .Column, sfh, sh)
             layout_box(it, cx, cy, sfw >= 0 ? sfw : sw, sfw, sfh, cb_h=sh)
@@ -4586,8 +4625,8 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // width e pode transbordar a célula); stretch → preenche a célula; senão
         // shrink-to-fit (max-content ∩ célula). avail_w é SEMPRE a célula (sw), p/
         // % de largura e filhos resolverem contra a trilha.
-        fw: f32 = (it.def_w || it.width_mc) ? -1 : (stretch_w ? sw : min(measure_intrinsic_w(it), sw))
-        fh: f32 = stretch_h ? sh : -1
+        fw: f32 = (it.def_w || it.width_mc) ? -1 : (stretch_w ? inner_w : min(measure_intrinsic_w(it), inner_w))
+        fh: f32 = stretch_h ? inner_h : -1
         resolve_child_minmax_h(it, sh)
         if it.has_height_pct {
             fh = max(0,pct_resolve(it.height_pct,it.height_pct_off,sh,it.height_bd))
@@ -4602,8 +4641,7 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         // tamanho DEFINIDO (fw=-1) o avail_w é a célula (sw), p/ % resolver contra a
         // trilha; para os demais o avail_w = a própria largura forçada (preserva o
         // comportamento base — controles de formulário dependem dele p/ o intrínseco).
-        aw: f32 = (it.def_w || it.width_mc) ? sw : fw
-        layout_box(it, cx, cy, aw, fw, fh, cb_h=sh)
+        layout_box(it, cx, cy, sw, fw, fh, cb_h=sh)
     }
     // Rebuild baseline sharing groups after percentages and shrink-to-fit sizes
     // resolve. The measuring pass may have had different item dimensions.
@@ -4611,13 +4649,13 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
     for c in 0 ..< nc { column_first[c] = 0; column_last[c] = 0 }
     for it, i in items {
         ji, ai := grid_item_align(b, it)
-        if ai == .Baseline do baseline_first[row_of[i]] = max(baseline_first[row_of[i]],box_baseline(it)+it.margin[0])
-        if ai == .LastBaseline {
+        if ai == .Baseline && !it.margin_top_auto && !it.margin_bottom_auto do baseline_first[row_of[i]] = max(baseline_first[row_of[i]],box_baseline(it)+it.margin[0])
+        if ai == .LastBaseline && !it.margin_top_auto && !it.margin_bottom_auto {
             r := row_of[i]+rspan_of[i]-1
             baseline_last[r] = max(baseline_last[r],it.h-box_baseline(it,true)+it.margin[2])
         }
-        if ji == .Baseline do column_first[col_of[i]] = max(column_first[col_of[i]],box_vertical_baseline(it)+it.margin[3])
-        if ji == .LastBaseline {
+        if ji == .Baseline && !it.margin_left_auto && !it.margin_right_auto do column_first[col_of[i]] = max(column_first[col_of[i]],box_vertical_baseline(it)+it.margin[3])
+        if ji == .LastBaseline && !it.margin_left_auto && !it.margin_right_auto {
             c := col_of[i]+cspan_of[i]-1
             column_last[c] = max(column_last[c],it.w-box_vertical_baseline(it,true)+it.margin[1])
         }
@@ -4626,19 +4664,26 @@ layout_grid :: proc(b: ^Box, avail_h: f32 = -1) -> f32 {
         sw := grid_extent(xs, widths, col_of[i], cspan_of[i])
         sh := grid_extent(row_y, row_h, row_of[i], rspan_of[i])
         ji, ai := grid_item_align(b, it)
-        ji = safe_align(ji, (it.has_justify_self ? it.justify_self_ovf : b.justify_items_ovf) == .Safe, sw, it.w)
-        ai = safe_align(ai, item_cross_safe(b, it), sh, it.h)
+        outer_w := it.w+it.margin[3]+it.margin[1]
+        outer_h := it.h+it.margin[0]+it.margin[2]
+        ji = safe_align(ji, (it.has_justify_self ? it.justify_self_ovf : b.justify_items_ovf) == .Safe, sw, outer_w)
+        ai = safe_align(ai, item_cross_safe(b, it), sh, outer_h)
         stretch_w := ji == .Stretch && !it.def_w && !it.width_mc
         stretch_h := ai == .Stretch && !it.has_height && !it.has_height_pct && !it.height_mc
         if grid_is_sub(it, .Row)    { stretch_w = true; ji = .Stretch }
         if grid_is_sub(it, .Column) { stretch_h = true; ai = .Stretch }
-        xoff: f32 = stretch_w ? 0 : flex_align(ji, sw, it.w)
+        xoff: f32 = stretch_w ? 0 : flex_align(ji, sw, outer_w)
         if ji == .Baseline do xoff = column_first[col_of[i]]-box_vertical_baseline(it)-it.margin[3]
         if ji == .LastBaseline do xoff = sw-column_last[col_of[i]+cspan_of[i]-1]-box_vertical_baseline(it,true)-it.margin[3]
-        yoff: f32 = stretch_h ? 0 : flex_align(ai, sh, it.h)
+        yoff: f32 = stretch_h ? 0 : flex_align(ai, sh, outer_h)
         if ai == .Baseline do yoff = baseline_first[row_of[i]] - box_baseline(it) - it.margin[0]
         if ai == .LastBaseline do yoff = sh - baseline_last[row_of[i]+rspan_of[i]-1] - box_baseline(it, true) - it.margin[0]
-        if xoff != 0 || yoff != 0 do translate_subtree(it, xoff, yoff)
+        if !grid_is_sub(it, .Row) && (it.margin_left_auto || it.margin_right_auto) do xoff = cross_auto_margin_offset(max(0,sw-outer_w),it.margin_left_auto,it.margin_right_auto)
+        if !grid_is_sub(it, .Column) && (it.margin_top_auto || it.margin_bottom_auto) do yoff = cross_auto_margin_offset(max(0,sh-outer_h),it.margin_top_auto,it.margin_bottom_auto)
+        // layout_box can apply block auto-margin centering; grid owns this offset.
+        tx := b.content_x+xs[col_of[i]]+it.margin[3]+xoff
+        ty := b.content_y+row_y[row_of[i]]+it.margin[0]+yoff
+        translate_subtree(it, tx-it.x, ty-it.y)
     }
 
     total: f32 = 0
@@ -4894,6 +4939,7 @@ grid_place :: proc(items: []^Box, n_primary: int, flow_col := false, dense := fa
 grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspan_of, row_of, rspan_of: []int, nrows: int, col_gap, row_gap: f32, ch: f32, has_h: bool, virt: ^[dynamic]Grid_Contrib = nil) -> []f32 {
     row_h := make([]f32, nrows, context.temp_allocator)
     is_fr := make([]bool, nrows, context.temp_allocator)
+    growth := make([]f32, nrows, context.temp_allocator)
 
     // Trilha efetiva de cada linha: explícita (grid-template-rows) enquanto houver,
     // depois IMPLÍCITA ciclando grid-auto-rows. Sem grid-auto-rows a implícita fica
@@ -4913,22 +4959,34 @@ grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspa
     for r in 0 ..< nrows {
         t := trk[r]
         switch t.kind {
-        case .Fixed: row_h[r] = t.value
-        case .Pct:   row_h[r] = t.value * ch
+        case .Fixed:
+            if !t.de_minmax do row_h[r] = t.value
+            growth[r] = t.value
+        case .Pct:
+            if has_h {
+                if !t.de_minmax do row_h[r] = t.value*ch
+                growth[r] = t.value*ch
+            }
         case .Fr:    is_fr[r] = true; fr_total += t.value
         case .Auto:
         }
-        if t.min_px > row_h[r] do row_h[r] = t.min_px
+        row_h[r] = max(row_h[r], track_min(t, ch))
+        growth[r] = max(growth[r], row_h[r])
     }
 
     // conteúdo: mede cada item e engorda as linhas auto/implícitas até caber
     sub_spans := make([dynamic]Grid_Contrib, context.temp_allocator) // itens de subgrid com span > 1
     for it, i in items {
         sw := grid_extent(xs, widths, col_of[i], cspan_of[i])
+        resolve_box_edges(it, sw)
         // A linha precisa da altura na largura USADA do item. Forçar a trilha
         // em width:min-content media uma linha só; na pintura o item estreitava,
         // quebrava em várias linhas e sobrepunha a próxima linha do grid.
-        fw: f32 = (it.def_w || it.width_mc) ? -1 : sw
+        ji, _ := grid_item_align(b,it)
+        inner := max(0,sw-it.margin[3]-it.margin[1])
+        stretch := ji == .Stretch && !it.margin_left_auto && !it.margin_right_auto
+        fw: f32 = (it.def_w || it.width_mc) ? -1 : (stretch ? inner : min(measure_intrinsic_w(it),inner))
+        if fw >= 0 do fw = stretch_clamp(it,.Row,fw,sw)
         r0 := row_of[i]; rs := rspan_of[i]
         if sub_w, sub_h := grid_is_sub(it, .Row), grid_is_sub(it, .Column); sub_w || sub_h {
             // colunas impostas já aqui (a altura dos itens depende delas); linhas
@@ -4959,64 +5017,57 @@ grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspa
         } else {
             layout_box(it, b.content_x, b.content_y, sw, fw, -1)
         }
-        if rs > 1 do continue
-        if rs == 1 && is_fr[r0] && has_h {
-            t := trk[r0]
-            floor: f32 = 0
-            switch t.min_kind {
-            case .Auto:
-                if it.has_minh { floor = it.minh } else if !it.scroll_container { floor = it.h }
-            case .MinContent, .MaxContent: floor = it.h
-            case .Fixed, .FitContent:
-            }
-            row_h[r0] = max(row_h[r0], floor + it.margin[0] + it.margin[2])
+        if rs != 1 do continue
+        t := trk[r0]
+        fixed := (t.kind == .Fixed || (t.kind == .Pct && has_h)) && !t.de_minmax
+        if fixed do continue
+        margins := it.margin[0]+it.margin[2]
+        if t.min_kind != .Fixed {
+            floor := grid_item_min_h(it, t, ch, has_h)
+            row_h[r0] = max(row_h[r0], floor+margins)
         }
-        cur := grid_span_gap(row_h, r0, rs, row_gap)
-        if it.h + it.margin[0] + it.margin[2] > cur {
-            // Definite fixed/flexible tracks retain their sizes. Intrinsic tracks
-            // share the spanning contribution after shorter spans have settled.
-            count := 0
-            for rr := r0; rr < min(r0 + rs, nrows); rr += 1 {
-                fixed := trk[rr].kind == .Fixed || (trk[rr].kind == .Pct && has_h) || (is_fr[rr] && has_h)
-                if !fixed do count += 1
-            }
-            if count > 0 {
-                deficit := (it.h + it.margin[0] + it.margin[2] - cur) / f32(count)
-                for rr := r0; rr < min(r0 + rs, nrows); rr += 1 {
-                    fixed := trk[rr].kind == .Fixed || (trk[rr].kind == .Pct && has_h) || (is_fr[rr] && has_h)
-                    if !fixed do row_h[rr] += max(0, deficit)
-                }
-            }
+        if t.kind == .Auto || (t.kind == .Pct && !has_h) {
+            limit := it.h+margins
+            if t.max_kind == .FitContent do limit = min(limit,t.fit_pct ? (has_h ? t.value*ch : limit) : t.value)
+            growth[r0] = max(growth[r0],limit)
         }
     }
+    for r in 0 ..< nrows do growth[r] = max(growth[r], row_h[r])
 
-    // §12.7.1 "Find the Size of an fr", ramo de espaço livre INDEFINIDO: a fração
-    // usada é o MAIOR (base ÷ fator) entre as trilhas flexíveis (fator ≤ 1 usa a
-    // base crua), e cada `fr` fica em fração×fator, com piso na própria base. Com
-    // uma única linha `fr` isto é a identidade (ela já cresceu pelo conteúdo);
-    // com `1fr 2fr` é o que faz a segunda ficar o dobro da primeira.
+    // Equal-span items read the same bases/limits, then publish planned increases.
     for span in 2 ..= nrows {
-        planned := make([]f32,nrows,context.temp_allocator)
-        for it, i in items {
-            if rspan_of[i] != span do continue
-            start := row_of[i]
-            count := min(span,nrows-start)
-            values := make([]f32,count,context.temp_allocator)
-            limits := make([]f32,count,context.temp_allocator)
-            weights := make([]f32,count,context.temp_allocator)
-            has_fr := false
-            for r in start ..< start+count do has_fr = has_fr || is_fr[r]
-            for j in 0 ..< count {
-                r := start+j; t := trk[r]
-                values[j] = row_h[r]; limits[j] = values[j]
-                eligible := has_fr ? is_fr[r] && !has_h && t.min_kind != .Fixed : t.kind == .Auto || (t.kind == .Pct && !has_h)
-                if eligible { limits[j] = FLT_MAX; weights[j] = has_fr ? t.value : 1 }
+        for maximum in 0 ..< 2 {
+            planned := make([]f32,nrows,context.temp_allocator)
+            for it, i in items {
+                if rspan_of[i] != span do continue
+                start := row_of[i]
+                count := min(span,nrows-start)
+                values := make([]f32,count,context.temp_allocator)
+                limits := make([]f32,count,context.temp_allocator)
+                weights := make([]f32,count,context.temp_allocator)
+                has_fr := false
+                for r in start ..< start+count do has_fr = has_fr || is_fr[r]
+                for j in 0 ..< count {
+                    r := start+j; t := trk[r]
+                    values[j] = maximum == 1 ? growth[r] : row_h[r]
+                    limits[j] = values[j]
+                    eligible := maximum == 1 ? t.kind == .Auto || (t.kind == .Pct && !has_h) : (!has_fr && t.min_kind != .Fixed && (t.kind == .Auto || (t.kind == .Pct && !has_h)))
+                    if eligible {
+                        limits[j] = FLT_MAX; weights[j] = 1
+                        if maximum == 1 && t.max_kind == .FitContent && (!t.fit_pct || has_h) do limits[j] = max(values[j],t.fit_pct ? t.value*ch : t.value)
+                    }
+                }
+                if has_fr do continue // flexible spans have a separate fr calculation
+                need := it.h+it.margin[0]+it.margin[2]-row_gap*f32(count-1)
+                before := make([]f32,count,context.temp_allocator); copy(before,values)
+                grid_grow_span(values,limits,weights,need)
+                for j in 0 ..< count do planned[start+j] = max(planned[start+j],values[j]-before[j])
             }
-            need := it.h+it.margin[0]+it.margin[2]-row_gap*f32(count-1)
-            grid_grow_span(values,limits,weights,need)
-            for j in 0 ..< count do planned[start+j] = max(planned[start+j],values[j]-row_h[start+j])
+            for r in 0 ..< nrows {
+                if maximum == 0 { row_h[r] += planned[r] } else { growth[r] += planned[r] }
+                growth[r] = max(growth[r],row_h[r])
+            }
         }
-        for r in 0 ..< nrows do row_h[r] += planned[r]
     }
 
     // itens de SUBGRID que atravessam linhas: o que faltar é repartido por igual
@@ -5034,39 +5085,29 @@ grid_row_heights :: proc(b: ^Box, items: []^Box, widths, xs: []f32, col_of, cspa
         }
     }
 
-    if !has_h && fr_total > 0 {
-        frac: f32 = 0
-        for r in 0 ..< nrows do if is_fr[r] {
-            f := trk[r].value
-            frac = max(frac, f > 1 ? row_h[r] / f : row_h[r])
-        }
-        for r in 0 ..< nrows do if is_fr[r] {
-            row_h[r] = max(row_h[r], frac * trk[r].value)
-        }
+    for r in 0 ..< nrows {
+        growth[r] = max(growth[r], row_h[r])
+        if !has_h && !is_fr[r] do row_h[r] = growth[r]
     }
-
-    // Definite rows use the same frozen-base fraction calculation as columns.
-    if has_h && fr_total > 0 {
-        grid_resolve_fr(trk, row_h, ch - row_gap * f32(max(0, nrows - 1)))
-    }
-
-    // §11.8 "Stretch auto Tracks": com altura DEFINIDA e align-content normal/stretch,
-    // as trilhas de max-sizing AUTO dividem a sobra positiva igualmente (preenchem o
-    // container). Sem isso, um grid com altura definida e linha `auto` deixava a linha
-    // no tamanho do conteúdo e a sobra vazia embaixo (o item não preenchia). Fr já
-    // consumiu a sobra acima, então quando há fr o leftover aqui é 0 (não colidem).
-    if has_h && b.ac_stretch {
-        used := row_gap * f32(max(0, nrows - 1))
-        n_auto := 0
-        for r in 0 ..< nrows {
-            used += row_h[r]
-            if trk[r].kind == .Auto do n_auto += 1
+    available := ch-row_gap*f32(max(0,nrows-1))
+    if has_h {
+        grid_maximize_tracks(trk,row_h,growth,available)
+        grid_resolve_fr(trk,row_h,available)
+    } else if fr_total > 0 {
+        // An indefinite flex fraction includes max-content contributions of
+        // every crossing item, even when a track's minimum is explicitly zero.
+        frac: f32
+        for r in 0 ..< nrows do if is_fr[r] do frac = max(frac,row_h[r]/max(1,trk[r].value))
+        for it, i in items {
+            start := row_of[i]; count := min(rspan_of[i],nrows-start)
+            values := make([]f32,count,context.temp_allocator); copy(values,row_h[start:start+count])
+            need := it.h+it.margin[0]+it.margin[2]-row_gap*f32(max(0,count-1))
+            grid_resolve_fr(trk[start:start+count],values,need)
+            for j in 0 ..< count do if is_fr[start+j] && trk[start+j].value > 0 do frac = max(frac,values[j]/trk[start+j].value)
         }
-        if leftover := ch - used; leftover > 0 && n_auto > 0 {
-            add := leftover / f32(n_auto)
-            for r in 0 ..< nrows do if trk[r].kind == .Auto do row_h[r] += add
-        }
+        for r in 0 ..< nrows do if is_fr[r] do row_h[r] = max(row_h[r],frac*trk[r].value)
     }
+    if has_h do grid_stretch_auto_tracks(trk,row_h,available,b.ac_stretch)
     return row_h
 }
 
@@ -5167,6 +5208,29 @@ grid_grow_span :: proc(values, limits, weights: []f32, need: f32) {
     }
 }
 
+// Grid section 12.6: distribute equal increments, freezing at growth limits.
+// Flexible tracks are expanded separately by the common fr calculation.
+@(private="file")
+grid_maximize_tracks :: proc(tracks: []Grid_Track, sizes, limits: []f32, available: f32) {
+    weights := make([]f32, len(tracks), context.temp_allocator)
+    for t, i in tracks do if t.kind != .Fr do weights[i] = 1
+    grid_grow_span(sizes, limits, weights, available)
+}
+
+// Only an auto MAXIMUM stretches. min-content/max-content/fit-content do not.
+@(private="file")
+grid_stretch_auto_tracks :: proc(tracks: []Grid_Track, sizes: []f32, available: f32, stretch: bool) {
+    if !stretch do return
+    free := available
+    count := 0
+    for t, i in tracks {
+        free -= sizes[i]
+        if t.kind == .Auto && t.max_kind == .Auto do count += 1
+    }
+    if free <= 0 || count == 0 do return
+    for t, i in tracks do if t.kind == .Auto && t.max_kind == .Auto do sizes[i] += free/f32(count)
+}
+
 // Resolve a largura de cada coluna. Sempre ao menos 1 coluna.
 @(private="file")
 grid_col_widths :: proc(tracks: []Grid_Track, cw, col_gap: f32, items: []^Box, col_of, cspan_of: []int, extra: []f32 = nil) -> []f32 {
@@ -5244,65 +5308,23 @@ grid_col_widths :: proc(tracks: []Grid_Track, cw, col_gap: f32, items: []^Box, c
         }
     }
 
-    fixed_sum, fr_total: f32 = 0, 0
+    // Start at the resolved bases. Maximize by equal increments, freezing at
+    // each growth limit, before calculating the common flex fraction.
+    limits := make([]f32, nc, context.temp_allocator)
     for t, i in tracks {
+        widths[i] = floors[i]
         switch t.kind {
-        case .Fixed: fixed_sum += t.value
-        case .Pct:   fixed_sum += t.value * cw
-        case .Auto:  aw := max(auto_w[i], track_min(t, cw)); widths[i] = aw; fixed_sum += aw
-        case .Fr:    fr_total  += t.value
+        case .Fixed, .Pct:
+            limit := t.kind == .Pct ? t.value*cw : t.value
+            if !t.de_minmax do widths[i] = max(widths[i], limit)
+            limits[i] = max(widths[i], limit)
+        case .Auto: limits[i] = max(widths[i], auto_w[i])
+        case .Fr: limits[i] = widths[i]
         }
     }
-    leftover := cw - fixed_sum - col_gap * f32(nc - 1)
-    if leftover < 0 do leftover = 0
-
-    for t, i in tracks {
-        switch t.kind {
-        case .Fixed: widths[i] = t.value
-        case .Pct:   widths[i] = t.value * cw
-        case .Fr:    widths[i] = fr_total > 0 ? leftover * t.value / fr_total : 0
-        case .Auto:  // já dimensionado pelo conteúdo acima
-        }
-        if m := floors[i]; widths[i] < m do widths[i] = m
-        if widths[i] < 0        do widths[i] = 0
-    }
-
-    // Trilhas .Auto (auto/min-content/max-content e o lado MAX de um minmax) eram
-    // fixadas no max-content SEM teto: um título longo dava uma trilha de 610px num
-    // container de 579 e o item vazava. A spec resolve isso em duas etapas — a base é
-    // a função de MÍNIMO e o max-content é só um LIMITE DE CRESCIMENTO, alcançável
-    // apenas com espaço livre. Sem espaço livre a trilha fica na base.
-    //
-    // Aqui o efeito é o mesmo pelo outro lado: se o total estoura, devolve o excesso
-    // das trilhas .Auto proporcionalmente ao quanto cada uma pode ceder (do
-    // max-content até seu piso). Texto reflui na largura menor; não há corte.
-    total := col_gap * f32(nc - 1)
-    for w in widths do total += w
-    if excess := total - cw; excess > 0.01 && cw > 0 {
-        give := make([]f32, nc, context.temp_allocator)
-        give_total: f32 = 0
-        for t, i in tracks {
-            // .Auto: o max-content é limite de crescimento (ver acima).
-            // de_minmax: o `max` de um minmax() é limite de crescimento pela MESMA
-            // razão (Grid §12.6) — a trilha nasce na função de MÍNIMO e só cresce
-            // com espaço livre. Sem isto, `minmax(0, 1536px)` numa grade de 1280
-            // virava 1536 fixos e transbordava (tailwindcss.com).
-            // ⚠️ trilha de tamanho ÚNICO (`500px`, `40%`) NÃO cede: ali o autor
-            // pediu a largura, e transbordar é o comportamento certo.
-            if t.kind != .Auto && !t.de_minmax do continue
-            if g := widths[i] - floors[i]; g > 0 { give[i] = g; give_total += g }
-        }
-        if give_total > 0 {
-            cut := min(excess, give_total)
-            for i in 0 ..< nc {
-                if give[i] > 0 do widths[i] -= cut * give[i] / give_total
-            }
-        }
-    }
-    // Recompute the flex fraction after non-flex tracks have settled. Floors
-    // freeze tracks before distributing the remainder, rather than adding overflow.
-    for t, i in tracks do if t.kind == .Fr do widths[i] = floors[i]
-    grid_resolve_fr(tracks, widths, cw - col_gap * f32(nc - 1))
+    leftover := cw - col_gap*f32(nc-1)
+    grid_maximize_tracks(tracks, widths, limits, leftover)
+    grid_resolve_fr(tracks, widths, leftover)
     when GRID_DEBUG {
         if nc >= 4 {
             fmt.eprintf("[grid] cw=%.0f nc=%d gap=%.0f leftover=%.0f tracks=[", cw, nc, col_gap, leftover)
@@ -5338,6 +5360,21 @@ grid_item_min_w :: proc(it: ^Box, t: Grid_Track, cw: f32) -> f32 {
     }
     return 0
 }
+@(private="file")
+grid_item_min_h :: proc(it: ^Box, t: Grid_Track, ch: f32, definite: bool) -> f32 {
+    if t.min_kind == .Fixed do return 0
+    if t.min_kind == .MinContent || t.min_kind == .MaxContent do return it.h
+    extra := it.padding[0]+it.padding[2]+bw_y(it)
+    minimum := it.h
+    if it.has_minh { minimum = it.box_sizing == .Border ? max(extra,it.minh) : it.minh+extra }
+    else if it.scroll_container { minimum = extra }
+    if t.de_minmax && (t.kind == .Fixed || (t.kind == .Pct && definite)) {
+        cap := t.kind == .Pct ? t.value*ch : t.value
+        minimum = min(minimum,max(track_min(t,ch),cap))
+    }
+    return minimum
+}
+
 // Grid §12.7.1: find an fr size, freezing tracks whose base exceeds their share.
 // widths contains the resolved bases/non-flex sizes. Gaps are already excluded.
 @(private="file")
@@ -5978,7 +6015,7 @@ stretch_clamp :: proc(c: ^Box, axis: Flex_Dir, size, basis: f32) -> f32 {
 // os demais. `avail` = espaço principal para os itens (gaps e margens já fora).
 // Devolve os tamanhos finais (border-box) indexados como as entradas.
 @(private="file")
-resolve_flex_lengths :: proc(bases, grows, shrinks, mins, maxs: []f32, avail: f32) -> []f32 {
+resolve_flex_lengths :: proc(bases, grows, shrinks, mins, maxs: []f32, avail: f32, inner_bases: []f32 = nil) -> []f32 {
     n := len(bases)
     finals := make([]f32, n, context.temp_allocator)
     frozen := make([]bool, n, context.temp_allocator)
@@ -6021,9 +6058,9 @@ resolve_flex_lengths :: proc(bases, grows, shrinks, mins, maxs: []f32, avail: f3
             if sumf <= 0 do break
             for i in 0 ..< n do if !frozen[i] do finals[i] = bases[i] + remaining * grows[i] / sumf
         } else {
-            sums: f32 = 0; for i in 0 ..< n do if !frozen[i] do sums += shrinks[i] * bases[i]
+            sums: f32 = 0; for i in 0 ..< n do if !frozen[i] do sums += shrinks[i] * (inner_bases != nil ? inner_bases[i] : bases[i])
             if sums <= 0 do break
-            for i in 0 ..< n do if !frozen[i] do finals[i] = bases[i] + remaining * (shrinks[i] * bases[i]) / sums
+            for i in 0 ..< n do if !frozen[i] do finals[i] = bases[i] + remaining * (shrinks[i] * (inner_bases != nil ? inner_bases[i] : bases[i])) / sums
         }
 
         // limita cada item flexível; a soma das violações decide quem congelar
@@ -6613,7 +6650,15 @@ safe_align :: proc(a: Flex_Align, safe: bool, space, sz: f32) -> Flex_Align {
 // propósito, porque as duas divergirem é o bug de novo, calado.
 @(private="file")
 flex_col_stretch_w :: proc(b, c: ^Box) -> bool {
-    return item_cross_align(b, c) == .Stretch && !c.def_w && !c.width_mc
+    return item_cross_align(b, c) == .Stretch && !c.def_w && !c.width_mc && !c.margin_left_auto && !c.margin_right_auto
+}
+
+// Flex cross-axis auto margins absorb positive space before align-self. When
+// overflowing, keep the start margin and let the end margin take the deficit.
+@(private="file")
+cross_auto_margin_offset :: proc(free: f32, start_auto, end_auto: bool) -> f32 {
+    if free > 0 do return start_auto ? free / (end_auto ? 2 : 1) : 0
+    return 0
 }
 
 // Deslocamento no eixo cruzado conforme align-items (line = tamanho da linha).

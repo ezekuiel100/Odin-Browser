@@ -1,0 +1,161 @@
+<anon# .> block x=0 y=0 w=800 h=3490
+  <html# .> block x=0 y=0 w=800 h=3490
+    <body# .> block x=0 y=0 w=800 h=3490
+      <section#fga_flex_shrink_uses_inner_row_basis .> block x=0 y=0 w=800 h=10
+        <div# .> flex x=0 y=0 w=200 h=10 dir=Row gap=0
+          <div#fga_flex_shrink_uses_inner_row_basis-a .> inline x=0 y=0 w=150 h=10
+          <div#fga_flex_shrink_uses_inner_row_basis-b .> inline x=150 y=0 w=50 h=10
+      <section#fga_flex_shrink_uses_inner_column_basis .> block x=0 y=10 w=800 h=200
+        <div# .> flex x=0 y=10 w=100 h=200 dir=Column gap=0
+          <div#fga_flex_shrink_uses_inner_column_basis-a .> inline x=0 y=10 w=100 h=150
+          <div#fga_flex_shrink_uses_inner_column_basis-b .> inline x=0 y=160 w=100 h=50
+      <section#fga_flex_shrink_border_box_and_padding_floor .> block x=0 y=210 w=800 h=20
+        <div# .> flex x=0 y=210 w=150 h=10 dir=Row gap=0
+          <div#fga_flex_shrink_border_box_and_padding_floor-a .> inline x=0 y=210 w=81 h=10
+          <div#fga_flex_shrink_border_box_and_padding_floor-b .> inline x=81 y=210 w=69 h=10
+        <div# .> flex x=0 y=220 w=50 h=10 dir=Row gap=0
+          <div#fga_flex_shrink_border_box_and_padding_floor-floor .> inline x=0 y=220 w=80 h=10
+          <div#fga_flex_shrink_border_box_and_padding_floor-after .> inline x=80 y=220 w=10 h=10
+      <section#fga_flex_row_cross_auto_margins .> block x=0 y=230 w=800 h=100
+        <div# .> flex x=0 y=230 w=200 h=100 dir=Row gap=0
+          <div#fga_flex_row_cross_auto_margins-a .> inline x=0 y=310 w=20 h=20
+          <div#fga_flex_row_cross_auto_margins-b .> inline x=20 y=230 w=20 h=20
+          <div#fga_flex_row_cross_auto_margins-c .> inline x=40 y=270 w=20 h=20
+          <div#fga_flex_row_cross_auto_margins-d .> block x=60 y=300 w=20 h=30
+            <div# .> inline x=60 y=300 w=20 h=30
+      <section#fga_flex_column_cross_auto_margins .> block x=0 y=330 w=800 h=100
+        <div# .> flex x=0 y=330 w=200 h=100 dir=Column gap=0
+          <div#fga_flex_column_cross_auto_margins-a .> inline x=180 y=330 w=20 h=10
+          <div#fga_flex_column_cross_auto_margins-b .> inline x=0 y=340 w=20 h=10
+          <div#fga_flex_column_cross_auto_margins-c .> block x=80 y=350 w=40 h=10
+            <div# .> inline x=80 y=350 w=40 h=0
+      <section#fga_flex_stretch_can_shrink_cross_size .> block x=0 y=430 w=800 h=40
+        <div# .> flex x=0 y=430 w=100 h=40 dir=Row gap=0
+          <div#fga_flex_stretch_can_shrink_cross_size-a .> block x=0 y=430 w=20 h=40
+            <div# .> inline x=0 y=430 w=20 h=100
+          <div#fga_flex_stretch_can_shrink_cross_size-b .> block x=20 y=430 w=20 h=60
+            <div# .> inline x=20 y=430 w=20 h=100
+      <section#fga_grid_maximize_columns_freezes_growth_limits .> block x=0 y=470 w=800 h=10
+        <div# .> grid x=0 y=470 w=240 h=10 cols=2 rows=0 gap=0
+          <div#fga_grid_maximize_columns_freezes_growth_limits-a .> inline x=0 y=470 w=60 h=10
+          <div#fga_grid_maximize_columns_freezes_growth_limits-b .> inline x=60 y=470 w=180 h=10
+      <section#fga_grid_maximize_rows_freezes_growth_limits .> block x=0 y=480 w=800 h=240
+        <div# .> grid x=0 y=480 w=100 h=240 cols=0 rows=2 gap=0
+          <div#fga_grid_maximize_rows_freezes_growth_limits-a .> inline x=0 y=480 w=100 h=60
+          <div#fga_grid_maximize_rows_freezes_growth_limits-b .> inline x=0 y=540 w=100 h=180
+      <section#fga_grid_only_auto_maxima_stretch .> block x=0 y=720 w=800 h=200
+        <div# .> grid x=0 y=720 w=200 h=200 cols=2 rows=2 gap=0
+          <div#fga_grid_only_auto_maxima_stretch-a .> block x=0 y=720 w=20 h=30
+            <div# .> inline x=0 y=720 w=20 h=30
+          <div# .> inline x=20 y=720 w=180 h=30
+          <div# .> inline x=0 y=750 w=20 h=170
+          <div#fga_grid_only_auto_maxima_stretch-b .> inline x=20 y=750 w=180 h=170
+      <section#fga_grid_item_margin_box_alignment .> block x=0 y=920 w=800 h=200
+        <div# .> grid x=0 y=920 w=200 h=100 cols=0 rows=0 gap=0
+          <div#fga_grid_item_margin_box_alignment-a .> inline x=20 y=930 w=160 h=80
+        <div# .> grid x=0 y=1020 w=200 h=100 cols=0 rows=0 gap=0
+          <div#fga_grid_item_margin_box_alignment-b .> inline x=140 y=1060 w=40 h=20
+      <section#fga_grid_auto_margins_precede_alignment .> block x=0 y=1120 w=800 h=200
+        <div# .> grid x=0 y=1120 w=200 h=100 cols=0 rows=0 gap=0
+          <div#fga_grid_auto_margins_precede_alignment-a .> inline x=80 y=1160 w=40 h=20
+        <div# .> grid x=0 y=1220 w=200 h=100 cols=0 rows=0 gap=0
+          <div#fga_grid_auto_margins_precede_alignment-b .> block x=170 y=1310 w=30 h=10
+            <div# .> inline x=170 y=1310 w=30 h=10
+      <section#fga_flex_fractional_shrink_and_freeze_with_padding .> block x=0 y=1320 w=800 h=20
+        <div# .> flex x=0 y=1320 w=200 h=10 dir=Row gap=0
+          <div#fga_flex_fractional_shrink_and_freeze_with_padding-a .> inline x=0 y=1320 w=175 h=10
+          <div#fga_flex_fractional_shrink_and_freeze_with_padding-b .> inline x=175 y=1320 w=75 h=10
+        <div# .> flex x=0 y=1330 w=200 h=10 dir=Row gap=0
+          <div#fga_flex_fractional_shrink_and_freeze_with_padding-c .> inline x=0 y=1330 w=180 h=10
+          <div#fga_flex_fractional_shrink_and_freeze_with_padding-d .> inline x=180 y=1330 w=20 h=10
+      <section#fga_flex_percentage_edges_use_container_width .> block x=0 y=1340 w=800 h=210
+        <div# .> flex x=0 y=1340 w=200 h=10 dir=Row gap=0
+          <div#fga_flex_percentage_edges_use_container_width-a .> inline x=0 y=1340 w=120 h=10
+          <div#fga_flex_percentage_edges_use_container_width-b .> inline x=120 y=1340 w=80 h=10
+        <div# .> flex x=0 y=1350 w=200 h=200 dir=Column gap=0
+          <div#fga_flex_percentage_edges_use_container_width-c .> inline x=0 y=1350 w=200 h=110
+          <div#fga_flex_percentage_edges_use_container_width-d .> inline x=0 y=1460 w=200 h=90
+      <section#fga_flex_wrapped_column_auto_margins_are_per_line .> block x=0 y=1550 w=800 h=100
+        <div# .> flex x=0 y=1550 w=100 h=100 dir=Column gap=0
+          <div#fga_flex_wrapped_column_auto_margins_are_per_line-a .> inline x=0 y=1590 w=20 h=60
+          <div#fga_flex_wrapped_column_auto_margins_are_per_line-b .> inline x=20 y=1590 w=30 h=60
+      <section#fga_flex_auto_cross_overflow_and_baseline .> block x=0 y=1650 w=800 h=200
+        <div# .> flex x=0 y=1650 w=200 h=100 dir=Row gap=0
+          <div#fga_flex_auto_cross_overflow_and_baseline-a .> inline x=0 y=1650 w=20 h=140
+          <div#fga_flex_auto_cross_overflow_and_baseline-b .> inline x=20 y=1650 w=20 h=140
+        <div# .> flex x=0 y=1750 w=200 h=100 dir=Row gap=0
+          <div#fga_flex_auto_cross_overflow_and_baseline-c .> inline x=0 y=1750 w=20 h=20
+          <div#fga_flex_auto_cross_overflow_and_baseline-d .> inline x=20 y=1770 w=20 h=80
+      <section#fga_grid_intrinsic_maxima_grow_equally .> block x=0 y=1850 w=800 h=30
+        <div# .> grid x=0 y=1850 w=240 h=30 cols=2 rows=0 gap=0
+          <div#fga_grid_intrinsic_maxima_grow_equally-a .> flex x=0 y=1850 w=100 h=30 dir=Row gap=0
+            <div# .> inline x=0 y=1850 w=50 h=10
+            <div# .> inline x=50 y=1850 w=50 h=10
+          <div#fga_grid_intrinsic_maxima_grow_equally-b .> flex x=100 y=1850 w=140 h=30 dir=Row gap=0
+            <div# .> inline x=100 y=1850 w=50 h=10
+            <div# .> inline x=150 y=1850 w=50 h=10
+            <div# .> inline x=100 y=1860 w=50 h=10
+            <div# .> inline x=150 y=1860 w=50 h=10
+            <div# .> inline x=100 y=1870 w=50 h=10
+            <div# .> inline x=150 y=1870 w=50 h=10
+      <section#fga_grid_fixed_percent_maxima_and_gaps .> block x=0 y=1880 w=800 h=210
+        <div# .> grid x=0 y=1880 w=250 h=10 cols=2 rows=0 gap=10
+          <div#fga_grid_fixed_percent_maxima_and_gaps-a .> inline x=0 y=1880 w=60 h=10
+          <div#fga_grid_fixed_percent_maxima_and_gaps-b .> inline x=70 y=1880 w=180 h=10
+        <div# .> grid x=0 y=1890 w=200 h=200 cols=2 rows=2 gap=0
+          <div#fga_grid_fixed_percent_maxima_and_gaps-c .> inline x=0 y=1890 w=60 h=60
+          <div# .> inline x=60 y=1890 w=140 h=60
+          <div# .> inline x=0 y=1950 w=60 h=140
+          <div#fga_grid_fixed_percent_maxima_and_gaps-d .> inline x=60 y=1950 w=140 h=140
+      <section#fga_grid_intrinsic_rows_with_zero_minimum .> block x=0 y=2090 w=800 h=310
+        <div#fga_grid_intrinsic_rows_with_zero_minimum-g .> grid x=0 y=2090 w=100 h=310 cols=2 rows=2 gap=0
+          <div# .> block x=0 y=2090 w=50 h=310
+            <div# .> inline x=0 y=2090 w=50 h=310
+          <div#fga_grid_intrinsic_rows_with_zero_minimum-a .> inline x=50 y=2090 w=50 h=100
+          <div#fga_grid_intrinsic_rows_with_zero_minimum-b .> inline x=50 y=2200 w=50 h=200
+      <section#fga_grid_place_content_start_disables_stretch .> block x=0 y=2400 w=800 h=200
+        <div# .> grid x=0 y=2400 w=200 h=100 cols=2 rows=2 gap=0
+          <div# .> inline x=0 y=2400 w=20 h=10
+          <div# .> inline x=20 y=2400 w=0 h=10
+          <div# .> inline x=0 y=2410 w=20 h=0
+          <div#fga_grid_place_content_start_disables_stretch-a .> inline x=20 y=2410 w=0 h=0
+        <div# .> grid x=0 y=2500 w=200 h=100 cols=2 rows=2 gap=0
+          <div#fga_grid_place_content_start_disables_stretch-b .> block x=0 y=2500 w=20 h=10
+            <div# .> inline x=0 y=2500 w=20 h=10
+          <div# .> inline x=20 y=2500 w=180 h=10
+          <div# .> inline x=0 y=2510 w=20 h=90
+          <div#fga_grid_place_content_start_disables_stretch-c .> inline x=20 y=2510 w=180 h=90
+      <section#fga_grid_auto_margins_overflow_at_start .> block x=0 y=2600 w=800 h=50
+        <div# .> grid x=0 y=2600 w=100 h=50 cols=1 rows=1 gap=0
+          <div#fga_grid_auto_margins_overflow_at_start-a .> inline x=0 y=2600 w=150 h=80
+      <section#fga_flex_column_empty_content_minimum_control .> block x=0 y=2650 w=800 h=150
+        <div# .> flex x=0 y=2650 w=100 h=150 dir=Column gap=0
+          <div#fga_flex_column_empty_content_minimum_control-a .> inline x=0 y=2650 w=100 h=150
+      <section#fga_flex_stretch_reflows_height_dependent_contents .> block x=0 y=2800 w=800 h=80
+        <div# .> flex x=0 y=2800 w=200 h=80 dir=Row gap=0
+          <div# .> block x=0 y=2800 w=100 h=80
+            <div#fga_flex_stretch_reflows_height_dependent_contents-a .> inline x=0 y=2800 w=100 h=40
+          <div# .> flex x=100 y=2800 w=100 h=80 dir=Row gap=0
+            <div#fga_flex_stretch_reflows_height_dependent_contents-b .> inline x=100 y=2830 w=20 h=20
+      <section#fga_flex_column_cross_margins_affect_natural_basis .> block x=0 y=2880 w=800 h=100
+        <div# .> flex x=0 y=2880 w=100 h=100 dir=Column gap=0
+          <div#fga_flex_column_cross_margins_affect_natural_basis-a .> flex x=10 y=2880 w=80 h=40 dir=Row gap=0
+            <div# .> inline x=10 y=2880 w=50 h=20
+            <div# .> inline x=10 y=2900 w=50 h=20
+          <div#fga_flex_column_cross_margins_affect_natural_basis-b .> inline x=0 y=2920 w=100 h=60
+      <section#fga_grid_percentage_edges_use_grid_area .> block x=0 y=2980 w=800 h=100
+        <div# .> grid x=0 y=2980 w=200 h=100 cols=2 rows=1 gap=0
+          <div#fga_grid_percentage_edges_use_grid_area-a .> block x=10 y=2990 w=80 h=80
+            <div#fga_grid_percentage_edges_use_grid_area-b .> inline x=20 y=3000 w=30 h=30
+      <section#fga_main_column .> block x=0 y=3080 w=800 h=200
+        <div# .> flex x=0 y=3080 w=100 h=200 dir=Column gap=10
+          <div#fga_main_column-a .> inline x=0 y=3080 w=100 h=20
+          <div#fga_main_column-b .> inline x=0 y=3250 w=100 h=30
+      <section#fga_main_column-reverse .> block x=0 y=3280 w=800 h=200
+        <div# .> flex x=0 y=3280 w=100 h=200 dir=Column gap=10
+          <div#fga_main_column-reverse-a .> inline x=0 y=3460 w=100 h=20
+          <div#fga_main_column-reverse-b .> inline x=0 y=3420 w=100 h=30
+      <section#fga_implicit_areas .> block x=0 y=3480 w=800 h=10
+        <div# .> grid x=0 y=3480 w=200 h=10 cols=2 rows=1 gap=0
+          <div#fga_implicit_areas-a .> inline x=0 y=3480 w=60 h=10
+          <div#fga_implicit_areas-b .> inline x=110 y=3480 w=40 h=10

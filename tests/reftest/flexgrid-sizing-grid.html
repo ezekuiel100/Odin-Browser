@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Grid growth limits, auto maxima and margin boxes</title>
+<link rel="match" href="flexgrid-sizing-grid-ref.html">
+<style>
+body { margin:0; background:white }
+.stage { position:relative; width:200px; height:400px }
+.case { position:absolute; display:grid; left:0; width:200px }
+.green { background:green }
+.blue { background:blue }
+</style>
+<div class="stage">
+  <div class="case" style="top:0;grid-template-columns:minmax(20px,60px) minmax(80px,300px)">
+    <div class="green" style="height:20px"></div><div class="blue"></div>
+  </div>
+  <div class="case" style="top:30px;height:80px;grid-template-rows:minmax(10px,20px) minmax(10px,100px)">
+    <div class="green"></div><div class="blue"></div>
+  </div>
+  <div class="case" style="top:120px;height:80px;grid-template-columns:min-content auto;grid-template-rows:min-content auto">
+    <div class="green"><div style="width:20px;height:10px"></div></div>
+    <div></div><div></div><div class="blue"></div>
+  </div>
+  <div class="case" style="top:210px;height:80px">
+    <div class="green" style="margin:10px 20px"></div>
+  </div>
+  <div class="case" style="top:300px;height:80px;justify-items:start;align-items:end">
+    <div class="blue" style="width:40px;height:20px;margin:auto"></div>
+  </div>
+</div>

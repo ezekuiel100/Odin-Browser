@@ -1196,6 +1196,7 @@ Computed :: struct {
     align_content: Flex_Just, // distribuição das LINHAS no eixo cruzado (flex-wrap)
     ac_stretch:    bool, // align-content resolve p/ stretch (normal/stretch): grid estica
                          // as trilhas AUTO p/ preencher a altura definida. default true.
+    jc_stretch:    bool, // justify-content normal/stretch expands only auto grid maxima
     justify_items: Flex_Align, // grid: alinhamento horizontal dos itens na célula
     // align-self (item): override do align_items do container; auto = herda
     align_self:     Flex_Align,
@@ -1953,6 +1954,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.align_items = .Stretch
     comp.align_content = .Start
     comp.ac_stretch = true // default: align-content normal → stretch das trilhas auto
+    comp.jc_stretch = true
     comp.justify_items = .Stretch
     comp.align_self = .Stretch
     comp.has_align_self = false
@@ -3953,6 +3955,7 @@ computed_initial :: proc() -> Computed {
                     flex_shrink = 1,          // css-flexbox §7.2: inicial 1
                     col_gap     = -1,         // sentinela "normal" (1em)
                     ac_stretch  = true,       // align-content: normal → stretch
+                    jc_stretch  = true,
                     bg_origin   = .Padding,   // background-origin: padding-box
                     bg_repeat   = true,       // background-repeat: repeat
                     grid_col_span = 1, grid_row_span = 1}
@@ -5294,6 +5297,7 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     if v, ok := decls["justify-content"]; ok {
         val, ovf := split_overflow_pos(v)
         comp.justify_ovf = ovf
+        comp.jc_stretch = val == "normal" || val == "stretch"
         switch val {
         case "center":        comp.justify = .Center
         case "flex-end", "end", "right": comp.justify = .End
@@ -5379,10 +5383,14 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
             if _, has := decls["align-content"]; !has {
                 comp.align_content = map_align_content(toks[0])
                 _, comp.align_content_ovf = split_overflow_pos(toks[0])
+                val, _ := split_overflow_pos(toks[0])
+                comp.ac_stretch = val == "normal" || val == "stretch"
             }
             if _, has := decls["justify-content"]; !has {
                 comp.justify = map_justify_content(jt)
                 _, comp.justify_ovf = split_overflow_pos(jt)
+                val, _ := split_overflow_pos(jt)
+                comp.jc_stretch = val == "normal" || val == "stretch"
             }
         }
     }

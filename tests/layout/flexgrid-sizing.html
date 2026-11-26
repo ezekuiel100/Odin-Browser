@@ -1,0 +1,113 @@
+<!doctype html>
+<!-- Exact geometry regressions from layout_flexgrid_accuracy_test.odin.
+     Intrinsic widths use fixed-size children; no font metrics or scripts. -->
+<html><head><meta charset="utf-8"><title>Flex and Grid sizing accuracy</title></head><body style="margin:0">
+<!-- fga_flex_shrink_uses_inner_row_basis -->
+<section id="fga_flex_shrink_uses_inner_row_basis" style="margin:0">
+<div style="display:flex;width:200px"><div id="fga_flex_shrink_uses_inner_row_basis-a" style="flex:0 1 100px;min-width:0;padding:0 50px;height:10px"></div><div id="fga_flex_shrink_uses_inner_row_basis-b" style="flex:0 1 100px;min-width:0;height:10px"></div></div>
+</section>
+<!-- fga_flex_shrink_uses_inner_column_basis -->
+<section id="fga_flex_shrink_uses_inner_column_basis" style="margin:0">
+<div style="display:flex;flex-direction:column;width:100px;height:200px"><div id="fga_flex_shrink_uses_inner_column_basis-a" style="flex:0 1 100px;min-height:0;padding:50px 0"></div><div id="fga_flex_shrink_uses_inner_column_basis-b" style="flex:0 1 100px;min-height:0"></div></div>
+</section>
+<!-- fga_flex_shrink_border_box_and_padding_floor -->
+<section id="fga_flex_shrink_border_box_and_padding_floor" style="margin:0">
+<div style="display:flex;width:150px"><div id="fga_flex_shrink_border_box_and_padding_floor-a" style="box-sizing:border-box;flex:0 1 100px;min-width:0;padding:0 20px;height:10px"></div><div id="fga_flex_shrink_border_box_and_padding_floor-b" style="flex:0 1 100px;min-width:0;height:10px"></div></div><div style="display:flex;width:50px"><div id="fga_flex_shrink_border_box_and_padding_floor-floor" style="box-sizing:border-box;flex:0 1 0px;min-width:0;padding:0 40px;height:10px"></div><div id="fga_flex_shrink_border_box_and_padding_floor-after" style="width:10px;height:10px;flex:none"></div></div>
+</section>
+<!-- fga_flex_row_cross_auto_margins -->
+<section id="fga_flex_row_cross_auto_margins" style="margin:0">
+<div style="display:flex;width:200px;height:100px;align-items:center"><div id="fga_flex_row_cross_auto_margins-a" style="width:20px;height:20px;margin-top:auto"></div><div id="fga_flex_row_cross_auto_margins-b" style="width:20px;height:20px;margin-bottom:auto"></div><div id="fga_flex_row_cross_auto_margins-c" style="width:20px;height:20px;margin:auto 0"></div><div id="fga_flex_row_cross_auto_margins-d" style="width:20px;margin-top:auto"><div style="height:30px"></div></div></div>
+</section>
+<!-- fga_flex_column_cross_auto_margins -->
+<section id="fga_flex_column_cross_auto_margins" style="margin:0">
+<div style="display:flex;flex-direction:column;width:200px;height:100px"><div id="fga_flex_column_cross_auto_margins-a" style="width:20px;height:10px;margin-left:auto"></div><div id="fga_flex_column_cross_auto_margins-b" style="width:20px;height:10px;margin-right:auto"></div><div id="fga_flex_column_cross_auto_margins-c" style="height:10px;margin:0 auto"><div style="width:40px"></div></div></div>
+</section>
+<!-- fga_flex_stretch_can_shrink_cross_size -->
+<section id="fga_flex_stretch_can_shrink_cross_size" style="margin:0">
+<div style="display:flex;width:100px;height:40px"><div id="fga_flex_stretch_can_shrink_cross_size-a" style="width:20px"><div style="height:100px"></div></div><div id="fga_flex_stretch_can_shrink_cross_size-b" style="width:20px;min-height:60px"><div style="height:100px"></div></div></div>
+</section>
+<!-- fga_grid_maximize_columns_freezes_growth_limits -->
+<section id="fga_grid_maximize_columns_freezes_growth_limits" style="margin:0">
+<div style="display:grid;width:240px;grid-template-columns:minmax(20px,60px) minmax(80px,300px)"><div id="fga_grid_maximize_columns_freezes_growth_limits-a" style="height:10px"></div><div id="fga_grid_maximize_columns_freezes_growth_limits-b"></div></div>
+</section>
+<!-- fga_grid_maximize_rows_freezes_growth_limits -->
+<section id="fga_grid_maximize_rows_freezes_growth_limits" style="margin:0">
+<div style="display:grid;width:100px;height:240px;grid-template-rows:minmax(20px,60px) minmax(80px,300px)"><div id="fga_grid_maximize_rows_freezes_growth_limits-a"></div><div id="fga_grid_maximize_rows_freezes_growth_limits-b"></div></div>
+</section>
+<!-- fga_grid_only_auto_maxima_stretch -->
+<section id="fga_grid_only_auto_maxima_stretch" style="margin:0">
+<div style="display:grid;width:200px;height:200px;grid-template-columns:min-content auto;grid-template-rows:min-content auto"><div id="fga_grid_only_auto_maxima_stretch-a"><div style="width:20px;height:30px"></div></div><div></div><div></div><div id="fga_grid_only_auto_maxima_stretch-b"></div></div>
+</section>
+<!-- fga_grid_item_margin_box_alignment -->
+<section id="fga_grid_item_margin_box_alignment" style="margin:0">
+<div style="display:grid;width:200px;height:100px"><div id="fga_grid_item_margin_box_alignment-a" style="margin:10px 20px"></div></div><div style="display:grid;width:200px;height:100px;justify-items:end;align-items:center"><div id="fga_grid_item_margin_box_alignment-b" style="width:40px;height:20px;margin:10px 20px"></div></div>
+</section>
+<!-- fga_grid_auto_margins_precede_alignment -->
+<section id="fga_grid_auto_margins_precede_alignment" style="margin:0">
+<div style="display:grid;width:200px;height:100px;justify-items:start;align-items:end"><div id="fga_grid_auto_margins_precede_alignment-a" style="width:40px;height:20px;margin:auto"></div></div><div style="display:grid;width:200px;height:100px"><div id="fga_grid_auto_margins_precede_alignment-b" style="margin-left:auto;margin-top:auto"><div style="width:30px;height:10px"></div></div></div>
+</section>
+<!-- fga_flex_fractional_shrink_and_freeze_with_padding -->
+<section id="fga_flex_fractional_shrink_and_freeze_with_padding" style="margin:0">
+<div style="display:flex;width:200px"><div id="fga_flex_fractional_shrink_and_freeze_with_padding-a" style="flex:0 .25 100px;min-width:0;padding:0 50px;height:10px"></div><div id="fga_flex_fractional_shrink_and_freeze_with_padding-b" style="flex:0 .25 100px;min-width:0;height:10px"></div></div><div style="display:flex;width:200px"><div id="fga_flex_fractional_shrink_and_freeze_with_padding-c" style="flex:0 1 200px;min-width:180px;box-sizing:border-box;padding:0 50px;height:10px"></div><div id="fga_flex_fractional_shrink_and_freeze_with_padding-d" style="flex:0 1 100px;min-width:0;height:10px"></div></div>
+</section>
+<!-- fga_flex_percentage_edges_use_container_width -->
+<section id="fga_flex_percentage_edges_use_container_width" style="margin:0">
+<div style="display:flex;width:200px"><div id="fga_flex_percentage_edges_use_container_width-a" style="flex:0 1 100px;min-width:0;padding:0 10%;height:10px"></div><div id="fga_flex_percentage_edges_use_container_width-b" style="flex:0 1 100px;min-width:0;height:10px"></div></div><div style="display:flex;flex-direction:column;width:200px;height:200px"><div id="fga_flex_percentage_edges_use_container_width-c" style="flex:0 1 100px;min-height:0;padding:5% 0"></div><div id="fga_flex_percentage_edges_use_container_width-d" style="flex:0 1 100px;min-height:0"></div></div>
+</section>
+<!-- fga_flex_wrapped_column_auto_margins_are_per_line -->
+<section id="fga_flex_wrapped_column_auto_margins_are_per_line" style="margin:0">
+<div style="display:flex;flex-flow:column wrap;width:100px;height:100px;align-content:flex-start"><div id="fga_flex_wrapped_column_auto_margins_are_per_line-a" style="width:20px;height:60px;margin-top:auto"></div><div id="fga_flex_wrapped_column_auto_margins_are_per_line-b" style="width:30px;height:60px;margin-top:auto"></div></div>
+</section>
+<!-- fga_flex_auto_cross_overflow_and_baseline -->
+<section id="fga_flex_auto_cross_overflow_and_baseline" style="margin:0">
+<div style="display:flex;width:200px;height:100px;align-items:center"><div id="fga_flex_auto_cross_overflow_and_baseline-a" style="width:20px;height:140px;margin-top:auto"></div><div id="fga_flex_auto_cross_overflow_and_baseline-b" style="width:20px;height:140px;margin-bottom:auto"></div></div><div style="display:flex;width:200px;height:100px;align-items:baseline"><div id="fga_flex_auto_cross_overflow_and_baseline-c" style="width:20px;height:20px"></div><div id="fga_flex_auto_cross_overflow_and_baseline-d" style="width:20px;height:80px;margin-top:auto"></div></div>
+</section>
+<!-- fga_grid_intrinsic_maxima_grow_equally -->
+<section id="fga_grid_intrinsic_maxima_grow_equally" style="margin:0">
+<div style="display:grid;width:240px;grid-template-columns:auto auto"><div id="fga_grid_intrinsic_maxima_grow_equally-a" style="display:flex;flex-wrap:wrap"><div style="width:50px;height:10px;flex:none"></div><div style="width:50px;height:10px;flex:none"></div></div><div id="fga_grid_intrinsic_maxima_grow_equally-b" style="display:flex;flex-wrap:wrap"><div style="width:50px;height:10px;flex:none"></div><div style="width:50px;height:10px;flex:none"></div><div style="width:50px;height:10px;flex:none"></div><div style="width:50px;height:10px;flex:none"></div><div style="width:50px;height:10px;flex:none"></div><div style="width:50px;height:10px;flex:none"></div></div></div>
+</section>
+<!-- fga_grid_fixed_percent_maxima_and_gaps -->
+<section id="fga_grid_fixed_percent_maxima_and_gaps" style="margin:0">
+<div style="display:grid;width:250px;column-gap:10px;grid-template-columns:minmax(20px,60px) minmax(80px,300px)"><div id="fga_grid_fixed_percent_maxima_and_gaps-a" style="height:10px"></div><div id="fga_grid_fixed_percent_maxima_and_gaps-b"></div></div><div style="display:grid;width:200px;height:200px;grid-template-columns:minmax(20px,30%) minmax(0,80%);grid-template-rows:minmax(20px,30%) minmax(0,80%)"><div id="fga_grid_fixed_percent_maxima_and_gaps-c"></div><div></div><div></div><div id="fga_grid_fixed_percent_maxima_and_gaps-d"></div></div>
+</section>
+<!-- fga_grid_intrinsic_rows_with_zero_minimum -->
+<section id="fga_grid_intrinsic_rows_with_zero_minimum" style="margin:0">
+<div id="fga_grid_intrinsic_rows_with_zero_minimum-g" style="display:grid;width:100px;grid-template-columns:50px 50px;grid-template-rows:minmax(0,1fr) minmax(0,2fr);row-gap:10px"><div style="grid-column:1;grid-row:1 / span 2"><div style="height:310px"></div></div><div id="fga_grid_intrinsic_rows_with_zero_minimum-a" style="grid-column:2;grid-row:1"></div><div id="fga_grid_intrinsic_rows_with_zero_minimum-b" style="grid-column:2;grid-row:2"></div></div>
+</section>
+<!-- fga_grid_place_content_start_disables_stretch -->
+<section id="fga_grid_place_content_start_disables_stretch" style="margin:0">
+<div style="display:grid;width:200px;height:100px;place-content:start;grid-template-columns:auto auto;grid-template-rows:auto auto"><div style="width:20px;height:10px"></div><div></div><div></div><div id="fga_grid_place_content_start_disables_stretch-a"></div></div><div style="display:grid;width:200px;height:100px;grid-template-rows:fit-content(50px) auto;grid-template-columns:fit-content(50px) auto"><div id="fga_grid_place_content_start_disables_stretch-b"><div style="width:20px;height:10px"></div></div><div></div><div></div><div id="fga_grid_place_content_start_disables_stretch-c"></div></div>
+</section>
+<!-- fga_grid_auto_margins_overflow_at_start -->
+<section id="fga_grid_auto_margins_overflow_at_start" style="margin:0">
+<div style="display:grid;width:100px;height:50px;grid-template-columns:100px;grid-template-rows:50px;align-items:end;justify-items:center"><div id="fga_grid_auto_margins_overflow_at_start-a" style="width:150px;height:80px;margin:auto"></div></div>
+</section>
+<!-- fga_flex_column_empty_content_minimum_control -->
+<section id="fga_flex_column_empty_content_minimum_control" style="margin:0">
+<div style="display:flex;flex-direction:column;width:100px;height:150px"><div id="fga_flex_column_empty_content_minimum_control-a" style="height:100px;padding:50px 0"></div></div>
+</section>
+<!-- fga_flex_stretch_reflows_height_dependent_contents -->
+<section id="fga_flex_stretch_reflows_height_dependent_contents" style="margin:0">
+<div style="display:flex;width:200px;height:80px"><div style="width:100px"><div id="fga_flex_stretch_reflows_height_dependent_contents-a" style="height:50%;padding:0"></div></div><div style="display:flex;width:100px;align-items:center"><div id="fga_flex_stretch_reflows_height_dependent_contents-b" style="width:20px;height:20px"></div></div></div>
+</section>
+<!-- fga_flex_column_cross_margins_affect_natural_basis -->
+<section id="fga_flex_column_cross_margins_affect_natural_basis" style="margin:0">
+<div style="display:flex;flex-direction:column;width:100px;height:100px"><div id="fga_flex_column_cross_margins_affect_natural_basis-a" style="display:flex;flex-wrap:wrap;flex:none;margin:0 10px"><div style="width:50px;height:20px;flex:none"></div><div style="width:50px;height:20px;flex:none"></div></div><div id="fga_flex_column_cross_margins_affect_natural_basis-b" style="height:60px;flex:none"></div></div>
+</section>
+<!-- fga_grid_percentage_edges_use_grid_area -->
+<section id="fga_grid_percentage_edges_use_grid_area" style="margin:0">
+<div style="display:grid;width:200px;height:100px;grid-template-columns:100px 100px;grid-template-rows:100px"><div id="fga_grid_percentage_edges_use_grid_area-a" style="margin:10%;padding:10%"><div id="fga_grid_percentage_edges_use_grid_area-b" style="width:50%;height:50%"></div></div></div>
+</section>
+<!-- fga_main_column -->
+<section id="fga_main_column" style="margin:0">
+<div style="display:flex;flex-direction:column;width:100px;height:200px;justify-content:center;gap:10px"><div id="fga_main_column-a" style="height:20px;flex:none"></div><div id="fga_main_column-b" style="height:30px;flex:none;margin-top:auto"></div></div>
+</section>
+<!-- fga_main_column-reverse -->
+<section id="fga_main_column-reverse" style="margin:0">
+<div style="display:flex;flex-direction:column-reverse;width:100px;height:200px;justify-content:center;gap:10px"><div id="fga_main_column-reverse-a" style="height:20px;flex:none"></div><div id="fga_main_column-reverse-b" style="height:30px;flex:none;margin-top:auto"></div></div>
+</section>
+<!-- fga_implicit_areas -->
+<section id="fga_implicit_areas" style="margin:0">
+<div style="display:grid;grid-template-areas:'a b';width:200px"><div id="fga_implicit_areas-a" style="grid-area:a;width:60px;height:10px"></div><div id="fga_implicit_areas-b" style="grid-area:b;width:40px;height:10px"></div></div>
+</section>
+</body></html>
