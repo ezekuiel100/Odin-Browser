@@ -360,6 +360,7 @@ collect_svg_css :: proc(comp: ^Computed, decls: map[string]string, vars: map[str
 }
 
 css_prop_is_known :: proc(p: string) -> bool {
+    if css_logical_property_known(p) do return true
     switch p {
     case "color","background-color","background-image","background",
          "background-size","background-repeat","background-position",
@@ -2132,37 +2133,10 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
         query_candidates(idx, n, &cands, &node_passes)
         when STYLEPROF { g_style_prof.candidates += len(cands) }
         style_prof_add(.Query, sp_t); sp_t = style_prof_now()
-        merged := collect_decls(n, rules, cands[:], viewport_w, .None, .None, styles, idx.pass_mask, comp.direction, vars, comp.writing_mode)
+        merged := collect_decls(n, rules, cands[:], viewport_w, .None, .None, styles, idx.pass_mask, comp.direction, vars, comp.writing_mode, noinh)
         style_prof_add(.Collect, sp_t); sp_t = style_prof_now()
 
-        // custom properties (--nome) definidas aqui sobrescrevem p/ a subárvore
-        own := false
-        if len(noinh) == 0 && !g_style_legacy {
-            elem_vars = vars_with_decls(vars, merged)
-        } else {
-            for prop, val in merged {
-                if strings.has_prefix(prop, "--") {
-                    if !own {
-                        elem_vars = clone_vars(vars); own = true
-                        when STYLEPROF { g_style_prof.clones += 1; g_style_prof.clone_entries += len(vars) }
-                    }
-                    elem_vars[prop] = val
-                }
-            }
-        }
-
-        // `@property … { inherits: false }`: a propriedade NÃO atravessa a
-        // fronteira do elemento. Quem não a declara volta ao valor INICIAL, em vez
-        // de enxergar a do ancestral. Só há trabalho quando algum ancestral de fato
-        // declarou (senão o valor herdado JÁ é o inicial, posto pela regra
-        // sintética `:root`) — então o caso comum não clona o mapa.
-        for np in noinh {
-            if _, mine := merged[np.name]; mine do continue // declarada AQUI: vale
-            cur, has := elem_vars[np.name]
-            if !has || cur == np.initial do continue        // já está no inicial
-            if !own { elem_vars = clone_vars(vars); own = true }
-            elem_vars[np.name] = np.initial
-        }
+        elem_vars = vars_with_decls(vars, merged, noinh)
         style_prof_add(.Vars, sp_t)
 
         // attr() (CSS Values 5): resolvido AQUI porque precisa dos atributos do
@@ -2662,9 +2636,9 @@ clone_vars :: proc(v: map[string]string, extra := 0) -> map[string]string {
 // mesmo pai declaram os mesmos pares e passam a dividir UM mapa, em vez de
 // cada um copiar as ~2 mil variáveis herdadas (medido no github: 447 cópias de
 // 2.152 entradas = 23% do compute_styles).
-// ⚠️ Compartilhar é seguro porque o mapa devolvido NUNCA é escrito depois: o
-// compute_node só escreve no caminho com `@property inherits:false` (noinh), que
-// não passa por aqui, e o resto (collect_decls) clona antes de escrever.
+// Os ambientes devolvidos são computados e imutáveis. Defaults inherits:false
+// e declarações locais são reunidos antes de resolver dependências; os filhos
+// compartilham apenas o resultado, sem reavaliar referências do pai.
 // Vive na arena temp, como os mapas; zerado no início de cada compute_styles.
 @(thread_local) g_vars_memo: map[string]map[string]string
 
@@ -2673,7 +2647,7 @@ vars_memo_reset :: proc() {
 }
 
 @(private="file")
-vars_with_decls :: proc(vars: map[string]string, merged: map[string]string) -> map[string]string {
+vars_with_decls :: proc(vars: map[string]string, merged: map[string]string, noinh: []Noinherit_Prop = nil) -> map[string]string {
     Pair :: struct { k, v: string }
     pairs: [dynamic]Pair
     for prop, val in merged {
@@ -2682,6 +2656,12 @@ vars_with_decls :: proc(vars: map[string]string, merged: map[string]string) -> m
         if cur, ok := vars[prop]; ok && cur == val do continue
         if pairs == nil do pairs = make([dynamic]Pair, 0, 8, context.temp_allocator)
         append(&pairs, Pair{prop, val})
+    }
+    for np in noinh {
+        if _, mine := merged[np.name]; mine do continue
+        if cur, ok := vars[np.name]; ok && cur == np.initial do continue
+        if pairs == nil do pairs = make([dynamic]Pair, context.temp_allocator)
+        append(&pairs, Pair{np.name, np.initial})
     }
     if len(pairs) == 0 do return vars
     for i in 1 ..< len(pairs) { // ordem canônica: o mapa `merged` itera sem ordem
@@ -2699,50 +2679,29 @@ vars_with_decls :: proc(vars: map[string]string, merged: map[string]string) -> m
     key := strings.to_string(sb)
     if g_vars_memo == nil do vars_memo_reset()
     if m, ok := g_vars_memo[key]; ok do return m
-    out := clone_vars(vars, len(pairs))
+    local := make(map[string]string, len(pairs), context.temp_allocator)
     when STYLEPROF { g_style_prof.clones += 1; g_style_prof.clone_entries += len(vars) }
-    for p in pairs do out[p.k] = p.v
+    for p in pairs {
+        value := p.v
+        if strings.equal_fold(value, "inherit") || strings.equal_fold(value, "unset") || strings.equal_fold(value, "revert") {
+            inherited, found := vars[p.k]
+            value = found ? inherited : csspkg.VARIABLE_INVALID
+        }
+        for np in noinh {
+            if np.name == p.k && (strings.equal_fold(p.v, "initial") || strings.equal_fold(p.v, "unset")) do value = np.initial
+        }
+        local[p.k] = value
+    }
+    out := csspkg.compute_custom_properties(local, vars)
     g_vars_memo[key] = out
     return out
 }
 
-// Resolve var(--nome) / var(--nome, fallback) num valor CSS.
+// All production environments contain computed custom properties.
 @(private="file")
-resolve_var :: proc(val: string, vars: map[string]string, depth := 0) -> string {
-    if depth > 8 do return val
-    start := strings.index(val, "var(")
-    if start < 0 do return val
-
-    open := start + 3 // posição do '('
-    paren := 0
-    i := open
-    for i < len(val) {
-        if val[i] == '(' do paren += 1
-        else if val[i] == ')' { paren -= 1; if paren == 0 do break }
-        i += 1
-    }
-    if i >= len(val) do return val
-
-    inside := val[open + 1:i]
-    name := strings.trim_space(inside)
-    fallback := ""
-    if comma := strings.index_byte(inside, ','); comma >= 0 {
-        name = strings.trim_space(inside[:comma])
-        fallback = strings.trim_space(inside[comma + 1:])
-    }
-
-    // Uma custom property com valor `initial` é o VALOR GARANTIDO-INVÁLIDO (CSS
-    // Variables §3): var() a trata como se estivesse ausente → usa o fallback.
-    // Padrão ONIPRESENTE no Tailwind v4: `--tw-shadow-color: initial` +
-    // `box-shadow: … var(--tw-shadow-color, #00000040)`. Sem isto, substituíamos o
-    // literal "initial" na cor → sombra inválida → cards CHAPADOS no site inteiro.
-    repl := fallback
-    if rv, ok := vars[name]; ok && !strings.equal_fold(strings.trim_space(rv), "initial") {
-        repl = rv
-    }
-
-    result := strings.concatenate({val[:start], repl, val[i + 1:]}, context.temp_allocator)
-    return resolve_var(result, vars, depth + 1)
+resolve_var :: proc(val: string, vars: map[string]string) -> string {
+    result, _ := csspkg.substitute_vars(val, vars)
+    return result
 }
 
 // ── Índice de regras (performance) ───────────────────────────────────────────
@@ -3129,7 +3088,7 @@ when CASCADEPROBE {
     }
 }
 
-collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates: []int, viewport_w: f32, want: csspkg.Pseudo_Kind = .None, state: csspkg.Element_State = .None, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil, inherited_dir: Directionality = .Ltr, inherited_vars: map[string]string = nil, inherited_mode: Writing_Mode = .Horizontal) -> map[string]string {
+collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates: []int, viewport_w: f32, want: csspkg.Pseudo_Kind = .None, state: csspkg.Element_State = .None, styles: ^map[^dompkg.Node]Computed = nil, masks: []Pass_Set = nil, inherited_dir: Directionality = .Ltr, inherited_vars: map[string]string = nil, inherited_mode: Writing_Mode = .Horizontal, noinh: []Noinherit_Prop = nil) -> map[string]string {
     Win :: struct { spec: Cascade_Priority, order: Cascade_Order, val: string }
     wins := make(map[string]Win, context.temp_allocator)
     // Não reduzir antes do rollback: precisamos inclusive dos perdedores da camada.
@@ -3342,6 +3301,21 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         }
     }
 
+    // Compute custom properties before splitting shorthands or logical pairs.
+    // Invalid winning substitutions retain their priority as `unset`; dropping
+    // them here would incorrectly revive a losing longhand.
+    custom := make(map[string]string, context.temp_allocator)
+    for prop, w in wins do if strings.has_prefix(prop, "--") do custom[prop] = w.val
+    local_vars := vars_with_decls(inherited_vars, custom, noinh)
+    for prop, w in wins {
+        if strings.has_prefix(prop, "--") do continue
+        if has_var, _ := csspkg.variable_syntax(w.val); has_var {
+            value, ok := csspkg.substitute_vars(w.val, local_vars)
+            if !ok || !css_declaration_valid(prop, value) do value = "unset"
+            wins[prop] = Win{w.spec, w.order, value}
+        }
+    }
+
     // all competes at its own source position before aliases and shorthands
     // are expanded. Custom properties, direction and unicode-bidi are excluded.
     if all, ok := wins["all"]; ok {
@@ -3478,6 +3452,11 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
 
         // 3. flex-flow: <flex-direction> || <flex-wrap> (ordem livre).
         if w, ok := wins["flex-flow"]; ok {
+            if css_value_keyword(w.val, "inherit initial unset revert revert-layer") {
+                alias(&wins, "flex-direction", w.spec, w.order, w.val)
+                alias(&wins, "flex-wrap", w.spec, w.order, w.val)
+            }
+
             for t in strings.fields(w.val, context.temp_allocator) {
                 switch strings.to_lower(t, context.temp_allocator) {
                 case "row", "row-reverse", "column", "column-reverse":
@@ -3517,18 +3496,12 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
     {
         mode := inherited_mode
         if w, ok := wins["writing-mode"]; ok {
-            mode_vars := clone_vars(inherited_vars)
-            defer delete(mode_vars)
-            for prop,val in wins do if strings.has_prefix(prop,"--") do mode_vars[prop]=val.val
-            v := strings.to_lower(strings.trim_space(resolve_var(w.val,mode_vars)),context.temp_allocator)
+            v := strings.to_lower(strings.trim_space(w.val),context.temp_allocator)
             if v=="vertical-rl" { mode=.Vertical_Rl } else if v=="vertical-lr" { mode=.Vertical_Lr } else if v=="horizontal-tb" || v=="initial" { mode=.Horizontal }
         }
         direction := inherited_dir
         if w, ok := wins["direction"]; ok {
-            local_vars := clone_vars(inherited_vars)
-            defer delete(local_vars)
-            for prop, v in wins do if strings.has_prefix(prop, "--") do local_vars[prop] = v.val
-            d := strings.to_lower(strings.trim_space(resolve_var(w.val, local_vars)), context.temp_allocator)
+            d := strings.to_lower(strings.trim_space(w.val), context.temp_allocator)
             if d == "rtl" { direction = .Rtl } else if d == "ltr" || d == "initial" { direction = .Ltr }
         }
         Single :: struct { logical, physical: string }
@@ -3658,9 +3631,8 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         LADOS :: [4]string{"top", "right", "bottom", "left"}
         SUBS  :: [3]string{"width", "style", "color"}
 
-        // `border: var(--x)` não se fatia por texto (o `vars` só existe no
-        // apply_decls). Nesse caso desistimos da resolução por átomo e o pairwise
-        // segue valendo — degradação DECLARADA, não silenciosa.
+        // A substituição já ocorreu antes dos aliases. A guarda conservadora
+        // mantém valores residuais não resolvidos fora da divisão por átomo.
         tem_var := false
         n_fam   := 0
         nao_atomicas := make([dynamic]string, 0, 8, context.temp_allocator)
@@ -3692,6 +3664,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             // mudança de comportamento escondida dentro de um conserto de
             // desempate. Fica igual ao de hoje, e anotado.
             componente :: proc(val, sub: string) -> (string, bool) {
+                if css_value_keyword(val, "inherit initial unset revert revert-layer") do return val, true
                 for tok in split_top_level(strings.to_lower(val, context.temp_allocator)) {
                     if st, _ := is_border_style_kw(tok); st {
                         if sub == "style" do return tok, true
@@ -4033,8 +4006,9 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     // var() results do not resurrect an earlier cascade candidate.
     filtered: map[string]string
     for prop, val in decls {
-        if !strings.contains(val, "var(") do continue
-        if !css_declaration_valid(prop, resolve_var(val, vars)) {
+        if has_var, _ := csspkg.variable_syntax(val); !has_var do continue
+        value, ok := csspkg.substitute_vars(val, vars)
+        if !ok || !css_declaration_valid(prop, value) {
             if filtered == nil {
                 filtered = make(map[string]string, len(decls), context.temp_allocator)
                 for k, v in decls do filtered[k] = v
@@ -5906,7 +5880,7 @@ eval_calc_linear :: proc(expr: string, fs: f32, vw: f32 = 1280, vh: f32 = 720) -
     return p, c, k
 }
 
-@(private="file")
+@(private)
 // Igual ao de cima, mas devolve TAMBÉM se o resultado é um número PURO (sem
 // unidade). É essa informação que valida a multiplicação — a spec exige que um
 // dos lados de `*` seja escalar. Antes o teste era TEXTUAL (`is_scalar_token`:
@@ -7489,19 +7463,20 @@ first_track :: proc(s: string) -> string {
 // parênteses, ex.: minmax(200px, 1fr)). Usa o temp allocator do frame.
 split_top_level :: proc(s: string) -> []string {
     out := make([dynamic]string, context.temp_allocator)
-    depth := 0
+    l := csspkg.Tokenizer{source = s}
     start := -1
-    for i in 0 ..< len(s) {
-        ch := s[i]
-        // ( ) e [ ] agrupam: minmax(200px,1fr) fica 1 token; nomes de linha
-        // grid [a b] também (senão "b]" viraria trilha fantasma no template).
-        if      ch == '(' || ch == '[' do depth += 1
-        else if ch == ')' || ch == ']' do depth -= 1
-        sep := depth == 0 && (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')
-        if sep {
-            if start >= 0 { append(&out, s[start:i]); start = -1 }
-        } else if start < 0 {
-            start = i
+    for {
+        t := csspkg.next_token(&l)
+        if t.kind == .EOF do break
+        if t.kind == .Space || t.kind == .Comment {
+            if start >= 0 { append(&out, s[start:t.start]); start = -1 }
+            continue
+        }
+        if start < 0 do start = t.start
+        if t.kind == .Delim && csspkg.token_close(t.delim) != 0 {
+            end := csspkg.token_group_end(s, t.start)
+            if end < 0 do break
+            l.pos = end+1
         }
     }
     if start >= 0 do append(&out, s[start:])
@@ -9080,7 +9055,7 @@ test_parse_len :: proc(value: string, fs: f32 = 16, vw: f32 = 1280, vh: f32 = 72
 test_apply :: proc(decls_text: string, vars_text := "") -> Computed {
     comp := computed_initial()
     decls := csspkg.parse_decls(decls_text, context.temp_allocator)
-    vars  := csspkg.parse_decls(vars_text,  context.temp_allocator)
+    vars := csspkg.compute_custom_properties(csspkg.parse_decls(vars_text, context.temp_allocator))
     apply_decls(&comp, decls, vars)
     return comp
 }
@@ -9091,7 +9066,7 @@ test_apply :: proc(decls_text: string, vars_text := "") -> Computed {
 test_apply_over :: proc(base: Computed, decls_text: string, vars_text := "") -> Computed {
     comp := base
     decls := csspkg.parse_decls(decls_text, context.temp_allocator)
-    vars  := csspkg.parse_decls(vars_text,  context.temp_allocator)
+    vars := csspkg.compute_custom_properties(csspkg.parse_decls(vars_text, context.temp_allocator))
     apply_decls(&comp, decls, vars)
     return comp
 }
@@ -9243,18 +9218,19 @@ install_js_query_hook :: proc "contextless" () {
 // not yet covered retain the legacy parser policy; see docs/CSS-VALUES.md.
 css_supports_decl :: proc(raw_prop: string, raw_value: string) -> bool {
     prop := strings.to_lower(strings.trim_space(csspkg.declaration_text(raw_prop)), context.temp_allocator)
+    prop = css_value_property(prop)
     value := csspkg.declaration_text(raw_value)
-    if valid, _ := css_value_valid(prop, value); !valid do return false
-    if strings.has_prefix(prop, "--") do return true // custom property: nós parseamos
+    valid, checked := css_value_valid(prop, value)
+    if !valid do return false
+    if strings.has_prefix(prop, "--") do return true
     if !css_prop_is_known(prop) do return false
-    v := strings.to_lower(strings.trim_space(value), context.temp_allocator)
-    if v == "" do return false
-    if value_has_unsupported_unit(v) do return false
-    if value_has_unsupported_fn(v) do return false
-    // Recognizing a property for diagnostics is not implementation support.
     if css_prop_is_inert(prop) || prop == "transform-style" do return false
-    if valid, checked := css_value_valid(prop, value); checked do return valid
-
+    // A syntactically valid var() delays grammar/capability decisions until
+    // substitution, including for an unused fallback with unsupported units.
+    if has_var, _ := csspkg.variable_syntax(value); has_var do return true
+    v := strings.to_lower(strings.trim_space(value), context.temp_allocator)
+    if v == "" || value_has_unsupported_unit(v) || value_has_unsupported_fn(v) do return false
+    if checked do return valid
     return true
 }
 
@@ -9265,65 +9241,46 @@ css_supports_decl :: proc(raw_prop: string, raw_value: string) -> bool {
 // Só unidades de comprimento entram: `deg`/`s`/`ms`/`fr` têm parsers próprios.
 @(private = "file")
 value_has_unsupported_unit :: proc(v: string) -> bool {
-    i := 0
-    for i < len(v) {
-        c := v[i]
-        if !((c >= '0' && c <= '9') || c == '.') { i += 1; continue }
-        if i > 0 { // dígito no meio de um identificador (translate3d, #00ff00) não é número
-            p := v[i - 1]
-            if (p >= 'a' && p <= 'z') || (p >= 'A' && p <= 'Z') || p == '#' || p == '_' {
-                i += 1
-                continue
-            }
-            // '-' pode ser SINAL (`-1cm`) ou hífen de identificador (`url(a-2in.png)`,
-            // `--var-2in`). Decide pelo que vem ANTES do hífen.
-            if p == '-' && i >= 2 {
-                q := v[i - 2]
-                if (q >= 'a' && q <= 'z') || (q >= 'A' && q <= 'Z') || (q >= '0' && q <= '9') ||
-                   q == '-' || q == '_' {
-                    i += 1
-                    continue
-                }
-            }
+    l := csspkg.Tokenizer{source = v}
+    for {
+        t := csspkg.next_token(&l)
+        if t.kind == .EOF do return false
+        if t.kind != .Name do continue
+        name := v[t.start:t.end]
+        // URLs and strings contain data, never CSS dimensions.
+        if name == "url" && t.end < len(v) && v[t.end] == '(' {
+            end := csspkg.token_group_end(v, t.end)
+            if end >= 0 do l.pos = end+1
+            continue
         }
-        e := csspkg.scan_number_end(v, i, false)
-        if e == i { i += 1; continue }
-        u := e
-        for u < len(v) && ((v[u] >= 'a' && v[u] <= 'z') || (v[u] >= 'A' && v[u] <= 'Z')) do u += 1
-        if u > e {
-            switch v[e:u] { // `v` já veio em minúsculas
-            // `cm`/`mm`/`in`/`pc`/`q` SAÍRAM daqui no M238: o parse_len passou a
-            // convertê-las (todas ancoradas em 1in = 96px), então afirmá-las no
-            // @supports virou verdade. Restam as que dependem de métrica de fonte
-            // (`ch`), da raiz (`rlh`) ou do contêiner de consulta (`cq*`).
-            case "ch", "rlh", "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax":
-                return true
-            }
+        end := csspkg.scan_number_end(name, 0, true)
+        if end == 0 || end == len(name) do continue
+        switch name[end:] {
+        case "ch", "rlh", "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax": return true
         }
-        i = max(u, e)
     }
-    return false
 }
 
 // Funções de valor que o motor não avalia (a declaração inteira cai).
 @(private = "file")
 value_has_unsupported_fn :: proc(v: string) -> bool {
-    for i := 0; i < len(v); i += 1 {
-        if v[i] != '(' do continue
-        s := i
-        for s > 0 {
-            c := v[s - 1]
-            if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' { s -= 1 } else { break }
+    l := csspkg.Tokenizer{source = v}
+    for {
+        t := csspkg.next_token(&l)
+        if t.kind == .EOF do return false
+        if t.kind != .Name || t.end >= len(v) || v[t.end] != '(' do continue
+        name := v[t.start:t.end]
+        if name == "url" {
+            end := csspkg.token_group_end(v, t.end)
+            if end >= 0 do l.pos = end+1
+            continue
         }
-        if s == i do continue
-        switch v[s:i] {
+        switch name {
         case "env", "anchor", "anchor-size", "image-set", "-webkit-image-set",
              "round", "mod", "rem", "sign", "abs", "pow", "sqrt", "hypot",
-             "element", "paint", "cross-fade":
-            return true
+             "element", "paint", "cross-fade": return true
         }
     }
-    return false
 }
 
 // Implementação do hook: parseia o seletor (fatia `selector`, então usar e

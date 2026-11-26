@@ -1,0 +1,22 @@
+<!doctype html>
+<style>
+html, body {margin:0;padding:0}
+#stage {position:relative;width:400px;height:180px;--base:20px;--alias:var(--base)}
+.case {position:absolute;left:0;height:10px}
+#inherited {top:0;--base:60px;width:var(--alias)}
+#cycle {top:20px;--a:var(--b,5px);--b:var(--a);width:var(--a,30px)}
+#missing {top:40px;width:40px;padding:9px;padding:1px var(--missing)}
+#transform {top:60px;width:50px;transform:translateX(17px);transform:translateX(3px) var(--missing)}
+#logical {top:80px;--pads:3px 7px;width:20px;padding-inline:var(--pads);padding-left:5px}
+#border {top:100px;--border:8px solid blue;width:20px;border-top:2px solid red;border:var(--border)}
+#fallback {top:140px;width:60px;width:calc(1px + 2) !important;box-shadow:0 1px blue;box-shadow:0 0 -1px !important}
+</style>
+<div id="stage">
+  <div id="inherited" class="case"></div>
+  <div id="cycle" class="case"></div>
+  <div id="missing" class="case"></div>
+  <div id="transform" class="case"></div>
+  <div id="logical" class="case"></div>
+  <div id="border" class="case"></div>
+  <div id="fallback" class="case"></div>
+</div>

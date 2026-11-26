@@ -9,15 +9,23 @@ import jspkg "../js"
 // their existing parser; callers must not confuse `checked = false` with proof.
 css_value_valid :: proc(raw_prop, value: string) -> (valid, checked: bool) {
     prop := strings.to_lower(strings.trim_space(csspkg.declaration_text(raw_prop)), context.temp_allocator)
+    prop = css_value_property(prop)
     v := strings.to_lower(strings.trim_space(csspkg.declaration_text(value)), context.temp_allocator)
+    if value == csspkg.VARIABLE_INVALID do return false, true
+    if _, valid := csspkg.variable_syntax(value); !valid do return false, true
+    if strings.has_prefix(prop, "--") do return csspkg.variable_name_valid(prop) && css_value_balanced(v), true
     if v == "" do return false, true
     if !css_value_balanced(v) do return false, true
-    if strings.has_prefix(prop, "--") do return true, true
     // Substitution is checked at computed-value time, not against a dummy map.
     if css_value_substitution(v) do return true, false
     switch v {
     case "inherit", "initial", "unset", "revert", "revert-layer": return true, true
     }
+    if prop == "font" do return css_value_font(v), true
+    if prop == "font-family" do return css_value_font_family(v), true
+    if valid, checked := css_value_logical(prop, v); checked do return valid, true
+    if valid, checked := css_value_grid(prop, v); checked do return valid, true
+    if valid, checked := css_value_effects(prop, v); checked do return valid, true
     if valid, checked := css_value_family(prop, v); checked do return valid, true
     keywords := ""
     switch prop {
@@ -72,6 +80,12 @@ css_value_valid :: proc(raw_prop, value: string) -> (valid, checked: bool) {
     case "line-height":
         if v == "normal" do return true, true
         if n, ok := css_number(v); ok do return n >= 0, true
+        if strings.contains(v, "(") {
+            if scalar, _, ok := css_math_type(v); ok && scalar {
+                n, _, _, evaluated := eval_calc_num(v, 16, 1280, 720)
+                return evaluated && n >= 0, true
+            }
+        }
         return css_value_valid("padding-top", v)
     case "letter-spacing", "word-spacing":
         if v == "normal" do return true, true
@@ -172,6 +186,10 @@ css_value_valid :: proc(raw_prop, value: string) -> (valid, checked: bool) {
                 if n != 0 do return false, true
             }
             if !strings.contains(p, "(") && len(strings.fields(p, context.temp_allocator)) != 1 do return false, true
+            if strings.contains(p, "(") {
+                scalar, _, typed := css_math_type(p)
+                if !typed || scalar do return false, true
+            }
             off, pct, _, ok := parse_len_clamped(p, 16)
             if !ok do return false, true
             // A math function may compute negative later; CSS clamps it then.

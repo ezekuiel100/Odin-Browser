@@ -2008,7 +2008,7 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
     if !strings.has_prefix(name, "--") do name = strings.to_lower(name, context.temp_allocator)
     prop := strings.clone(name, allocator)
     val := strings.clone(strings.trim_space(part[colon + 1:]), allocator)
-    if prop == "" || val == "" {
+    if prop == "" || (val == "" && !strings.has_prefix(prop, "--")) {
         delete(prop, allocator); delete(val, allocator)
         return ""
     }
@@ -2016,7 +2016,8 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
     // cascata do CSS). Validamos o caso comum: um background/-image que invoca
     // linear-gradient() mas cujo gradiente não parseia. Sem var() (não dá p/
     // validar antes de resolver a variável).
-    if (prop == "background-image" || prop == "background") && !strings.contains(val, "var(") {
+    has_var, _ := variable_syntax(val)
+    if g_value_valid == nil && (prop == "background-image" || prop == "background") && !has_var {
         lo := strings.to_lower(val, context.temp_allocator)
         if strings.contains(lo, "linear-gradient(") || strings.contains(lo, "radial-gradient(") ||
            strings.contains(lo, "conic-gradient(") {
@@ -2026,8 +2027,12 @@ add_decl :: proc(decls: ^map[string]string, part: string, allocator: mem.Allocat
             }
         }
     }
+    body, _ := split_important(val)
+    if _, valid := variable_syntax(body); !valid {
+        delete(prop, allocator); delete(val, allocator)
+        return ""
+    }
     if g_value_valid != nil {
-        body, _ := split_important(val)
         if !g_value_valid(prop, body) {
             delete(prop, allocator); delete(val, allocator)
             return ""
@@ -3385,54 +3390,12 @@ collect_custom_props :: proc(decls: map[string]string, dest: ^map[string]string)
     }
 }
 
-// Substitui var(--name) e var(--name, fallback) no valor usando o dict de
-// custom properties. Retorna a string resolvida (alocada em temp_allocator).
-// Suporta aninhamento simples de var() e fallbacks literais (sem outro var()).
-// Limite de 32 passagens para evitar ciclos.
+// Compatibility entry point for callers with an unresolved variable map.
+// Failures remain distinct from a valid empty substitution.
 resolve_vars :: proc(value: string, props: map[string]string) -> string {
-    if !strings.contains(value, "var(") do return value
-    cur := value
-    for pass in 0 ..< 32 {
-        idx := strings.index(cur, "var(")
-        if idx < 0 do break
-        // encontra o ')' balanceado
-        start := idx + 4
-        depth := 1
-        j := start
-        for j < len(cur) && depth > 0 {
-            if cur[j] == '(' do depth += 1
-            else if cur[j] == ')' do depth -= 1
-            j += 1
-        }
-        if depth != 0 do break
-        inner := cur[start : j - 1]
-        // separa nome do fallback na primeira vírgula de profundidade 0
-        name, fallback := inner, ""
-        comma_d := 0
-        for ci := 0; ci < len(inner); ci += 1 {
-            switch inner[ci] {
-            case '(': comma_d += 1
-            case ')': comma_d -= 1
-            case ',':
-                if comma_d == 0 {
-                    name     = strings.trim_space(inner[:ci])
-                    fallback = strings.trim_space(inner[ci + 1:])
-                    ci       = len(inner) // break
-                }
-            }
-        }
-        replacement: string
-        if val, ok := props[name]; ok {
-            replacement = val
-        } else if fallback != "" {
-            replacement = fallback
-        } else {
-            // variável desconhecida sem fallback — não substitui p/ não perder o context
-            break
-        }
-        cur = strings.concatenate({cur[:idx], replacement, cur[j:]}, context.temp_allocator)
-    }
-    return cur
+    computed := compute_custom_properties(props)
+    result, _ := substitute_vars(value, computed)
+    return result
 }
 
 // ── Utilitários ─────────────────────────────────────────────────────────────
