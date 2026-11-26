@@ -21,6 +21,7 @@ css_value_valid :: proc(raw_prop, value: string) -> (valid, checked: bool) {
     switch v {
     case "inherit", "initial", "unset", "revert", "revert-layer": return true, true
     }
+    if valid, checked := css_value_container(prop, csspkg.declaration_text(value)); checked do return valid, true
     if prop == "font" do return css_value_font(v), true
     if prop == "font-family" do return css_value_font_family(v), true
     if valid, checked := css_value_logical(prop, v); checked do return valid, true

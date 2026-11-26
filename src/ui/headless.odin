@@ -1065,7 +1065,8 @@ headless_diagnose :: proc(url: string, json_path := "") -> bool {
             // Match the interactive loop's measurement pass. Container widths
             // can change after a sibling mutation even when this branch's DOM
             // is unchanged. Resolve once with the newly measured inputs.
-            if g_container_dirty && s.tabs[0].sheet_has_cq {
+            for _ in 0..<CONTAINER_MAX_PASSES {
+                if !g_container_dirty || !s.tabs[0].sheet_has_cq do break
                 g_container_dirty = false
                 when UIPROF {
                     g_uiprof.ms_layout += time.duration_milliseconds(time.tick_since(tf))
@@ -1226,6 +1227,7 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
     fontface_scan(css_text, base_url)
     // rules/kf transitórios; um clique re-parseia css_text (ver bloco de clique)
     rules, kf := csspkg.parse(css_text)
+    container_w_clear()
     styles, page_bg := compute_styles(dom, &rules, f32(width), f32(height), kf[:])
     // build_layout LÊ campos "_raw" do Computed (quotes_raw, content_raw…) que são
     // SLICES p/ dentro de `rules` — liberar rules antes do build = use-after-free
@@ -1241,23 +1243,8 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
     // im.Begin (logo, antes de qualquer GetScrollY), e sem isto o
     // getBoundingClientRect da 1ª leitura ignoraria o scroll pedido.
     js_scroll_set(0, scroll_y)
-    // Container queries: a 1ª passada MEDE os contêineres, a 2ª reestiliza com as
-    // medidas. São só duas: `container-type` estabelece contenção, então a largura
-    // do contêiner não depende do conteúdo dele — a 3ª mediria o mesmo.
-    if container_rules_present(rules[:]) {
-        container_w_clear()
-        layout_box(layout, 0, 0, f32(width))
-        if g_container_dirty {
-            g_container_dirty = false
-            free_styles(styles)
-            old_layout := layout
-            styles, page_bg = compute_styles(dom, &rules, f32(width), f32(height), kf[:])
-            layout = build_layout(dom, styles, base_url)
-            animation_restore_tree(layout, old_layout)
-            free_layout(old_layout)
-            js_style_source_set(styles, layout, f32(width), f32(height))
-        }
-    }
+    settle_container_tree(dom, &rules, kf[:], &styles, &layout, base_url, f32(width), f32(height), &page_bg)
+    js_style_source_set(styles, layout, f32(width), f32(height))
     csspkg.free_rules(&rules)
     csspkg.free_keyframes(&kf)
 
@@ -1347,6 +1334,7 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
             layout = build_layout(dom, styles, base_url) // base REAL: senão URLs relativas (/static, ../) viram https:/// e as imagens falham
             animation_restore_tree(layout, old_layout)
             free_layout(old_layout)
+            settle_container_tree(dom, &rt, kt[:], &styles, &layout, base_url, f32(width), f32(height), &page_bg)
             csspkg.free_rules(&rt)
             csspkg.free_keyframes(&kt)
             s.tabs[0].styles = styles
@@ -1391,6 +1379,7 @@ headless_render :: proc(html_path, out_png: string, width: i32 = 800, height: i3
                     layout = build_layout(dom, styles, base_url) // base REAL (ver rebuild por timer)
                     animation_restore_tree(layout, old_layout)
                     free_layout(old_layout)
+                    settle_container_tree(dom, &rules2, kf2[:], &styles, &layout, base_url, f32(width), f32(height), &page_bg)
                     csspkg.free_rules(&rules2)
                     csspkg.free_keyframes(&kf2)
                     s.tabs[0].styles = styles
@@ -1568,10 +1557,11 @@ headless_dumplayout :: proc(in_path: string, out_path: string, width: i32 = 800,
     defer jspkg.vm_free(page_vm)
 
     rules, kf := csspkg.parse(css_text)
+    container_w_clear()
     styles, _ := compute_styles(dom, &rules, f32(width), f32(height), kf[:])
     layout := build_layout(dom, styles, base_url) // ANTES de free_rules: lê slices _raw p/ dentro de rules
-    csspkg.free_rules(&rules)
-    csspkg.free_keyframes(&kf)
+    defer csspkg.free_rules(&rules)
+    defer csspkg.free_keyframes(&kf)
     if layout == nil { fmt.eprintln("dumplayout: layout nil"); return false }
 
     // ── Dreno de imagens (só URL): baixa tudo ANTES do layout final ─────────────
@@ -1589,9 +1579,8 @@ headless_dumplayout :: proc(in_path: string, out_path: string, width: i32 = 800,
             images_poll(renderer)
         }
     }
-    layout_box(layout, 0, 0, f32(width)) // layout final (imagens carregadas se URL)
-    page := Rect{0, 0, f32(width), f32(height)} // ICB = viewport (CSS 2.1 §10.1)
-    layout_absolutes(layout, page, page) // UMA vez só (reparenta — não repetir)
+    settle_container_tree(dom, &rules, kf[:], &styles, &layout, base_url, f32(width), f32(height))
+    ensure_tab_geometry(layout, f32(width), f32(height))
 
     sb: strings.Builder
     strings.builder_init(&sb, context.allocator)

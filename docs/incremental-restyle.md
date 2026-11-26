@@ -99,19 +99,27 @@ comparacao controlada nem prova de um percentual de ganho no Reddit. Relatorios:
 ## Invalidacao de container queries por medidas
 
 A presenca de @container na folha nao forca mais a cascata completa por si so.
-Cada aba guarda um fingerprint das larguras dos seus conteineres computados,
-incluindo a diferenca entre largura ainda desconhecida e largura ja medida.
+Cada aba guarda um fingerprint das dimensoes consultaveis dos seus conteineres,
+incluindo a diferenca entre tamanho ainda desconhecido e tamanho ja medido.
 Medidas iguais permitem o plano incremental normal. A primeira resolucao e
-mudancas de largura continuam usando Full_CQ; viewport, zoom, fontes e folhas
+mudancas nos eixos consultaveis continuam usando Full_CQ; viewport, zoom, fontes e folhas
 novas preservam suas invalidacoes completas. Medidas de outros documentos nao
 entram no fingerprint da aba.
 
 Uma mutacao em um irmao pode mudar a largura do conteiner sem mudar seus
-atributos. O layout mede essa largura e a segunda passada resolve novamente o
-estilo. O diagnostico --diagnose agora realiza essa mesma passada da interface.
+atributos. O layout mede as dimensoes e as passadas seguintes resolvem novamente o
+estilo ate estabilizar. O diagnostico --diagnose realiza o mesmo ciclo da interface.
 Os testes comparam os estilos com uma cascata completa, incluindo containers
 nomeados, mudanca de container-type/name, texto, insercao/remocao de filhos,
 primeira medicao, limpeza das medidas e redimensionamento causado por irmaos.
+
+A ampliacao de 26/11/2026 inclui altura, mudancas de fracao de pixel e selecao
+conforme os eixos contidos. Uma mudanca apenas na altura de um container
+inline-size horizontal nao exige Full_CQ. Sem container elegivel/medido a consulta
+nao aplica a regra, sem usar o viewport como substituto. Consultas aninhadas podem
+exigir mais de duas passadas; o ciclo tem teto de 32 e compara medidas finais,
+ignorando os tamanhos provisorios do flex/grid. Detalhes e testes estao em
+[CONTAINER-QUERIES.md](CONTAINER-QUERIES.md).
 
 Medicao sintetica local em 2026-11-22, 700 ramos intactos e uma classe alternada
 em um alvo: cascata 29,7 -> 3,1 ms/restyle; build_layout 6,9 -> 0,4 ms/restyle.

@@ -1,0 +1,16 @@
+<anon# .> block x=0 y=0 w=800 h=300
+  <html# .> block x=0 y=0 w=800 h=300
+    <body# .> block x=0 y=0 w=800 h=300
+      <div#stage .> block x=0 y=0 w=500 h=300 REL
+        <div#wide .container> block x=0 y=0 w=400 h=20 ABS
+          <div# .target> inline x=0 y=0 w=90 h=20
+        <div#narrow .container> block x=0 y=30 w=100 h=10 ABS
+          <div# .target> inline x=0 y=30 w=40 h=10
+        <div#size .container> block x=0 y=60 w=230 h=110 ABS
+          <div# .target> inline x=15 y=75 w=120 h=10
+        <div#vertical .container> block x=0 y=180 w=160 h=40 ABS
+          <div# .target> inline x=90 y=180 w=70 h=10
+        <div#outer .container> block x=0 y=240 w=400 h=10 ABS
+          <div#inner .> block x=0 y=240 w=300 h=10
+            <div#nested .target> inline x=0 y=240 w=130 h=10
+        <div#orphan .target> inline x=0 y=270 w=10 h=10 ABS

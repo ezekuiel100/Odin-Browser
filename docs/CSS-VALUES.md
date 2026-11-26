@@ -82,6 +82,10 @@ Regressões: `src/css/declaration_order_test.odin`, `src/ui/declaration_order_te
 
 Validação: `test.ps1` passou nos oito pacotes (3.791 testes: 190 CSS, 1.134 UI, 2.342 JS, 81 HTML, 6 rede, 20 Brotli, 10 WOFF2 e 8 varfont). Os quatro testes novos do parser também passaram com `ODIN_TEST_FAIL_ON_BAD_MEMORY=true`. O build otimizado passou nos 27 goldens de layout e nas 111 verificações principais de pintura, incluindo as suítes auxiliares do portão. WPT selecionado `css-cascade`, comparado por nome com o `browser.exe` anterior: 6 PASS / 6 FAIL / 0 ERROR nos dois executáveis, sem transições. O diff de `all-prop-001` caiu de 6.655 para 981 pixels, ainda acima do orçamento de 480. O WPT completo não foi repetido.
 
+## Container queries
+
+A revisão de 26/11/2026 está em [CONTAINER-QUERIES.md](CONTAINER-QUERIES.md): seleção por tamanho medido, eixos, condições booleanas/listas, consultas aninhadas e invalidação.
+
 ## Referências e testes
 
 - [CSS Conditional Rules: definição de suporte](https://www.w3.org/TR/css-conditional-3/#support-definition)

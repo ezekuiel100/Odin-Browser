@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="match" href="container-size-queries-ref.html">
+<style>
+html,body{margin:0;padding:0}
+.box{width:100px;height:20px;background:red}
+.c{container-type:inline-size;width:200px}
+#small{width:100px}
+#size{container-type:size;height:30px}
+#named{container-name:Card Other}
+@container (width >= 200px){#a{background:green}}
+@container (width < 150px), absent (width > 1px){#b{background:green}}
+@container (height:30px) and (aspect-ratio > 2/1){#c{background:green}}
+@container Other not (width < 200px){#d{background:green}}
+#e{background:green}
+@container (width > 1px){#e{background:red}}
+</style>
+<section class="c"><div id="a" class="box"></div></section>
+<section class="c" id="small"><div id="b" class="box"></div></section>
+<section class="c" id="size"><div id="c" class="box"></div></section>
+<section class="c" id="named"><div id="d" class="box"></div></section>
+<div id="e" class="box"></div>

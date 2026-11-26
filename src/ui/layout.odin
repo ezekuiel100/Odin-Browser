@@ -481,6 +481,9 @@ Box :: struct {
     // medida de um subgrid de linhas; lida e zerada pelo pai).
     sg_contrib: []Grid_Contrib,
     container_inline: bool, // container-type: inline-size — a largura é medida p/ @container
+    container_size: bool, // both axes are size-contained
+    cis_w, cis_h: f32,
+    has_cis_w, has_cis_h: bool,
     content_hidden: bool,   // content-visibility: hidden — não constrói/pinta o conteúdo
     bg_fixed: bool,         // background-attachment: fixed — fundo ancorado no VIEWPORT
     row_gap: f32,
@@ -2640,6 +2643,9 @@ apply_box :: proc(b: ^Box, comp: Computed, base: string = "") {
     b.grid_sub_cols = comp.grid_sub_cols; b.grid_sub_rows = comp.grid_sub_rows
     b.has_gap_col = comp.has_gap_col; b.has_gap_row = comp.has_gap_row
     b.container_inline = comp.container_inline
+    b.container_size = comp.container_size
+    b.cis_w, b.cis_h = comp.cis_w, comp.cis_h
+    b.has_cis_w, b.has_cis_h = comp.has_cis_w, comp.has_cis_h
     b.content_hidden = comp.content_hidden
     b.bg_fixed = comp.bg_fixed
     // contain-intrinsic-size: tamanho de RESERVA do conteúdo pulado. Vira
@@ -2808,9 +2814,7 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
     b.x = x + left
     b.y = y + mt
     b.content_w = cw
-    // container queries: publica a largura de conteúdo MEDIDA deste contêiner p/
-    // a próxima resolução de estilo (ver g_container_w em style.odin).
-    if b.container_inline do container_w_record(b.node, cw)
+    // Measurements are published after final dimensions are clamped.
     b.content_x = b.x + bwl + p[3]
     b.content_y = b.y + bwt + p[0]
     b.w = border_box_w
@@ -3038,7 +3042,9 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
     }
     if b.is_multicol do b.content_w = mc_full_w
 
-    nat_h := content_h // altura natural do conteúdo (antes de height/max-height)
+    nat_h := content_h
+    contain_block := b.container_size || (b.container_inline && b.writing_mode != .Horizontal)
+    if contain_block do content_h = b.has_cis_h ? b.cis_h : 0 // altura natural do conteúdo (antes de height/max-height)
 
     // altura imposta (flex) ou explícita (height) substitui a do conteúdo
     if force_h >= 0 {
@@ -3064,10 +3070,15 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
         // min-height: min/max-content → piso = altura natural do conteúdo. Ex.:
         // height:0 + min-height:max-content mantém a caixa alta o bastante p/ o
         // conteúdo (nat_h capturado antes de height/min/max sobrescreverem).
-        if b.minh_mc && nat_h > content_h do content_h = nat_h
+        if b.minh_mc && !contain_block && nat_h > content_h do content_h = nat_h
         if content_h < 0 do content_h = 0
     }
     b.h = content_h + p[0] + p[2] + bwt + bwb
+    if b.container_inline {
+        container_size_record(b.node, b.content_w, content_h,
+            track_width = b.container_size || b.writing_mode == .Horizontal,
+            track_height = b.container_size || b.writing_mode != .Horizontal)
+    }
     if b.kind == .Image {
         // min/max-height and aspect-ratio can change the used height after the
         // intrinsic-size calculation. object-fit and border-radius use this box.
@@ -6095,6 +6106,7 @@ measure_min_content_w :: proc(b: ^Box, ignore_specified := false) -> f32 {
     if !ignore_specified && b.has_width && !b.width_pct {
         return b.box_sizing == .Border ? b.width : b.width + extra
     }
+    if b.container_inline && (b.container_size || b.writing_mode == .Horizontal) do return extra + (b.has_cis_w ? b.cis_w : 0)
     content: f32 = 0
     if b.is_inline && b.writing_mode != .Horizontal {
         // Physical width is the vertical block extent, for both intrinsic constraints.
@@ -6197,6 +6209,7 @@ measure_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
     if b.has_width && !b.width_pct {
         return b.box_sizing == .Border ? b.width : b.width + extra
     }
+    if b.container_inline && (b.container_size || b.writing_mode == .Horizontal) do return extra + (b.has_cis_w ? b.cis_w : 0)
     content: f32 = 0
     if b.is_inline && b.writing_mode!=.Horizontal {
         layout_vertical_inline(b,orthogonal_inline_limit(b),false)

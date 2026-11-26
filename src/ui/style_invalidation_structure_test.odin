@@ -197,15 +197,16 @@ incremental_has_and_counters_stay_full :: proc(t: ^testing.T) {
 // not retain buckets allocated by a previous test after that rollback.
 @(private="file")
 Container_Test_Inputs :: struct {
-    widths, used: map[^dom.Node]f32,
+    widths, used, heights, heights_used: map[^dom.Node]f32,
     dirty: bool,
 }
 
 @(private="file")
 container_test_inputs_begin :: proc() -> Container_Test_Inputs {
-    saved := Container_Test_Inputs{g_container_w, g_container_used, g_container_dirty}
+    saved := Container_Test_Inputs{g_container_w, g_container_used, g_container_h, g_container_h_used, g_container_dirty}
     g_container_w = nil
     g_container_used = nil
+    g_container_h = nil; g_container_h_used = nil
     g_container_dirty = false
     return saved
 }
@@ -214,6 +215,8 @@ container_test_inputs_begin :: proc() -> Container_Test_Inputs {
 container_test_inputs_end :: proc(saved: Container_Test_Inputs) {
     delete(g_container_w)
     delete(g_container_used)
+    delete(g_container_h); delete(g_container_h_used)
+    g_container_h, g_container_h_used = saved.heights, saved.heights_used
     g_container_w, g_container_used, g_container_dirty = saved.widths, saved.used, saved.dirty
 }
 
@@ -227,7 +230,7 @@ container_invalidation_tracks_measured_inputs :: proc(t: ^testing.T) {
     defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
     c, target := el(doc, "c"), el(doc, "target")
     restyle_tab(&tab, 400, 300)
-    testing.expect_value(t, tab.styles[target].width, f32(80)) // initial viewport fallback
+    testing.expect_value(t, tab.styles[target].width, f32(20)) // no measurement: query is unknown
     restyle_tab(&tab, 400, 300)
     testing.expect_value(t, tab.restyle_nodes, 0)
     container_w_record(c, 200)
@@ -335,6 +338,37 @@ container_invalidation_after_sibling_layout_change :: proc(t: ^testing.T) {
     testing.expect_value(t, tab.restyle_nodes, len(tab.styles))
     testing.expect_value(t, tab.styles[target].width, f32(10))
     expect_matches_full(t, &tab)
+}
+
+@(test)
+container_invalidation_height_and_subpixel_changes :: proc(t: ^testing.T) {
+    saved := container_test_inputs_begin()
+    defer container_test_inputs_end(saved)
+    doc := html.parse(`<html><body><section id="c"><div id="target"></div></section><aside>keep</aside></body></html>`)
+    defer dom.free_tree(doc)
+    tab := Tab{dom=doc,css_text=`section{container-type:size;width:300px;height:100px} .inline{container-type:inline-size} div{width:10px;height:20px}
+        @container(height > 150px){div{height:90px}} @container(width > 300px){div{width:80px}}`}
+    defer { free_layout(tab.layout); free_styles(tab.styles); tab_drop_rules(&tab); js_style_source_clear() }
+    c,target := el(doc,"c"),el(doc,"target")
+    restyle_tab(&tab,800,600)
+    container_size_record(c,300,100)
+    restyle_tab(&tab,800,600)
+    testing.expect_value(t,tab.styles[target].height,20)
+    container_size_record(c,300,200)
+    restyle_tab(&tab,800,600)
+    testing.expect_value(t,tab.restyle_nodes,len(tab.styles))
+    testing.expect_value(t,tab.styles[target].height,90)
+    container_size_record(c,300.1,200)
+    restyle_tab(&tab,800,600)
+    testing.expect_value(t,tab.styles[target].width,80)
+    restyle_tab(&tab,800,600)
+    testing.expect_value(t,tab.restyle_nodes,0)
+    sa(c,"class","inline")
+    restyle_tab(&tab,800,600)
+    testing.expect_value(t,tab.styles[target].height,20)
+    container_size_record(c,300.1,250)
+    restyle_tab(&tab,800,600)
+    testing.expect_value(t,tab.restyle_nodes,0)
 }
 
 @(private="file")

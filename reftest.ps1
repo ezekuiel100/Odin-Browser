@@ -6,9 +6,12 @@
 #
 # Uso:  .\reftest.ps1            (roda tudo)
 #       .\reftest.ps1 -Keep      (mantem os PNGs gerados p/ inspecao)
+#       .\reftest.ps1 -Filter container -Browser _local/builds/browser.exe
 
 param(
     [switch]$Keep,
+    [string]$Browser = "",
+    [string]$Filter = "",
     [int]$Width  = 200,
     [int]$Height = 400,
     [double]$Threshold = 0.1   # % maximo de pixels diferentes p/ passar
@@ -17,7 +20,7 @@ param(
 Add-Type -AssemblyName System.Drawing
 
 $root    = $PSScriptRoot
-$browser = Join-Path $root "browser.exe"
+$browser = if ($Browser -eq "") { Join-Path $root "browser.exe" } elseif ([IO.Path]::IsPathRooted($Browser)) { $Browser } else { Join-Path $root $Browser }
 $dir     = Join-Path $root "tests\reftest"
 $outdir  = Join-Path $root "tests\reftest\_out"
 New-Item -ItemType Directory -Force -Path $outdir | Out-Null
@@ -54,6 +57,7 @@ $tests = Get-ChildItem -Path $dir -Filter *.html |
 
 $pass = 0; $fail = 0
 foreach ($t in $tests) {
+    if ($Filter -and $t.BaseName -notlike "*$Filter*") { continue }
     $html = Get-Content $t.FullName -Raw
     $m = [regex]::Match($html, 'rel\s*=\s*"match"\s+href\s*=\s*"([^"]+)"')
     if (-not $m.Success) {

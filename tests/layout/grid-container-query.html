@@ -2,7 +2,7 @@
 <!-- Padrão MDN: placement de grid DENTRO de @container. Antes, o bloco
      @container era descartado (skip_at_rule) e os itens auto-placeavam (a
      'toc' caía na gutter de 20px = "In this article" vertical). Agora a
-     condição @container avalia contra o viewport (proxy) e o placement aplica.
+     condição @container avalia contra a largura medida de .wrap e o placement aplica.
      Itens fora de ordem no fonte (side, toc, main). Esperado:
        side -> col1 (200px @x=0), main -> col3 (1fr @x=220), toc -> col5 (@x=800). -->
 <html><head><style>

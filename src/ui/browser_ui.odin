@@ -1327,10 +1327,9 @@ draw_content :: proc(s: ^State) {
             // window.scrollY. Estamos DENTRO do child rolado, então é aqui que o
             // valor existe.
             js_scroll_set(im.GetScrollX(), im.GetScrollY())
-            // Container queries: o layout acima MEDIU os contêineres; se a medida
-            // difere da que o estilo usou, reestiliza UMA vez e relayouta. Converge
-            // em 2 passadas (container-type = contenção → a medida não muda depois).
-            if g_container_dirty {
+            // Settle nested query containers whose size depends on an outer query.
+            for _ in 0..<CONTAINER_MAX_PASSES {
+                if !g_container_dirty || !tab.sheet_has_cq do break
                 g_container_dirty = false
                 restyle_tab(&s.tabs[s.active], avail.x, avail.y)
                 tab = s.tabs[s.active]

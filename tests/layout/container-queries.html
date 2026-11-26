@@ -1,0 +1,33 @@
+<!doctype html>
+<style>
+html,body {margin:0;padding:0}
+#stage {position:relative;width:500px;height:300px}
+.container {position:absolute;left:0;width:200px;container-type:inline-size}
+.target {width:10px;height:10px;background:green}
+#wide {top:0;width:400px;container-name:Card Other}
+#narrow {top:30px;width:100px;container-name:Card}
+#size {top:60px;width:200px;height:80px;container-type:size;padding:10px;border:5px solid blue;box-sizing:content-box}
+#vertical {top:180px;width:160px;height:40px;writing-mode:vertical-rl}
+#outer {top:240px;width:400px;container-name:Outer}
+#inner {container:Inner / inline-size;width:100px}
+#orphan {position:absolute;top:270px}
+@container Card (width >= 300px) { .target {width:90px} }
+@container card (width > 1px) { .target {width:190px} }
+@container Other (width >= 300px) { .target {height:20px} }
+@container (width < 150px), missing (height > 1px) { #narrow .target {width:40px} }
+@container (height = 80px) and (orientation:landscape) { #size .target {width:120px} }
+@container (inline-size = 40px) { #vertical .target {width:70px} }
+@container Outer (width >= 300px) {
+  #inner {width:300px}
+  @container Inner (width >= 300px) { #nested {width:130px} }
+}
+@container (width > 1px) { #orphan {width:200px} }
+</style>
+<div id="stage">
+  <div id="wide" class="container"><div class="target"></div></div>
+  <div id="narrow" class="container"><div class="target"></div></div>
+  <div id="size" class="container"><div class="target"></div></div>
+  <div id="vertical" class="container"><div class="target"></div></div>
+  <div id="outer" class="container"><div id="inner"><div id="nested" class="target"></div></div></div>
+  <div id="orphan" class="target"></div>
+</div>

@@ -67,17 +67,19 @@ style_deps :: proc(rules: []css.Rule) -> (deps: Sheet_Deps) {
     return
 }
 
-// Order-independent snapshot of layout inputs visible to container queries.
-// Only this tab's computed containers participate; stale measurements from
-// other documents cannot invalidate it. Record presence as well as width so
-// the first layout measurement invalidates the viewport fallback.
+// Order-independent snapshot of this tab's measured query containers. Track
+// presence and every queryable axis, excluding a non-contained block dimension.
 container_inputs_fingerprint :: proc(styles: map[^dom.Node]Computed) -> u64 {
     h: u64 = 0xcbf29ce484222325
     for n, &c in styles {
         if !c.container_inline do continue
         part := u64(uintptr(n)) * 0x9E3779B97F4A7C15
         if w, measured := g_container_w[n]; measured {
-            part ~= u64(transmute(u32)w)
+            if c.container_size || c.writing_mode == .Horizontal do part ~= u64(transmute(u32)w)
+            if c.container_size || c.writing_mode != .Horizontal {
+                if height, has_height := g_container_h[n]; has_height { part ~= u64(transmute(u32)height) << 32 }
+                else { part ~= 0x8000000000000000 }
+            }
         } else {
             part ~= 0x100000000
         }

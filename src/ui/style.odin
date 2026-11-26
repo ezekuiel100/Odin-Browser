@@ -208,61 +208,6 @@ svg_css_get :: proc(n: ^dompkg.Node) -> (Svg_Css, bool) {
     return c.svg_css^, true
 }
 
-// ── Container queries ────────────────────────────────────────────────────────
-// A condição de `@container` avalia contra a LARGURA do contêiner (ancestral com
-// container-type), que só existe no LAYOUT — mas o estilo é resolvido ANTES dele.
-// Resolvemos em DUAS passadas, e isso é EXATO, não aproximado: `container-type`
-// estabelece contenção, então o tamanho do contêiner NÃO depende do conteúdo dele
-// (só dos ancestrais) — a 2ª passada mede o mesmo que a 3ª mediria.
-//   1ª: sem medidas → cai no FALLBACK (viewport), que é o comportamento antigo.
-//   2ª: com g_container_w preenchido pelo layout → avalia contra o contêiner.
-g_container_w: map[^dompkg.Node]f32   // nó do contêiner → largura de conteúdo medida
-g_container_used: map[^dompkg.Node]f32 // o que a última resolução de estilo usou
-g_container_dirty: bool                // medida != usada → precisa reestilizar
-
-container_w_clear :: proc() { clear(&g_container_w); clear(&g_container_used); g_container_dirty = false }
-
-// Alguma regra veio de um @container? Portão da 2ª passada: página sem
-// container query não paga NADA (nem o layout extra).
-container_rules_present :: proc(rules: []csspkg.Rule) -> bool {
-    for r in rules do if r.cq_active do return true
-    return false
-}
-
-// Chamado pelo layout p/ cada caixa que É um contêiner de consulta.
-container_w_record :: proc(n: ^dompkg.Node, w: f32) {
-    if n == nil do return
-    old, had := g_container_w[n]
-    if !had || abs(old - w) > 0.5 {
-        g_container_w[n] = w
-        // só suja se o estilo já foi resolvido com um valor DIFERENTE
-        if used, uok := g_container_used[n]; !uok || abs(used - w) > 0.5 do g_container_dirty = true
-    }
-}
-
-// A regra `r` (de um bloco @container) casa para o nó `n`? Sobe até o contêiner
-// mais próximo (com nome, se a consulta o exigir) e testa a largura MEDIDA.
-@(private="file")
-container_matches :: proc(r: csspkg.Rule, n: ^dompkg.Node, styles: ^map[^dompkg.Node]Computed, viewport_w: f32) -> bool {
-    for p := (styles != nil ? n.parent : nil); p != nil; p = p.parent {
-        c, ok := styles[p]
-        if !ok || !c.container_inline do continue
-        if r.cq_name != "" && c.container_name != r.cq_name do continue
-        w, measured := g_container_w[p]
-        if !measured do break // contêiner achado mas ainda não medido → fallback
-        g_container_used[p] = w
-        if r.cq_min >= 0 && w < r.cq_min do return false
-        if r.cq_max >= 0 && w > r.cq_max do return false
-        return true
-    }
-    // Sem contêiner medido: FALLBACK para o viewport (o proxy que já existia antes
-    // desta feature). Per-spec deveria não casar, mas não casar aqui APAGARIA
-    // estilos que hoje aparecem — e a 1ª passada sempre cai neste caminho.
-    if r.cq_min >= 0 && viewport_w < r.cq_min do return false
-    if r.cq_max >= 0 && viewport_w > r.cq_max do return false
-    return true
-}
-
 // Um item de dasharray vindo de REGRA CSS: `parse_len` é `@(private="file")`
 // aqui, então o painter (svg.odin) recebe ESTE proc como conversor. Porcentagem
 // é rejeitada — precisaria da diagonal do viewport, que não threadamos.
@@ -1313,7 +1258,8 @@ Computed :: struct {
     // contain-intrinsic-size: tamanho de RESERVA quando o conteúdo é pulado.
     cis_w, cis_h: f32, has_cis_w, has_cis_h: bool,
     container_inline: bool,   // container-type: inline-size | size
-    container_name:   string, // container-name (vazio = anônimo)
+    container_name:   string, // case-sensitive whitespace-separated names
+    container_size: bool, // both physical dimensions are size-contained
     grid_flow_col:   bool,                     // grid-auto-flow: column
     grid_flow_dense: bool,                     // grid-auto-flow: … dense
     row_gap:        f32,                       // espaçamento entre linhas (gap = entre colunas)
@@ -2041,6 +1987,7 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
     comp.content_hidden = false
     comp.has_cis_w = false; comp.has_cis_h = false
     comp.container_inline = false
+    comp.container_size = false
     comp.container_name = ""
     comp.grid_flow_col = false
     comp.grid_flow_dense = false
@@ -2282,6 +2229,16 @@ compute_node :: proc(n: ^dompkg.Node, inherit: Computed, vars: map[string]string
                 comp.display_contents     = inherit.display_contents
                 comp.display_inline_level = inherit.display_inline_level
             }
+            if i, _ := kw(merged, "container"); i {
+                if _, has := merged["container-type"]; !has {
+                    comp.container_inline = inherit.container_inline; comp.container_size = inherit.container_size
+                }
+                if _, has := merged["container-name"]; !has do comp.container_name = inherit.container_name
+            }
+            if i, _ := kw(merged, "container-type"); i {
+                comp.container_inline = inherit.container_inline; comp.container_size = inherit.container_size
+            }
+            if i, _ := kw(merged, "container-name"); i do comp.container_name = inherit.container_name
             if i, _ := kw(merged, "background-color"); i { comp.bg = inherit.bg; comp.has_bg = inherit.has_bg }
             // `initial` em prop que HERDA
             if _, x := kw(merged, "color");          x do comp.color          = ini.color
@@ -3154,7 +3111,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
         vh_mq := g_viewport_h > 0 ? g_viewport_h : 720 // ver a nota no g_viewport_h
         if !csspkg.media_matches(rule^, viewport_w, vh_mq, g_prefers_dark) do continue
         // @container: avalia contra o CONTÊINER medido (com fallback p/ viewport)
-        if rule.cq_active && !container_matches(rule^, n, styles, viewport_w) do continue
+        if rule.cq_active && !container_matches(rule^, n, styles) do continue
         best: [3]int
         matched := false
         exact := false // algum seletor exato (sem aproximação) casou?
@@ -3751,6 +3708,7 @@ collect_decls :: proc(n: ^dompkg.Node, rules: ^[dynamic]csspkg.Rule, candidates:
             {"inset",   {"top", "right", "bottom", "left"}},
             {"gap",      {"row-gap", "column-gap"}},
             {"mask", {"mask-image", "mask-size", "mask-position", "mask-repeat", "mask-mode", "mask-origin", "mask-clip"}},
+            {"container", {"container-name", "container-type"}},
             {"flex", {"flex-grow", "flex-shrink", "flex-basis"}},
             {"columns", {"column-count", "column-width"}},
             {"list-style", {"list-style-type", "list-style-position", "list-style-image"}},
@@ -5555,29 +5513,29 @@ apply_decls :: proc(comp: ^Computed, raw_decls: map[string]string, vars: map[str
     if v, ok := decls["grid-auto-columns"]; ok {
         comp.grid_auto_col_n = parse_grid_auto_tracks(&comp.grid_auto_cols, resolve_var(v, vars), fs, vw, vh)
     }
-    // container-type / container-name / container. `size` (as DUAS dimensões) é
-    // tratado como inline-size: só consultamos LARGURA, e o eixo de bloco exigiria
-    // contenção de altura, que o motor não tem.
-    if v, ok := decls["container-type"]; ok {
-        lv := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
-        comp.container_inline = lv == "inline-size" || lv == "size"
-    }
-    if v, ok := decls["container-name"]; ok {
-        nm := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
-        if nm != "none" do comp.container_name = nm
-    }
+    // Size containment and query names are independent, non-inherited fields.
     // shorthand `container: <nome> [/ <tipo>]`. Sem barra, per-spec o tipo fica
     // `normal` (só nomeia) — não inventamos inline-size.
     if v, ok := decls["container"]; ok {
         val := resolve_var(v, vars)
         nm, tp := val, ""
         if sl := strings.index_byte(val, '/'); sl >= 0 { nm = val[:sl]; tp = val[sl + 1:] }
-        nml := strings.to_lower(strings.trim_space(nm), context.temp_allocator)
-        if nml != "" && nml != "none" do comp.container_name = nml
+        nml := strings.trim_space(nm)
+        comp.container_name = css_value_keyword(strings.to_lower(nml, context.temp_allocator), "none initial unset revert") ? "" : nml
         tpl := strings.to_lower(strings.trim_space(tp), context.temp_allocator)
-        if tpl == "inline-size" || tpl == "size" do comp.container_inline = true
+        comp.container_inline = tpl == "inline-size" || tpl == "size"
+        comp.container_size = tpl == "size"
     }
 
+    if v, ok := decls["container-type"]; ok {
+        lv := strings.to_lower(strings.trim_space(resolve_var(v, vars)), context.temp_allocator)
+        comp.container_inline = lv == "inline-size" || lv == "size"
+        comp.container_size = lv == "size"
+    }
+    if v, ok := decls["container-name"]; ok {
+        nm := strings.trim_space(resolve_var(v, vars))
+        comp.container_name = css_value_keyword(strings.to_lower(nm, context.temp_allocator), "none initial unset revert") ? "" : nm
+    }
     // grid-auto-flow: <row | column> || dense
     if v, ok := decls["grid-auto-flow"]; ok {
         for t in strings.fields(strings.to_lower(resolve_var(v, vars), context.temp_allocator), context.temp_allocator) {
@@ -6146,6 +6104,15 @@ parse_len_linear :: proc(value: string, fs: f32, vw: f32 = 1280, vh: f32 = 720) 
 
 // Comprimento CSS -> px (pct=true e valor em fração quando é %).
 // Suporta calc(...) via eval_calc_expr. vw/vh usam o viewport padrão (1280×720).
+// Query-relative font units use the selected container's metrics.
+container_length_parse :: proc(value: string, c: Computed) -> (f64, bool) {
+    old_lh := g_cur_lh_px
+    g_cur_lh_px = c.font_size * c.line_height
+    defer g_cur_lh_px = old_lh
+    px, pct, ok := parse_len(value, c.font_size, g_viewport_w, g_viewport_h)
+    return f64(px), ok && !pct
+}
+
 @(private="file")
 parse_len :: proc(value: string, fs: f32, vw: f32 = 1280, vh: f32 = 720) -> (px: f32, pct: bool, ok: bool) {
     v := strings.to_lower(strings.trim_space(value), context.temp_allocator)

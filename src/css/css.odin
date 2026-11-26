@@ -175,6 +175,7 @@ Rule :: struct {
     cq_active: bool,
     cq_name:   string,
     cq_min, cq_max: f32,
+    cq_queries: []Container_Query, // owned conjunction of nested container queries
     // Regra SINTÉTICA de `@property … { inherits: false }`. A regra em si é a
     // mesma `:root{--x:V}` das outras (é o que dá o valor onde ninguém declarou),
     // mas o passe de estilo precisa saber que a propriedade NÃO herda: um
@@ -185,7 +186,7 @@ Rule :: struct {
 }
 
 // Condição de um bloco @container, propagada pelo parse_block.
-Container_Q :: struct { active: bool, name: string, min, max: f32 }
+Container_Q :: struct { active: bool, name: string, min, max: f32, queries: []Container_Query }
 
 // Condição de uma media query (subconjunto: min/max-width + tipo + esquema de cor).
 @(private)
@@ -287,10 +288,7 @@ parse_block :: proc(src: string, rules: ^[dynamic]Rule, keyframes: ^[dynamic]Key
                 j = token_boundary(src, j, "{")
                 if j >= n do break
                 prelude := src[pre_start:j]
-                cond := parse_container_query(prelude)
-                inner := Container_Q{active = true, name = container_query_name(prelude),
-                                     min = cond.min, max = cond.max}
-                // @container aninhado: o mais INTERNO manda (aninhar é raro).
+                inner := append_container_query(cq, prelude)
                 j += 1 // pula '{'
                 blk_start := j
                 close := token_group_end(src, j-1)
@@ -497,13 +495,13 @@ parse_rule_body :: proc(src: string, start: int, sel_text: string, rules: ^[dyna
                 pre_start := j
                 j = token_boundary(src, j, "{")
                 if j >= n { i = n; break }
-                cond := parse_container_query(src[pre_start:j])
+                inner := append_container_query(cq, src[pre_start:j])
                 j += 1
                 blk_start := j
                 close := token_group_end(src, j-1)
                 blk_end := close < 0 ? n : close
                 j = close < 0 ? n : close + 1
-                parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, combine_media(media, cond), layer_rank, layers, cq)
+                parse_rule_body(src[blk_start:blk_end], 0, sel_text, rules, keyframes, order, media, layer_rank, layers, inner)
                 i = j
                 continue
             }
@@ -575,6 +573,7 @@ emit_style_rule :: proc(sel_text, decl_text: string, rules: ^[dynamic]Rule, orde
             media_scheme   = media.scheme,
             media_ar_min   = media.ar_min,
             media_ar_max   = media.ar_max,
+            cq_queries     = clone_container_queries(cq.queries),
             cq_active      = cq.active,
             cq_name        = strings.clone(cq.name), // OWNED (ver free_rules)
             cq_min         = cq.min,
@@ -637,6 +636,7 @@ register_property :: proc(name: string, body: string, rules: ^[dynamic]Rule, ord
         media_scheme   = media.scheme,
         media_ar_min   = media.ar_min,
         media_ar_max   = media.ar_max,
+        cq_queries     = clone_container_queries(cq.queries),
         cq_active      = cq.active,
         cq_name        = strings.clone(cq.name), // OWNED (ver free_rules)
         cq_min         = cq.min,
@@ -3441,6 +3441,7 @@ free_rules :: proc(rules: ^[dynamic]Rule) {
         delete(r.decls)
         delete(r.decl_order)
         delete(r.cq_name)
+        free_container_queries(r.cq_queries)
     }
     delete(rules^)
 }
