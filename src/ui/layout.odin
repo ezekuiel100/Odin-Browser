@@ -241,8 +241,10 @@ Box :: struct {
     is_document: bool, // anonymous wrapper providing the initial containing block
     // Root-only cache, shared by the frame loop and synchronous CSSOM reads.
     geometry_valid: bool,
-    geometry_w, geometry_h: f32,
-    geometry_resources: u64,
+    geometry_environment: Geometry_Environment,
+    geometry_incremental, geometry_retained: bool,
+    geometry_memo: Geometry_Memo,
+    geometry_stats: Geometry_Stats,
 
     x_world: matrix[4,4]f64,
     x_hovered: bool,
@@ -1993,6 +1995,7 @@ add_words :: proc(items: ^[dynamic]Inline_Item, text: string, st: Inline_Style, 
 }
 
 restore_text_fragments :: proc(b: ^Box) {
+    b.geometry_memo.valid = false // intrinsic measurement can undo line splitting
     w := 0
     for r := 0; r < len(b.inlines); r += 1 {
         cur := b.inlines[r]
@@ -2460,6 +2463,7 @@ adopt_bg_extra :: proc(b: ^Box, comp: Computed, base: string) {
 
 @(private="file")
 apply_box :: proc(b: ^Box, comp: Computed, base: string = "") {
+    b.geometry_memo.valid = false
     b.margin     = comp.margin
     b.has_margin = comp.has_margin
     b.padding    = comp.padding
@@ -2744,6 +2748,7 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
     defer g_layout_depth -= 1
     g_layout_calls += 1
     if g_layout_depth > LAYOUT_MAX_DEPTH || g_layout_calls > LAYOUT_MAX_CALLS {
+        b.geometry_memo = {}
         if !g_layout_overflow_warned {
             fmt.eprintfln("[layout] teto excedido (prof=%d, chamadas=%d) — árvore cíclica/flex-exponencial; ramo abortado", g_layout_depth, g_layout_calls)
             g_layout_overflow_warned = true
@@ -2764,6 +2769,12 @@ layout_box :: proc(b: ^Box, x, y, avail_w: f32, force_w: f32 = -1, force_h: f32 
     // spec vale p/ os QUATRO lados, inclusive topo/base (é o truque `padding-top:56.25%`
     // p/ caixas de proporção fixa). Resolvido aqui, antes de qualquer leitura abaixo.
     resolve_box_edges(b, avail_w)
+    inputs := geometry_inputs(b,avail_w,force_w,force_h,cb_h)
+    if hit, dx, dy := geometry_try_reuse(b,inputs,x,y); hit {
+        translate_subtree(b,dx,dy)
+        return
+    }
+    defer geometry_store(b,inputs,x,y)
     m := b.margin; p := b.padding
     bwt, bwr, bwb, bwl := b.border_w[0], b.border_w[1], b.border_w[2], b.border_w[3]
 
@@ -5443,6 +5454,7 @@ when UIPROF {
         ms_compute:  f64, // compute_styles
         ms_buildlay: f64, // build_layout
         rebuild_reused_boxes, rebuild_reused_roots: int,
+        geometry_reflowed, geometry_hits, geometry_skipped: int,
         restyle_why: [Restyle_Reason]int, // which path each restyle_tab took
         restyle_dirty: int,               // nodes recomputed by incremental restyles
         restyle_total: int,               // nodes in the map at those restyles
@@ -5581,6 +5593,7 @@ when UIPROF {
                 p.restyles, p.ms_compute, p.ms_compute / f64(p.restyles), p.ms_buildlay, p.ms_buildlay / f64(p.restyles))
         }
         fmt.eprintfln("[uiprof/S3] rebuild reuse: %d boxes in %d subtrees", p.rebuild_reused_boxes, p.rebuild_reused_roots)
+        fmt.eprintfln("[uiprof/GEOMETRY] %d box reflows | %d subtree hits | %d box bodies skipped", p.geometry_reflowed,p.geometry_hits,p.geometry_skipped)
         fmt.eprintf("[uiprof/S3] restyle_tab por motivo:")
         for r in Restyle_Reason do if p.restyle_why[r] > 0 do fmt.eprintf(" %v=%d", r, p.restyle_why[r])
         fmt.eprintfln("")
@@ -6139,6 +6152,7 @@ float_fit_width :: proc(child: ^Box, avail: f32) -> f32 {
 // que o Chrome não tem — que é o erro caro.
 @(private="file")
 measure_min_content_w :: proc(b: ^Box, ignore_specified := false) -> f32 {
+    b.geometry_memo.valid = false
     extra := b.padding[3] + b.padding[1] + bw_x(b)
     if !ignore_specified && b.has_width && !b.width_pct {
         return b.box_sizing == .Border ? b.width : b.width + extra
@@ -6241,6 +6255,7 @@ flex_transferred_w :: proc(c: ^Box, cross_h: f32) -> (f32, bool) {
 // Contribuição intrínseca em border-box, sem executar layout nem alterar estilos.
 @(private="file")
 measure_intrinsic_w :: proc(b: ^Box, min_content := false) -> f32 {
+    b.geometry_memo.valid = false
     if min_content || b.width_minc do return measure_min_content_w(b)
     extra := b.padding[3] + b.padding[1] + bw_x(b)
     if b.has_width && !b.width_pct {

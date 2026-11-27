@@ -10,6 +10,7 @@ outro enxerga.
 | Reftests do WPT | `.\wpt-reftest.ps1` | Conformidade de layout/CSS contra referências da spec. | Métrica de texto — ele compara o nosso render com a **nossa própria** referência, e o erro cancela dos dois lados. |
 | Golden de layout | `.\layout-golden.ps1` | Regressão de geometria, com precisão de nome e número. | Caixa no lugar certo e **não pintada**. |
 | Pintura | `.\paint-check.ps1` | Exatamente o ponto cego acima: afirma regiões visíveis/esmaecidas/recortadas. | Aparência fina; nada aqui depende de fonte ou antialiasing. |
+| Geometria incremental | `.\geometry-check.ps1` | Geometria e PNGs de 16 estados com fontes reais contra reconstruções completas independentes; exige hits e mudanças visuais. | Conformidade integral de CSS ou desempenho de sites reais. |
 | Test262 | `.\test262.ps1` | Conformidade da linguagem JavaScript. | Tudo que é DOM/host. |
 | html5lib | `.\html5lib-test.ps1`, `.\html5lib-tokenizer.ps1` | Conformidade do parser de HTML. | — |
 | Oráculo visual | `.\oracle-diff.ps1` | Distância até o **Chrome** em sites reais. É o único que enxerga métrica de fonte. | Nada é automático: o número é ruidoso, ver abaixo. |

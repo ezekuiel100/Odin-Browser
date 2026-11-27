@@ -25,7 +25,8 @@ entregas de imagens invalidam o cache; fontes novas ja provocam restyle completo
 Zoom, tema e viewport tambem passam pelo restyle no loop de desenho.
 Scroll e animacoes visuais continuam sendo aplicados na pintura. Havendo
 entradas no mapa de resize manual, a geometria e recalculada conservadoramente.
-O cache cobre o documento inteiro; ainda nao ha layout parcial por subarvore.
+O cache do documento inteiro evita frames redundantes. A etapa de geometria
+incremental descrita abaixo tambem reaproveita resultados de subarvores intactas.
 
 ## Validacao
 
@@ -202,9 +203,9 @@ aninhados de animacao. Elas nao dependem da vida util do Computed que as criou.
 Os testes liberam os estilos antes de avaliar a geometria/animacao e usam um
 rastreador de memoria para tornar liberacoes duplicadas uma falha do teste.
 
-Isso reduz a CONSTRUCAO da arvore. O calculo de posicoes e tamanhos continua
-cobrindo o documento todo apos uma reconstrucao; ainda nao ha layout geometrico
-parcial por subarvore. O perfil UIPROF informa caixas e subarvores transferidas.
+Essa primeira etapa reduzia apenas a CONSTRUCAO da arvore. A etapa de geometria
+incremental abaixo amplia o reaproveitamento para posicoes e tamanhos.
+O perfil UIPROF informa caixas e subarvores transferidas.
 
 O define LAYOUTCHECK=true habilita um oraculo opcional que constroi uma arvore
 completa independente dos mesmos estilos e compara caixas anonimas, estrutura,
@@ -227,3 +228,119 @@ carga. Conteudo, mutacoes e carga da maquina variam; nao ha ganho de tempo total
 comprovado no Reddit a partir dessas cargas distintas. A melhoria controlada
 e a validacao de geometria nao eliminam os caminhos conservadores nem o custo
 do calculo global de posicoes. Log local: `_local/reddit-layout-final.log`.
+
+## Layout geometrico incremental — 27/11/2026
+
+Uma subarvore transferida pelo construtor incremental tambem pode preservar o
+resultado do layout. `ensure_tab_geometry` habilita esse caminho somente quando
+a arvore antiga ja tinha geometria valida e o ambiente permanece igual. Caixas
+novas ou reconstruidas executam o algoritmo normal; os ancestrais continuam
+recalculando o fluxo e as restricoes fornecidas aos filhos.
+
+Cada caixa guarda um memo por valor, sem ponteiros para estilos ou memoria
+temporaria. A chave compara diretamente largura disponivel, largura/altura
+impostas, altura do bloco contenedor, limites resolvidos pelo pai, margens,
+padding e bordas. Tambem confere o tamanho e a origem de conteudo atuais:
+um pai pode ter alterado a altura de um filho depois da chamada, como no
+stretch de Flex. Restricoes diferentes exigem layout; resultados iguais podem
+ser reposicionados por translacao da subarvore, preservando fragmentos inline.
+Flex/Grid intactos podem ser reaproveitados como unidades; mudancas nas suas
+restricoes continuam refluindo os descendentes.
+
+Reposicionar um resultado exige geometria integral no eixo movido, sem calculos
+de texto/baseline e com coordenadas limitadas para somas exatas em f32. Mudancas
+de origem fracionarias ou fora desses limites executam o layout normal: somar
+deltas repetidamente pode divergir de um calculo novo. Resultados que permanecem
+na mesma origem continuam reutilizaveis mesmo com medidas fracionarias. Ha uma
+regressao de reposicionamento nos dois eixos que exige igualdade exata, sem
+afrouxar a tolerancia do oraculo para esconder arredondamentos.
+
+O ambiente inclui viewport, zoom, tema e a revisao de recursos/imagens. Fontes e
+folhas novas continuam usando o restyle completo, que produz caixas novas.
+Resize manual desabilita os hits enquanto o mapa de tamanhos estiver ativo.
+Alteracoes apenas de pintura e frames intactos continuam pulando todo o layout.
+O flush sincrono do CSSOM usa o mesmo mecanismo.
+
+Medicoes intrinsecas podem restaurar palavras anteriormente divididas em
+fragmentos. Esses caminhos invalidam o memo antes de medir, impedindo que um hit
+reutilize fragmentos modificados. Posicionamento absoluto/fixo e icamento sempre
+executam seu passe completo; esse passe nao grava memos de fluxo normal.
+Subgrid, multicolunas, floats, escrita vertical, motion paths e containers de
+consulta mantem o calculo conservador nas subarvores que dependem desses
+contextos. Irmaos independentes ainda podem obter hits.
+
+Tabelas e seus descendentes tambem sao reconstruidos no construtor: o algoritmo
+de `border-collapse` altera bordas de celulas, e medir novamente uma celula
+retida usaria o modelo ja colapsado. Uma regressao compara essa reconstrucao
+com uma arvore independente completa.
+
+Caixas com min/max-height percentuais tambem sao reconstruidas: os valores
+resolvidos e suas flags sao mutados durante o layout. Reutilizar o modelo
+resolvido numa nova medicao intrinseca pode aumentar indevidamente o piso de
+uma linha do Grid. A regressao redimensiona um Grid por um irmao flexivel e
+confere sucessivas idas/voltas; antes da guarda uma linha de 20px ficava em 50px.
+Os ancestrais desse contexto sao reconstruidos, preservando o reaproveitamento
+dos ramos independentes.
+
+`Geometry_Stats` registra chamadas solicitadas, corpos de layout executados,
+hits de subarvores e caixas contidas nos resultados reaproveitados. O perfil
+`UIPROF=true` imprime esses contadores em `[uiprof/GEOMETRY]`. O define
+`GEOMETRY_REUSE=false` desliga somente os hits de geometria para comparacoes
+controladas, preservando o construtor e o cache do documento.
+
+Regressoes: `src/ui/geometry_incremental_test.odin`. Os dois testes iniciais
+de reaproveitamento falharam antes da implementacao: 903 chamadas em uma arvore
+de 300 ramos e 14 chamadas no ramo com Flex/Grid/inline. Os testes comparam
+caixas, fragmentos, limites de scroll, sticky, imagens e ancoras com uma arvore
+completa independente. Incluem alteracoes de restricoes, texto, estrutura,
+movimento/remocao de nos, mutacoes agrupadas, resize e flush do CSSOM.
+
+O harness `./geometry-check.ps1` compila `tools/geometry-probe`, aplica 16 estados
+com fontes reais e compara geometria com arvores independentes. Depois compara
+PNGs deterministas dos modos incremental/completo, sem tolerancia de pixels.
+O teste tambem exige hits reais e pelo menos oito mudancas visiveis, evitando
+uma comparacao que passe sem executar o caminho incremental.
+
+Benchmark opcional da fase de geometria, sem assercoes de tempo:
+
+```powershell
+C:/Odin/dist/odin.exe test src/ui -o:speed -define:ODIN_TEST_THREADS=1 -define:ODIN_TEST_TRACK_MEMORY=false -define:BENCH_GEOMETRY=true -define:ODIN_TEST_NAMES=ui.geometry_incremental_benchmark
+```
+
+O benchmark alterna 22 mutacoes em 700 ramos de Grid, com e sem translacao dos
+irmaos. O modo de controle usa o mesmo construtor e forca o calculo geometrico
+completo. Nao mede restyle, construcao, pintura ou navegacao em sites reais.
+O planejamento de estilos e o indice de transferencia ainda percorrem arvores;
+o fluxo visita ancestrais e raizes de ramos intactos, e reposicionar um ramo com
+coordenadas absolutas ainda percorre seus descendentes. Esta etapa nao e um
+indice geral de dependencias geometricas nem elimina todos os percursos O(n).
+
+Medicao sintetica local: mediana de tres rodadas, build otimizado e rastreamento
+de memoria desligado; tempos somados de 22 passadas por cenario:
+
+| Cenario | Geometria completa | Incremental | Razao |
+|---|---:|---:|---:|
+| Irmaos sem deslocamento | 40,897 ms | 11,386 ms | 3,59x |
+| Irmaos transladados | 44,269 ms | 11,575 ms | 3,82x |
+
+Foram 92.466 execucoes de corpos de layout no controle e 66 no incremental
+(4.203 e 3 por passada), com 15.400 hits acumulados por cenario. A diferenca de
+tempo e bem menor que a reducao de corpos executados: ainda ha varreduras e
+translacoes. Logs: `_local/geometry-benchmark-{1,2,3}.log` e
+`_local/geometry-benchmark-results.json`. Esses numeros nao medem o tempo total
+de restyle ou navegacao e podem variar entre maquinas/rodadas.
+
+Validacao final: 3.863 testes passaram nos oito pacotes (197 CSS, 1.199 UI,
+2.342 JS, 81 HTML, 6 rede, 20 Brotli, 10 WOFF2 e 8 varfont). O arquivo novo
+contem 17 regressoes e um benchmark opcional; os testes novos passaram com
+`ODIN_TEST_FAIL_ON_BAD_MEMORY=true`. Os 30 goldens passaram sem atualizar
+referencias e o harness de pintura passou nas 111 verificacoes.
+
+O `geometry-check.ps1` confirmou 16 estados com fontes reais: geometria exata
+contra arvores completas independentes, PNGs identicos entre os dois modos e
+15 mudancas visiveis. Houve 48 hits reais no modo incremental; viewport e
+entregas de recursos mantiveram seus passes completos. O WPT nao foi repetido
+nesta etapa. Logs finais: `_local/geometry-release-*`,
+`_local/geometry-numeric-tests.log` e `_local/geometry-check/{incremental,full}.log`.
+O executavel anterior foi preservado em
+`_local/builds/browser-before-geometry-20261127.exe`.

@@ -34,13 +34,21 @@ build_layout_reusing :: proc(node: ^dom.Node, styles: map[^dom.Node]Computed, ba
     g_layout_reuse = &reuse
     defer { g_layout_reuse = previous }
     root = build_layout(node, styles, base)
+    geometry_inherit(root,old)
     return root, reuse.boxes, reuse.roots
 }
 
 @(private="file")
-layout_reuse_index :: proc(slot: ^^Box, reuse: ^Layout_Reuse) -> (unsafe: bool) {
+layout_reuse_index :: proc(slot: ^^Box, reuse: ^Layout_Reuse, table_context := false) -> (unsafe: bool) {
     b := slot^
     if b == nil do return false
+    // border-collapse mutates cell borders, so reflowing retained cells would
+    // measure their already-collapsed model. Rebuild the entire table context.
+    sensitive_table := table_context || b.is_table
+    if sensitive_table do unsafe = true
+    // Percent height limits are resolved into mutable has_minh/minh/maxh fields.
+    // A later intrinsic pass must start from the original unresolved model.
+    if b.has_minh_pct || b.has_maxh_pct do unsafe = true
     // Absolute/fixed boxes can be physically hoisted out of their DOM parent
     // by layout_absolutes. Rebuild both ownership paths instead of retaining
     // an incomplete subtree or a stale anchor into a freed ancestor.
@@ -51,10 +59,10 @@ layout_reuse_index :: proc(slot: ^^Box, reuse: ^Layout_Reuse) -> (unsafe: bool) 
         }
     }
     if b.node != nil && (reuse.dirty[b.node] || b.node not_in reuse.styles) do unsafe = true
-    for &child in b.children do if layout_reuse_index(&child, reuse) do unsafe = true
+    for &child in b.children do if layout_reuse_index(&child, reuse, sensitive_table) do unsafe = true
     for &item in b.inlines {
         if layout_reuse_source_dirty(item.source, reuse) do unsafe = true
-        if item.box != nil && layout_reuse_index(&item.box, reuse) do unsafe = true
+        if item.box != nil && layout_reuse_index(&item.box, reuse, sensitive_table) do unsafe = true
     }
     if b.node != nil {
         entry := reuse.entries[b.node]
@@ -82,6 +90,7 @@ layout_reuse_source_dirty :: proc(source: ^Inline_Source, reuse: ^Layout_Reuse) 
 @(private="file")
 layout_reuse_retire :: proc(b: ^Box, reuse: ^Layout_Reuse) -> int {
     if b == nil do return 0
+    b.geometry_retained = true
     if b.node != nil do delete_key(&reuse.entries, b.node)
     count := 1
     for child in b.children do count += layout_reuse_retire(child, reuse)
